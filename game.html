@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>COIN RAIN ★ Bot Gastos</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #050505;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  #wrap {
+    position: relative;
+    display: inline-block;
+  }
+
+  canvas {
+    display: block;
+    image-rendering: pixelated;
+    border: 2px solid #0f0;
+    box-shadow:
+      0 0 8px #0f0,
+      0 0 30px #0f06,
+      inset 0 0 60px rgba(0,255,0,0.03);
+  }
+
+  /* CRT scanlines overlay */
+  #wrap::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      to bottom,
+      transparent 0px,
+      transparent 2px,
+      rgba(0, 0, 0, 0.18) 2px,
+      rgba(0, 0, 0, 0.18) 4px
+    );
+    pointer-events: none;
+    z-index: 5;
+  }
+
+  /* CRT vignette */
+  #wrap::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse at center, transparent 60%, rgba(0,0,0,0.55) 100%);
+    pointer-events: none;
+    z-index: 6;
+  }
+
+  #hint {
+    color: #0a0;
+    font: 9px monospace;
+    margin-top: 8px;
+    letter-spacing: 2px;
+    opacity: 0.6;
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c" width="360" height="480"></canvas></div>
+<div id="hint">← → MOVER &nbsp;|&nbsp; SPACE JUGAR &nbsp;|&nbsp; TÁCTIL OK</div>
+
+<script>
+// ─── Setup ───────────────────────────────────────────────────────────────────
+const c   = document.getElementById('c');
+const ctx = c.getContext('2d');
+const W = c.width, H = c.height;
+
+// ─── Palette ─────────────────────────────────────────────────────────────────
+const COL = {
+  bg:     '#05050a',
+  grid:   'rgba(0,255,80,0.04)',
+  green:  '#00ff50',
+  dkgreen:'#008830',
+  yellow: '#ffe040',
+  red:    '#ff3040',
+  white:  '#ddffd0',
+  dim:    '#336633',
+  floor:  'rgba(0,255,80,0.15)',
+};
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let mode   = 'title';   // title | play | dead
+let score  = 0;
+let best   = +(localStorage.getItem('crBest') || 0);
+let lives  = 3;
+let lvl    = 1;
+let frame  = 0;
+let items  = [];
+let sparks = [];
+let msgs   = [];
+let spawnT = 0;
+
+// ─── Player ───────────────────────────────────────────────────────────────────
+const P = { x: W / 2, y: H - 36, w: 34, h: 18, spd: 5, blink: 0 };
+
+// ─── Audio ────────────────────────────────────────────────────────────────────
+let actx;
+function sfx(type) {
+  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+  const o = actx.createOscillator();
+  const g = actx.createGain();
+  o.connect(g); g.connect(actx.destination);
+  const t = actx.currentTime;
+  if (type === 'coin') {
+    o.type = 'square';
+    o.frequency.setValueAtTime(440, t);
+    o.frequency.exponentialRampToValueAtTime(880, t + 0.08);
+    g.gain.setValueAtTime(0.12, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+    o.start(t); o.stop(t + 0.12);
+  } else if (type === 'hit') {
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(200, t);
+    o.frequency.exponentialRampToValueAtTime(60, t + 0.25);
+    g.gain.setValueAtTime(0.18, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+    o.start(t); o.stop(t + 0.25);
+  } else if (type === 'die') {
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(300, t);
+    o.frequency.exponentialRampToValueAtTime(40, t + 0.6);
+    g.gain.setValueAtTime(0.2, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+    o.start(t); o.stop(t + 0.6);
+  } else if (type === 'lvl') {
+    o.type = 'square';
+    [330, 440, 550, 660].forEach((f, i) => {
+      const tt = t + i * 0.07;
+      const oo = actx.createOscillator();
+      const gg = actx.createGain();
+      oo.connect(gg); gg.connect(actx.destination);
+      oo.type = 'square'; oo.frequency.value = f;
+      gg.gain.setValueAtTime(0.1, tt);
+      gg.gain.exponentialRampToValueAtTime(0.001, tt + 0.1);
+      oo.start(tt); oo.stop(tt + 0.1);
+    });
+    o.start(t); o.stop(t);
+  }
+}
+
+// ─── Input ────────────────────────────────────────────────────────────────────
+const keys = {};
+document.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if (e.key === ' ' || e.key === 'Enter') {
+    if (mode !== 'play') startGame();
+    e.preventDefault();
+  }
+  if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) e.preventDefault();
+});
+document.addEventListener('keyup',  e => { keys[e.key] = false; });
+
+// Touch
+let tx0 = null, px0 = null;
+c.addEventListener('touchstart', e => {
+  tx0 = e.touches[0].clientX;
+  px0 = P.x;
+  if (mode !== 'play') startGame();
+  e.preventDefault();
+}, { passive: false });
+c.addEventListener('touchmove', e => {
+  if (tx0 === null) return;
+  const rect = c.getBoundingClientRect();
+  const scale = W / rect.width;
+  P.x = Math.max(P.w/2, Math.min(W - P.w/2,
+        px0 + (e.touches[0].clientX - tx0) * scale));
+  e.preventDefault();
+}, { passive: false });
+c.addEventListener('touchend', () => { tx0 = null; });
+
+// ─── Game Logic ───────────────────────────────────────────────────────────────
+function startGame() {
+  mode   = 'play';
+  score  = 0;
+  lives  = 3;
+  lvl    = 1;
+  frame  = 0;
+  items  = [];
+  sparks = [];
+  msgs   = [];
+  spawnT = 0;
+  P.x    = W / 2;
+  P.blink = 0;
+}
+
+function spawnItem() {
+  const margin = 20;
+  const x = margin + Math.random() * (W - margin * 2);
+  const isCoin = Math.random() < 0.65;
+  const spd  = 1.2 + Math.random() * 0.8 + (lvl - 1) * 0.4;
+  items.push({ x, y: -14, type: isCoin ? 'coin' : 'bill', spd, rot: 0 });
+}
+
+function addSparks(x, y, col, n) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const v = 1 + Math.random() * 3;
+    sparks.push({ x, y, vx: Math.cos(a)*v, vy: Math.sin(a)*v - 2,
+                  col, life: 28 + Math.random()*12 });
+  }
+}
+
+function addMsg(text, x, y, col) {
+  msgs.push({ text, x, y, vy: -1.2, life: 40, col });
+}
+
+function update() {
+  frame++;
+
+  // Player move
+  if (keys['ArrowLeft']  || keys['a'] || keys['A']) P.x -= P.spd;
+  if (keys['ArrowRight'] || keys['d'] || keys['D']) P.x += P.spd;
+  P.x = Math.max(P.w/2, Math.min(W - P.w/2, P.x));
+  if (P.blink > 0) P.blink--;
+
+  // Spawn
+  const rate = Math.max(18, 72 - (lvl - 1) * 7);
+  spawnT++;
+  if (spawnT >= rate) { spawnItem(); spawnT = 0; }
+
+  // Level up every 150 pts
+  const newLvl = 1 + Math.floor(score / 150);
+  if (newLvl > lvl) {
+    lvl = newLvl;
+    sfx('lvl');
+    addMsg('NIVEL ' + lvl + '!', W/2, H/2, COL.yellow);
+  }
+
+  // Update items
+  items = items.filter(it => {
+    it.y += it.spd;
+    it.rot += 0.04;
+
+    // Collision
+    const dx = Math.abs(it.x - P.x);
+    const dy = Math.abs(it.y - P.y);
+    if (dx < P.w/2 + 8 && dy < P.h/2 + 8 && P.blink === 0) {
+      if (it.type === 'coin') {
+        const pts = 10 * lvl;
+        score += pts;
+        if (score > best) { best = score; localStorage.setItem('crBest', best); }
+        sfx('coin');
+        addSparks(it.x, it.y, COL.yellow, 8);
+        addMsg('+' + pts, it.x, it.y - 10, COL.yellow);
+      } else {
+        lives--;
+        P.blink = 90;
+        sfx(lives <= 0 ? 'die' : 'hit');
+        addSparks(it.x, it.y, COL.red, 12);
+        addMsg('-1', it.x, it.y - 10, COL.red);
+        if (lives <= 0) { mode = 'dead'; }
+      }
+      return false;
+    }
+    return it.y < H + 20;
+  });
+
+  // Sparks
+  sparks = sparks.filter(s => {
+    s.x += s.vx; s.y += s.vy; s.vy += 0.18; s.life--;
+    return s.life > 0;
+  });
+
+  // Msgs
+  msgs = msgs.filter(m => {
+    m.y += m.vy; m.life--;
+    return m.life > 0;
+  });
+}
+
+// ─── Draw helpers ─────────────────────────────────────────────────────────────
+
+function text(str, x, y, size, col, align) {
+  ctx.fillStyle = col;
+  ctx.font = `${size}px monospace`;
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(str, x, y);
+}
+
+function drawGrid() {
+  ctx.strokeStyle = COL.grid;
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= W; x += 24) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let y = 0; y <= H; y += 24) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+}
+
+function drawWallet(x, y, blink) {
+  if (blink > 0 && Math.floor(blink / 6) % 2 === 0) return;
+  const w = P.w, h = P.h;
+  const px = x - w/2, py = y - h/2;
+
+  // Shadow glow
+  ctx.shadowColor   = COL.green;
+  ctx.shadowBlur    = 10;
+
+  // Body
+  ctx.fillStyle = COL.dkgreen;
+  roundRect(px, py + 3, w, h - 3, 3);
+  ctx.fill();
+
+  ctx.fillStyle = COL.green;
+  roundRect(px + 1, py + 4, w - 2, h - 6, 2);
+  ctx.fill();
+
+  // Clasp
+  ctx.fillStyle = COL.dkgreen;
+  ctx.fillRect(x - 5, py, 10, 6);
+  ctx.fillStyle = COL.green;
+  ctx.fillRect(x - 3, py + 1, 6, 4);
+
+  // $ label
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#001a00';
+  ctx.font = 'bold 11px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('$', x, y + 2);
+
+  ctx.shadowBlur = 0;
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function drawCoin(x, y, rot) {
+  // Coin wobble — squish horizontally
+  const scaleX = Math.abs(Math.cos(rot)) * 0.5 + 0.5;
+
+  ctx.shadowColor = COL.yellow;
+  ctx.shadowBlur  = 8;
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scaleX, 1);
+
+  ctx.fillStyle = '#c8900a';
+  ctx.beginPath(); ctx.arc(0, 0, 9, 0, Math.PI*2); ctx.fill();
+
+  ctx.fillStyle = COL.yellow;
+  ctx.beginPath(); ctx.arc(0, 0, 7, 0, Math.PI*2); ctx.fill();
+
+  ctx.restore();
+  ctx.shadowBlur = 0;
+
+  ctx.fillStyle = '#6b4a00';
+  ctx.font = 'bold 8px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  // Only show label when facing front enough
+  if (scaleX > 0.5) ctx.fillText('¢', x, y + 1);
+}
+
+function drawBill(x, y) {
+  ctx.shadowColor = COL.red;
+  ctx.shadowBlur  = 8;
+
+  // Paper bill shape
+  ctx.fillStyle = '#8b0000';
+  ctx.fillRect(x - 12, y - 8, 24, 16);
+  ctx.fillStyle = COL.red;
+  ctx.fillRect(x - 11, y - 7, 22, 14);
+
+  // X mark
+  ctx.strokeStyle = '#300';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(x - 5, y - 4); ctx.lineTo(x + 5, y + 4); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + 5, y - 4); ctx.lineTo(x - 5, y + 4); ctx.stroke();
+
+  // Warning stripe top
+  ctx.fillStyle = '#ff6020';
+  ctx.fillRect(x - 12, y - 8, 24, 3);
+
+  ctx.shadowBlur = 0;
+}
+
+function drawHUD() {
+  // Score
+  text('PUNTOS', 8, 14, 9, COL.dim);
+  text(score.toString().padStart(6, '0'), 8, 26, 12, COL.green);
+
+  // Best
+  text('RECORD', W - 8, 14, 9, COL.dim, 'right');
+  text(best.toString().padStart(6, '0'), W - 8, 26, 12, COL.green, 'right');
+
+  // Level
+  text('LVL ' + lvl, W/2, 20, 10, COL.yellow, 'center');
+
+  // Lives
+  const lifeStr = '♥'.repeat(lives) + '♡'.repeat(Math.max(0, 3 - lives));
+  text(lifeStr, W/2, 36, 11, COL.red, 'center');
+
+  // Floor line
+  ctx.strokeStyle = COL.floor;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(0, H - 20); ctx.lineTo(W, H - 20); ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawSparks() {
+  sparks.forEach(s => {
+    ctx.globalAlpha = s.life / 40;
+    ctx.fillStyle = s.col;
+    ctx.fillRect(s.x - 2, s.y - 2, 4, 4);
+  });
+  ctx.globalAlpha = 1;
+}
+
+function drawMsgs() {
+  msgs.forEach(m => {
+    ctx.globalAlpha = m.life / 40;
+    text(m.text, m.x, m.y, 12, m.col, 'center');
+  });
+  ctx.globalAlpha = 1;
+}
+
+// ─── Screens ──────────────────────────────────────────────────────────────────
+
+// Demo items for title screen
+const demoItems = Array.from({ length: 6 }, (_, i) => ({
+  x: 30 + i * 52, y: -20 - i * 55,
+  type: i % 4 === 0 ? 'bill' : 'coin',
+  spd: 0.7 + i * 0.1,
+  rot: i * 0.8,
+}));
+
+function drawTitle() {
+  // Animate demo items
+  demoItems.forEach(it => {
+    it.y += it.spd; it.rot += 0.03;
+    if (it.y > H + 20) it.y = -20;
+    if (it.type === 'coin') drawCoin(it.x, it.y, it.rot);
+    else drawBill(it.x, it.y);
+  });
+
+  // Dark card
+  ctx.fillStyle = 'rgba(0,5,0,0.75)';
+  roundRect(30, 120, W - 60, 230, 6);
+  ctx.fill();
+  ctx.strokeStyle = COL.dkgreen;
+  ctx.lineWidth = 1;
+  roundRect(30, 120, W - 60, 230, 6);
+  ctx.stroke();
+
+  // Title flicker
+  const flick = 0.85 + Math.sin(frame * 0.08) * 0.15;
+  ctx.globalAlpha = flick;
+  text('COIN RAIN', W/2, 158, 28, COL.green, 'center');
+  ctx.globalAlpha = 1;
+
+  text('★ BOT GASTOS EDITION ★', W/2, 182, 9, COL.dim, 'center');
+
+  // Divider
+  ctx.strokeStyle = COL.dkgreen;
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(50, 196); ctx.lineTo(W-50, 196); ctx.stroke();
+
+  text('¢  ATRAPA LAS MONEDAS', W/2, 213, 10, COL.yellow, 'center');
+  text('✕  ESQUIVA LAS DEUDAS', W/2, 232, 10, COL.red,    'center');
+
+  ctx.strokeStyle = COL.dkgreen;
+  ctx.beginPath(); ctx.moveTo(50, 248); ctx.lineTo(W-50, 248); ctx.stroke();
+
+  text('← → PARA MOVER', W/2, 265, 10, COL.white, 'center');
+  text('TÁCTIL: ARRASTRA', W/2, 282, 10, COL.white, 'center');
+
+  // Blink prompt
+  if (Math.floor(frame / 28) % 2 === 0) {
+    text('[ ESPACIO / TOCA PARA JUGAR ]', W/2, 316, 10, COL.yellow, 'center');
+  }
+
+  text('RECORD: ' + best, W/2, H - 18, 9, COL.dim, 'center');
+}
+
+function drawDead() {
+  // Darken
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Card
+  ctx.fillStyle = 'rgba(10,0,0,0.9)';
+  roundRect(40, 140, W - 80, 200, 6);
+  ctx.fill();
+  ctx.strokeStyle = COL.red;
+  ctx.lineWidth = 1;
+  roundRect(40, 140, W - 80, 200, 6);
+  ctx.stroke();
+
+  text('GAME OVER', W/2, 172, 22, COL.red, 'center');
+
+  ctx.strokeStyle = '#440000';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(60, 188); ctx.lineTo(W-60, 188); ctx.stroke();
+
+  text('PUNTAJE', W/2, 208, 9, COL.dim, 'center');
+  text(score.toString().padStart(6,'0'), W/2, 224, 18, COL.green, 'center');
+
+  text('RECORD', W/2, 248, 9, COL.dim, 'center');
+  text(best.toString().padStart(6,'0'), W/2, 264, 14, COL.yellow, 'center');
+
+  if (score >= best && score > 0) {
+    text('★ NUEVO RECORD ★', W/2, 284, 10, COL.yellow, 'center');
+  }
+
+  if (Math.floor(frame / 28) % 2 === 0) {
+    text('[ ESPACIO PARA REINTENTAR ]', W/2, 316, 9, COL.white, 'center');
+  }
+}
+
+// ─── Main Loop ────────────────────────────────────────────────────────────────
+function loop() {
+  // Background
+  ctx.fillStyle = COL.bg;
+  ctx.fillRect(0, 0, W, H);
+
+  if (mode === 'title') {
+    drawGrid();
+    drawTitle();
+  } else if (mode === 'play') {
+    update();
+    drawGrid();
+    items.forEach(it => {
+      if (it.type === 'coin') drawCoin(it.x, it.y, it.rot);
+      else drawBill(it.x, it.y);
+    });
+    drawSparks();
+    drawMsgs();
+    drawWallet(P.x, P.y, P.blink);
+    drawHUD();
+  } else { // dead
+    frame++;
+    drawGrid();
+    drawSparks();
+    drawMsgs();
+    drawDead();
+  }
+
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
