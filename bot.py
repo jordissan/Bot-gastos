@@ -130,19 +130,42 @@ def parsear_mensaje(texto):
         "presupuesto": presupuesto,
     }
 
+def buscar_mes_id(mes_nombre):
+    """Busca el ID de la pagina de mes en Notion"""
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+    # Buscar en la base de datos de meses
+    r = requests.post(
+        "https://api.notion.com/v1/search",
+        headers=headers,
+        json={"query": mes_nombre, "filter": {"value": "page", "property": "object"}}
+    )
+    if r.status_code == 200:
+        results = r.json().get("results", [])
+        for page in results:
+            title = page.get("properties", {}).get("Nombre", {}).get("title", [])
+            if title and title[0].get("plain_text", "") == mes_nombre:
+                return page["id"]
+    return None
+
 def guardar_en_notion(gasto):
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
         "Content-Type": "application/json",
         "Notion-Version": "2022-06-28",
     }
+    
+    # Campos básicos que sabemos funcionan
     properties = {
         "Concepto": {"title": [{"text": {"content": gasto["concepto"]}}]},
         "Monto":    {"number": gasto["monto"]},
         "Fecha":    {"date": {"start": gasto["fecha"]}},
-        "Estado de Cuenta": {"select": {"name": gasto["tarjeta"]}},
-        "Mes":      {"select": {"name": gasto["mes"]}},
+        "Estado de Cuenta": {"rich_text": [{"text": {"content": gasto["tarjeta"]}}]},
     }
+
     r = requests.post(
         "https://api.notion.com/v1/pages",
         headers=headers,
