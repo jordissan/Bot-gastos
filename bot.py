@@ -2,15 +2,15 @@ import os
 import re
 import datetime
 import requests
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 
-# ─── CONFIGURACIÓN ───────────────────────────────────────────────────────────
 TELEGRAM_TOKEN     = os.environ["TELEGRAM_TOKEN"]
 NOTION_TOKEN       = os.environ["NOTION_TOKEN"]
 NOTION_DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 
-# ─── IDs DE NOTION ───────────────────────────────────────────────────────────
 SUBCATEGORIAS = {
     "Super":        "bf7d4b7d",
     "Abarrotes":    "3587eb0cbb9280c5",
@@ -39,18 +39,17 @@ PRESUPUESTOS = {
     "Cuidado personal": "82916172",
 }
 
-# ─── REGLAS DE CATEGORÍA ─────────────────────────────────────────────────────
 REGLAS_CONCEPTO = [
     (["walmart", "soriana", "costco", "bodega aurrera", "sam's"], "Super", "Despensa"),
     (["calii"], "Super", "Despensa"),
     (["zarapes"], "Restaurantes", "Despensa"),
-    (["carnicería", "carniceria", "carnes especiales", "barranqueño", "barrangueno"], "Carnicería", "Despensa"),
+    (["carnicería", "carniceria", "carnes especiales", "barranqueño"], "Carnicería", "Despensa"),
     (["restaurante", "taqueria", "taquería", "tacos", "pizza", "sushi", "pollo bronco",
-      "dq ", "dairy queen", "carl's", "carls", "mcdonalds", "burger", "kfc", "subway",
-      "domino", "clip mx*rest", "payclip*rest", "la choco", "chocof"], "Restaurantes", "Restaurantes"),
+      "dq ", "dairy queen", "carl's", "mcdonalds", "burger", "kfc", "subway",
+      "domino", "clip mx*rest", "payclip*rest", "la choco"], "Restaurantes", "Restaurantes"),
     (["gasolina", "oxxo gas", "oxxogas", "bp ", "combustible"], "Gasolina", "Automóvil"),
     (["netflix", "spotify", "disney", "hbo", "apple tv", "paramount"], "Streaming", "Servicios"),
-    (["izzi", "telmex", "adobe", "icloud", "capcut", "claude", "conekta*parco", "parco"], "Servicios", "Servicios"),
+    (["izzi", "telmex", "adobe", "icloud", "capcut", "claude", "conekta*parco"], "Servicios", "Servicios"),
     (["google"], "Servicios", "Servicios"),
     (["cfe", "luz "], "Luz", "Servicios"),
     (["mapfre", "seguro auto", "qualitas"], "Seguro Auto", "Automóvil"),
@@ -60,19 +59,15 @@ REGLAS_CONCEPTO = [
     (["starbucks", "café", "cafe ", "helado", "nieve", "panadería"], "Treat", "Diversión"),
 ]
 
-MESES_ESP = {
-    1: "ENE", 2: "FEB", 3: "MAR", 4: "ABR", 5: "MAY", 6: "JUN",
-    7: "JUL", 8: "AGO", 9: "SEP", 10: "OCT", 11: "NOV", 12: "DIC"
-}
-
+MESES_ESP = {1:"ENE",2:"FEB",3:"MAR",4:"ABR",5:"MAY",6:"JUN",
+             7:"JUL",8:"AGO",9:"SEP",10:"OCT",11:"NOV",12:"DIC"}
 MESES_TEXTO = {
-    "ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6,
-    "jul": 7, "ago": 8, "sep": 9, "oct": 10, "nov": 11, "dic": 12,
-    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
-    "julio": 7, "agosto": 8, "septiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12
+    "ene":1,"feb":2,"mar":3,"abr":4,"may":5,"jun":6,
+    "jul":7,"ago":8,"sep":9,"oct":10,"nov":11,"dic":12,
+    "enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,
+    "julio":7,"agosto":8,"septiembre":9,"octubre":10,"noviembre":11,"diciembre":12
 }
 
-# ─── LÓGICA ──────────────────────────────────────────────────────────────────
 def calcular_tarjeta(fecha, tarjeta_explicita=None):
     if tarjeta_explicita:
         return tarjeta_explicita.upper()
@@ -90,12 +85,10 @@ def calcular_mes(fecha, tarjeta):
         mes_pago = m + 1 if d >= 4 else m
     else:
         mes_pago = m + 1
-
     anio = y
     while mes_pago > 12:
         mes_pago -= 12
         anio += 1
-
     return f"{MESES_ESP[mes_pago]}{str(anio)[-2:]}"
 
 def inferir_categoria(concepto):
@@ -118,14 +111,12 @@ def parsear_fecha(tokens):
         if m:
             try:
                 return datetime.date(hoy.year, int(m.group(2)), int(m.group(1))), tokens[:i] + tokens[i+1:]
-            except:
-                pass
+            except: pass
         m = re.match(r'^(\d{1,2})[-/]([a-z]+)$', tl)
         if m and m.group(2) in MESES_TEXTO:
             try:
                 return datetime.date(hoy.year, MESES_TEXTO[m.group(2)], int(m.group(1))), tokens[:i] + tokens[i+1:]
-            except:
-                pass
+            except: pass
     return hoy, tokens
 
 def parsear_tarjeta(tokens):
@@ -141,8 +132,7 @@ def parsear_monto(tokens):
             monto = float(t.replace("$", "").replace(",", ""))
             if monto > 0:
                 return monto, tokens[:i] + tokens[i+1:]
-        except:
-            pass
+        except: pass
     return None, tokens
 
 def parsear_mensaje(texto):
@@ -151,16 +141,13 @@ def parsear_mensaje(texto):
     tarjeta_exp, tokens = parsear_tarjeta(tokens)
     monto, tokens = parsear_monto(tokens)
     concepto = " ".join(tokens).strip()
-
     if not concepto:
         raise ValueError("No encontré el concepto del gasto")
     if monto is None:
         raise ValueError("No encontré el monto")
-
     tarjeta = calcular_tarjeta(fecha, tarjeta_exp)
     mes = calcular_mes(fecha, tarjeta)
     subcategoria, presupuesto = inferir_categoria(concepto)
-
     return {
         "concepto": concepto.title(),
         "monto": monto,
@@ -179,7 +166,6 @@ def guardar_en_notion(gasto):
     }
     subcat_id = SUBCATEGORIAS.get(gasto["subcategoria"])
     presu_id  = PRESUPUESTOS.get(gasto["presupuesto"])
-
     properties = {
         "Concepto": {"title": [{"text": {"content": gasto["concepto"]}}]},
         "Monto":    {"number": gasto["monto"]},
@@ -191,7 +177,6 @@ def guardar_en_notion(gasto):
         properties["Subcategoría"] = {"relation": [{"id": subcat_id}]}
     if presu_id:
         properties["Presupuesto"] = {"relation": [{"id": presu_id}]}
-
     r = requests.post(
         "https://api.notion.com/v1/pages",
         headers=headers,
@@ -199,12 +184,10 @@ def guardar_en_notion(gasto):
     )
     return r.status_code == 200, r.text
 
-# ─── HANDLERS ────────────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 *¡Hola! Soy tu bot de gastos.*\n\n"
-        "Escríbeme así:\n"
-        "`Concepto Monto`\n\n"
+        "Escríbeme así:\n`Concepto Monto`\n\n"
         "Ejemplos:\n"
         "`Starbucks 150`\n"
         "`Gasolina 500 BBVA05`\n"
@@ -238,12 +221,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
-# ─── ARRANQUE ────────────────────────────────────────────────────────────────
+# ─── SERVIDOR HTTP PARA RENDER ────────────────────────────────────────────────
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot corriendo OK")
+    def log_message(self, format, *args):
+        pass
+
+def run_health_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server.serve_forever()
+
 def main():
+    # Arrancar servidor HTTP en hilo separado
+    t = threading.Thread(target=run_health_server, daemon=True)
+    t.start()
+    print("🌐 Servidor HTTP corriendo...")
+
+    # Arrancar bot
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🤖 Bot corriendo...")
+    print("🤖 Bot de gastos corriendo...")
     app.run_polling()
 
 if __name__ == "__main__":
