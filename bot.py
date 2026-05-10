@@ -541,14 +541,11 @@ def run_health_server():
     server.serve_forever()
 
 # ─── ARRANQUE ────────────────────────────────────────────────────────────────
-async def main():
+def main():
     t = threading.Thread(target=run_health_server, daemon=True)
     t.start()
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-
-    # Limpiar instancias previas para evitar conflictos
-    await app.bot.delete_webhook(drop_pending_updates=True)
 
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)],
@@ -562,8 +559,7 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_handler)
     print("🤖 Bot corriendo con todas las mejoras...")
-    await app.run_polling()
+    app.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
