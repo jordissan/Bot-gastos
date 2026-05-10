@@ -11,48 +11,61 @@ TELEGRAM_TOKEN     = os.environ["TELEGRAM_TOKEN"]
 NOTION_TOKEN       = os.environ["NOTION_TOKEN"]
 NOTION_DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 
-# IDs reales de Subcategorias
+# IDs verificados de Subcategorias
 SUBCATEGORIAS_IDS = {
-    "Super":        "https://www.notion.so/bf7d4b7d0445441ab89b53eec946d028",
-    "Abarrotes":    "https://www.notion.so/3587eb0cbb9280c58919c55b065c1e19",
-    "Restaurantes": "https://www.notion.so/1cf748f0639e41469ae2cc73aa86e10a",
-    "Gasolina":     "https://www.notion.so/8382b85617f342afa50ed56ca48ed9d3",
-    "Servicios":    "https://www.notion.so/b4d2856cb9a44fd584904aabcc007008",
-    "Streaming":    "https://www.notion.so/1d87eb0cbb9280a186f9f369501da604",
-    "Treat":        "https://www.notion.so/1d87eb0cbb9280d58b6cf369501da604",
+    "Super":           "bf7d4b7d0445441ab89b53eec946d028",
+    "Abarrotes":       "3587eb0cbb9280c58919c55b065c1e19",
+    "Carniceria":      "6a734da3d457465db419f195de13909b",
+    "Restaurantes":    "1cf748f0639e41469ae2cc73aa86e10a",
+    "Gasolina":        "8382b85617f342afa50ed56ca48ed9d3",
+    "Servicios":       "b4d2856cb9a44fd584904aabcc007008",
+    "Streaming":       "1d87eb0cbb9280a186f9f369501da604",
+    "Treat":           "1d87eb0cbb9280d5b5b0e9efd29e46bf",
+    "Salidas":         "1d87eb0cbb9280c1b4b7d3beeb2b1ebc",
+    "Luz":             "bf545e8169f840eda0ca126164e105b8",
+    "Seguro Auto":     "cf81abcd84824b82b71455913fefdd2a",
+    "MSI":             "1fa7eb0cbb928050a619e2105a4b77e4",
+    "Deudas":          "583b7dd3eb694921ac327e66821dd715",
+    "Otros":           "fd99fde0fa724f41a0ffeb7ee9425ec8",
 }
 
-# IDs reales de Presupuestos
+# IDs verificados de Presupuestos
 PRESUPUESTOS_IDS = {
-    "Despensa":     "https://www.notion.so/0e4bbd6e13b34972b39f14f76eb61d7d",
-    "Diversión":    "https://www.notion.so/a1d0605a28694b0baefdc43ac75a798a",
-    "Servicios":    "https://www.notion.so/0a9ef564f8944cc088e302e64ad702b6",
-    "Automovil":    "https://www.notion.so/20f5ab24f9ca4185af6a34254ab3a630",
-    "Restaurantes": "https://www.notion.so/3547eb0cbb9281e08ef5f3666e091a44",
-    "Salud":        "https://www.notion.so/3547eb0cbb9281a1ba5dfea0791b8d36",
+    "Despensa":        "0e4bbd6e13b34972b39f14f76eb61d7d",
+    "Diversión":       "a1d0605a28694b0baefdc43ac75a798a",
+    "Servicios":       "0a9ef564f8944cc088e302e64ad702b6",
+    "Automovil":       "20f5ab24f9ca4185af6a34254ab3a630",
+    "Restaurantes":    "3547eb0cbb9281e08ef5f3666e091a44",
+    "Salud":           "3547eb0cbb9281a1ba5dfea0791b8d36",
+    "Deuda":           "91ab43856d1e4ae69f21f4203eeb3c54",
+    "MSI":             "1fc7eb0cbb92802ba323cfc943dc0f2c",
+    "Renta":           "eeb6e04137c248468f641a5044b16545",
+    "Ezra":            "3547eb0cbb92817baaa9f6681e6bbabc",
+    "Cuidado personal":"829161723b0b49bf8787663a89c7248d",
+    "Otros":           "1ea7eb0cbb9280cbbe43c1bd54396691",
 }
 
-# IDs reales de Meses 2026
+# IDs verificados de Meses 2026
 MESES_IDS = {
-    "ENE26": "https://www.notion.so/3487eb0cbb92800a9e6fcf9a2d712e40",
-    "FEB26": "https://www.notion.so/3487eb0cbb928062b309eecc92f4035e",
-    "MAR26": "https://www.notion.so/3487eb0cbb9280648018ffe4171ad173",
-    "ABR26": "https://www.notion.so/3447eb0cbb928007822cdf54ad63c9de",
-    "MAY26": "https://www.notion.so/3447eb0cbb928051bddee3da069f31f7",
-    "JUN26": "https://www.notion.so/3447eb0cbb9280678db1fd1faa5a98cd",
-    "JUL26": "https://www.notion.so/3447eb0cbb9280b3ac4bf0106118f576",
-    "AGO26": "https://www.notion.so/3447eb0cbb92808daae4d029edda14b7",
-    "SEP26": "https://www.notion.so/3447eb0cbb9280ae861bc6db426e8c58",
-    "OCT26": "https://www.notion.so/3447eb0cbb928093bf97e20b4540ad79",
-    "NOV26": "https://www.notion.so/3447eb0cbb928007b6f5c3fbab7eecd6",
-    "DIC26": "https://www.notion.so/3447eb0cbb928049a264d12ff9048685",
+    "ENE26": "3487eb0cbb92800a9e6fcf9a2d712e40",
+    "FEB26": "3487eb0cbb928062b309eecc92f4035e",
+    "MAR26": "3487eb0cbb9280648018ffe4171ad173",
+    "ABR26": "3447eb0cbb928007822cdf54ad63c9de",
+    "MAY26": "3447eb0cbb928051bddee3da069f31f7",
+    "JUN26": "3447eb0cbb9280678db1fd1faa5a98cd",
+    "JUL26": "3447eb0cbb9280b3ac4bf0106118f576",
+    "AGO26": "3447eb0cbb92808daae4d029edda14b7",
+    "SEP26": "3447eb0cbb9280ae861bc6db426e8c58",
+    "OCT26": "3447eb0cbb928093bf97e20b4540ad79",
+    "NOV26": "3447eb0cbb928007b6f5c3fbab7eecd6",
+    "DIC26": "3447eb0cbb928049a264d12ff9048685",
 }
 
 REGLAS_CONCEPTO = [
     (["walmart", "soriana", "costco", "bodega aurrera", "sam's"], "Super", "Despensa"),
     (["calii"], "Super", "Despensa"),
     (["zarapes"], "Restaurantes", "Despensa"),
-    (["carniceria", "carnes especiales", "barrangueno"], "Restaurantes", "Despensa"),
+    (["carniceria", "carnes especiales", "barrangueno"], "Carniceria", "Despensa"),
     (["restaurante", "taqueria", "tacos", "pizza", "sushi", "pollo bronco",
       "dq ", "dairy queen", "carl's", "mcdonalds", "burger", "kfc", "subway",
       "domino", "clip mx*rest", "payclip*rest", "la choco"], "Restaurantes", "Restaurantes"),
@@ -60,11 +73,11 @@ REGLAS_CONCEPTO = [
     (["netflix", "spotify", "disney", "hbo", "apple tv", "paramount"], "Streaming", "Servicios"),
     (["izzi", "telmex", "adobe", "icloud", "capcut", "claude", "conekta*parco"], "Servicios", "Servicios"),
     (["google"], "Servicios", "Servicios"),
-    (["cfe", "luz "], "Servicios", "Servicios"),
-    (["mapfre", "seguro auto", "qualitas"], "Servicios", "Automovil"),
+    (["cfe"], "Luz", "Servicios"),
+    (["mapfre", "seguro auto", "qualitas"], "Seguro Auto", "Automovil"),
     (["farmacia", "benavides", "guadalajara", "ahorro", "similares", "doctor", "hospital"], "Servicios", "Salud"),
     (["oxxo", "bae ", "naranjitas", "rancherita", "abarrotes", "minisuper", "seven"], "Abarrotes", "Despensa"),
-    (["cine", "teatro", "concierto", "antro", "bar ", "cerveza"], "Abarrotes", "Diversión"),
+    (["cine", "teatro", "concierto", "antro", "bar "], "Salidas", "Diversión"),
     (["starbucks", "cafe ", "helado", "nieve", "panaderia"], "Treat", "Diversión"),
 ]
 
@@ -182,20 +195,17 @@ def guardar_en_notion(gasto):
         "Pago":     {"select": {"name": gasto["tarjeta"]}},
     }
 
-    # Agregar Mes si existe el ID
-    mes_url = MESES_IDS.get(gasto["mes"])
-    if mes_url:
-        properties["Mes"] = {"relation": [{"id": mes_url.split("/")[-1]}]}
+    mes_id = MESES_IDS.get(gasto["mes"])
+    if mes_id:
+        properties["Mes"] = {"relation": [{"id": mes_id}]}
 
-    # Agregar Subcategoria si existe
-    subcat_url = SUBCATEGORIAS_IDS.get(gasto["subcategoria"])
-    if subcat_url:
-        properties["Subcategoria"] = {"relation": [{"id": subcat_url.split("/")[-1]}]}
+    subcat_id = SUBCATEGORIAS_IDS.get(gasto["subcategoria"])
+    if subcat_id:
+        properties["Subcategoria"] = {"relation": [{"id": subcat_id}]}
 
-    # Agregar Presupuesto si existe
-    presu_url = PRESUPUESTOS_IDS.get(gasto["presupuesto"])
-    if presu_url:
-        properties["Presupuesto"] = {"relation": [{"id": presu_url.split("/")[-1]}]}
+    presu_id = PRESUPUESTOS_IDS.get(gasto["presupuesto"])
+    if presu_id:
+        properties["Presupuesto"] = {"relation": [{"id": presu_id}]}
 
     r = requests.post(
         "https://api.notion.com/v1/pages",
