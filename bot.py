@@ -3,6 +3,7 @@ import re
 import datetime
 import requests
 import threading
+import zoneinfo
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
@@ -122,7 +123,8 @@ def inferir_categoria(concepto):
     return "Abarrotes", "Despensa"
 
 def parsear_fecha(tokens):
-    hoy = datetime.date.today()
+    tz = zoneinfo.ZoneInfo("America/Mexico_City")
+    hoy = datetime.datetime.now(tz).date()
     for i, t in enumerate(tokens):
         tl = t.lower()
         if tl == "ayer":
