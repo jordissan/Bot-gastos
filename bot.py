@@ -11,24 +11,61 @@ TELEGRAM_TOKEN     = os.environ["TELEGRAM_TOKEN"]
 NOTION_TOKEN       = os.environ["NOTION_TOKEN"]
 NOTION_DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 
+# IDs reales de Subcategorias
+SUBCATEGORIAS_IDS = {
+    "Super":        "https://www.notion.so/bf7d4b7d0445441ab89b53eec946d028",
+    "Abarrotes":    "https://www.notion.so/3587eb0cbb9280c58919c55b065c1e19",
+    "Restaurantes": "https://www.notion.so/1cf748f0639e41469ae2cc73aa86e10a",
+    "Gasolina":     "https://www.notion.so/8382b85617f342afa50ed56ca48ed9d3",
+    "Servicios":    "https://www.notion.so/b4d2856cb9a44fd584904aabcc007008",
+    "Streaming":    "https://www.notion.so/1d87eb0cbb9280a186f9f369501da604",
+    "Treat":        "https://www.notion.so/1d87eb0cbb9280d58b6cf369501da604",
+}
+
+# IDs reales de Presupuestos
+PRESUPUESTOS_IDS = {
+    "Despensa":     "https://www.notion.so/0e4bbd6e13b34972b39f14f76eb61d7d",
+    "Diversión":    "https://www.notion.so/a1d0605a28694b0baefdc43ac75a798a",
+    "Servicios":    "https://www.notion.so/0a9ef564f8944cc088e302e64ad702b6",
+    "Automovil":    "https://www.notion.so/20f5ab24f9ca4185af6a34254ab3a630",
+    "Restaurantes": "https://www.notion.so/3547eb0cbb9281e08ef5f3666e091a44",
+    "Salud":        "https://www.notion.so/3547eb0cbb9281a1ba5dfea0791b8d36",
+}
+
+# IDs reales de Meses 2026
+MESES_IDS = {
+    "ENE26": "https://www.notion.so/3487eb0cbb92800a9e6fcf9a2d712e40",
+    "FEB26": "https://www.notion.so/3487eb0cbb928062b309eecc92f4035e",
+    "MAR26": "https://www.notion.so/3487eb0cbb9280648018ffe4171ad173",
+    "ABR26": "https://www.notion.so/3447eb0cbb928007822cdf54ad63c9de",
+    "MAY26": "https://www.notion.so/3447eb0cbb928051bddee3da069f31f7",
+    "JUN26": "https://www.notion.so/3447eb0cbb9280678db1fd1faa5a98cd",
+    "JUL26": "https://www.notion.so/3447eb0cbb9280b3ac4bf0106118f576",
+    "AGO26": "https://www.notion.so/3447eb0cbb92808daae4d029edda14b7",
+    "SEP26": "https://www.notion.so/3447eb0cbb9280ae861bc6db426e8c58",
+    "OCT26": "https://www.notion.so/3447eb0cbb928093bf97e20b4540ad79",
+    "NOV26": "https://www.notion.so/3447eb0cbb928007b6f5c3fbab7eecd6",
+    "DIC26": "https://www.notion.so/3447eb0cbb928049a264d12ff9048685",
+}
+
 REGLAS_CONCEPTO = [
     (["walmart", "soriana", "costco", "bodega aurrera", "sam's"], "Super", "Despensa"),
     (["calii"], "Super", "Despensa"),
     (["zarapes"], "Restaurantes", "Despensa"),
-    (["carniceria", "carnes especiales", "barrangueno"], "Carniceria", "Despensa"),
+    (["carniceria", "carnes especiales", "barrangueno"], "Restaurantes", "Despensa"),
     (["restaurante", "taqueria", "tacos", "pizza", "sushi", "pollo bronco",
       "dq ", "dairy queen", "carl's", "mcdonalds", "burger", "kfc", "subway",
       "domino", "clip mx*rest", "payclip*rest", "la choco"], "Restaurantes", "Restaurantes"),
-    (["gasolina", "oxxo gas", "oxxogas", "bp ", "combustible"], "Gasolina", "Automovil"),
+    (["gasolina", "oxxo gas", "oxxogas", "combustible"], "Gasolina", "Automovil"),
     (["netflix", "spotify", "disney", "hbo", "apple tv", "paramount"], "Streaming", "Servicios"),
     (["izzi", "telmex", "adobe", "icloud", "capcut", "claude", "conekta*parco"], "Servicios", "Servicios"),
     (["google"], "Servicios", "Servicios"),
-    (["cfe", "luz "], "Luz", "Servicios"),
-    (["mapfre", "seguro auto", "qualitas"], "Seguro Auto", "Automovil"),
+    (["cfe", "luz "], "Servicios", "Servicios"),
+    (["mapfre", "seguro auto", "qualitas"], "Servicios", "Automovil"),
     (["farmacia", "benavides", "guadalajara", "ahorro", "similares", "doctor", "hospital"], "Servicios", "Salud"),
     (["oxxo", "bae ", "naranjitas", "rancherita", "abarrotes", "minisuper", "seven"], "Abarrotes", "Despensa"),
-    (["cine", "teatro", "concierto", "antro", "bar ", "cerveza"], "Salidas", "Diversion"),
-    (["starbucks", "cafe ", "helado", "nieve", "panaderia"], "Treat", "Diversion"),
+    (["cine", "teatro", "concierto", "antro", "bar ", "cerveza"], "Abarrotes", "Diversión"),
+    (["starbucks", "cafe ", "helado", "nieve", "panaderia"], "Treat", "Diversión"),
 ]
 
 MESES_ESP = {1:"ENE",2:"FEB",3:"MAR",4:"ABR",5:"MAY",6:"JUN",
@@ -130,41 +167,35 @@ def parsear_mensaje(texto):
         "presupuesto": presupuesto,
     }
 
-def buscar_mes_id(mes_nombre):
-    """Busca el ID de la pagina de mes en Notion"""
-    headers = {
-        "Authorization": f"Bearer {NOTION_TOKEN}",
-        "Content-Type": "application/json",
-        "Notion-Version": "2022-06-28",
-    }
-    # Buscar en la base de datos de meses
-    r = requests.post(
-        "https://api.notion.com/v1/search",
-        headers=headers,
-        json={"query": mes_nombre, "filter": {"value": "page", "property": "object"}}
-    )
-    if r.status_code == 200:
-        results = r.json().get("results", [])
-        for page in results:
-            title = page.get("properties", {}).get("Nombre", {}).get("title", [])
-            if title and title[0].get("plain_text", "") == mes_nombre:
-                return page["id"]
-    return None
-
 def guardar_en_notion(gasto):
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
         "Content-Type": "application/json",
         "Notion-Version": "2022-06-28",
     }
-    
-    # Campos básicos que sabemos funcionan
+
     properties = {
         "Concepto": {"title": [{"text": {"content": gasto["concepto"]}}]},
         "Monto":    {"number": gasto["monto"]},
         "Fecha":    {"date": {"start": gasto["fecha"]}},
         "Estado de Cuenta": {"rich_text": [{"text": {"content": gasto["tarjeta"]}}]},
+        "Pago":     {"select": {"name": gasto["tarjeta"]}},
     }
+
+    # Agregar Mes si existe el ID
+    mes_url = MESES_IDS.get(gasto["mes"])
+    if mes_url:
+        properties["Mes"] = {"relation": [{"id": mes_url.split("/")[-1]}]}
+
+    # Agregar Subcategoria si existe
+    subcat_url = SUBCATEGORIAS_IDS.get(gasto["subcategoria"])
+    if subcat_url:
+        properties["Subcategoria"] = {"relation": [{"id": subcat_url.split("/")[-1]}]}
+
+    # Agregar Presupuesto si existe
+    presu_url = PRESUPUESTOS_IDS.get(gasto["presupuesto"])
+    if presu_url:
+        properties["Presupuesto"] = {"relation": [{"id": presu_url.split("/")[-1]}]}
 
     r = requests.post(
         "https://api.notion.com/v1/pages",
@@ -181,7 +212,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Starbucks 150\n"
         "Gasolina 500 BBVA05\n"
         "Walmart 350 ayer\n"
-        "Netflix 299 HEYB25\n\n"
+        "Netflix 299 HEYB25\n"
+        "Oxxo Gas 400 15-may\n\n"
         "Tarjetas: BBVA05, BBVA12, HEYB25, BMEX04, EFVO"
     )
 
