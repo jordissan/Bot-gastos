@@ -235,14 +235,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gasto = parsear_mensaje(texto)
         guardado, respuesta = guardar_en_notion(gasto)
         if guardado:
+            from datetime import datetime
+            fecha_fmt = datetime.strptime(gasto['fecha'], '%Y-%m-%d').strftime('%d %b %Y').lower()
             await update.message.reply_text(
-                f"Gasto guardado\n\n"
-                f"{gasto['concepto']}\n"
-                f"${gasto['monto']:,.2f}\n"
-                f"{gasto['fecha']}\n"
-                f"{gasto['tarjeta']}\n"
-                f"Mes: {gasto['mes']}\n"
-                f"{gasto['subcategoria']} -> {gasto['presupuesto']}"
+                f"✅ Gasto guardado\n\n"
+                f"📌 {gasto['concepto']}\n"
+                f"💵 ${gasto['monto']:,.2f}\n"
+                f"🗓️ {fecha_fmt}\n"
+                f"💳 {gasto['tarjeta']}  •  Mes: {gasto['mes']}\n"
+                f"🏷️ {gasto['subcategoria']}  •  {gasto['presupuesto']}"
             )
         else:
             await update.message.reply_text(f"Error Notion: {respuesta[:300]}")
