@@ -11,52 +11,24 @@ TELEGRAM_TOKEN     = os.environ["TELEGRAM_TOKEN"]
 NOTION_TOKEN       = os.environ["NOTION_TOKEN"]
 NOTION_DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 
-SUBCATEGORIAS = {
-    "Super":        "bf7d4b7d",
-    "Abarrotes":    "3587eb0cbb9280c5",
-    "Carnicería":   "6a734da3d457465db419f195de13909b",
-    "Restaurantes": "1cf748f0639e41469ae2cc73aa86e10a",
-    "Gasolina":     "8382b856",
-    "Salidas":      "1d87eb0cbb9280c1",
-    "Treat":        "1d87eb0cbb9280d5",
-    "Luz":          "bf545e8169f840ed",
-    "Seguro Auto":  "cf81abcd84824b82",
-    "Streaming":    "1d87eb0cbb9280a1",
-    "Servicios":    "b4d2856c",
-}
-
-PRESUPUESTOS = {
-    "Despensa":         "0e4bbd6e",
-    "Diversión":        "a1d0605a",
-    "Servicios":        "0a9ef564",
-    "Deuda":            "91ab4385",
-    "Renta":            "eeb6e041",
-    "MSI":              "1fc7eb0cbb92802b",
-    "Automóvil":        "20f5ab24",
-    "Ezra":             "3547eb0cbb92817b",
-    "Restaurantes":     "3547eb0cbb9281e0",
-    "Salud":            "3547eb0cbb9281a1ba5dfea0791b8d36",
-    "Cuidado personal": "82916172",
-}
-
 REGLAS_CONCEPTO = [
     (["walmart", "soriana", "costco", "bodega aurrera", "sam's"], "Super", "Despensa"),
     (["calii"], "Super", "Despensa"),
     (["zarapes"], "Restaurantes", "Despensa"),
-    (["carnicería", "carniceria", "carnes especiales", "barranqueño"], "Carnicería", "Despensa"),
-    (["restaurante", "taqueria", "taquería", "tacos", "pizza", "sushi", "pollo bronco",
+    (["carniceria", "carnes especiales", "barrangueno"], "Carniceria", "Despensa"),
+    (["restaurante", "taqueria", "tacos", "pizza", "sushi", "pollo bronco",
       "dq ", "dairy queen", "carl's", "mcdonalds", "burger", "kfc", "subway",
       "domino", "clip mx*rest", "payclip*rest", "la choco"], "Restaurantes", "Restaurantes"),
-    (["gasolina", "oxxo gas", "oxxogas", "bp ", "combustible"], "Gasolina", "Automóvil"),
+    (["gasolina", "oxxo gas", "oxxogas", "bp ", "combustible"], "Gasolina", "Automovil"),
     (["netflix", "spotify", "disney", "hbo", "apple tv", "paramount"], "Streaming", "Servicios"),
     (["izzi", "telmex", "adobe", "icloud", "capcut", "claude", "conekta*parco"], "Servicios", "Servicios"),
     (["google"], "Servicios", "Servicios"),
     (["cfe", "luz "], "Luz", "Servicios"),
-    (["mapfre", "seguro auto", "qualitas"], "Seguro Auto", "Automóvil"),
+    (["mapfre", "seguro auto", "qualitas"], "Seguro Auto", "Automovil"),
     (["farmacia", "benavides", "guadalajara", "ahorro", "similares", "doctor", "hospital"], "Servicios", "Salud"),
     (["oxxo", "bae ", "naranjitas", "rancherita", "abarrotes", "minisuper", "seven"], "Abarrotes", "Despensa"),
-    (["cine", "teatro", "concierto", "antro", "bar ", "cerveza"], "Salidas", "Diversión"),
-    (["starbucks", "café", "cafe ", "helado", "nieve", "panadería"], "Treat", "Diversión"),
+    (["cine", "teatro", "concierto", "antro", "bar ", "cerveza"], "Salidas", "Diversion"),
+    (["starbucks", "cafe ", "helado", "nieve", "panaderia"], "Treat", "Diversion"),
 ]
 
 MESES_ESP = {1:"ENE",2:"FEB",3:"MAR",4:"ABR",5:"MAY",6:"JUN",
@@ -142,9 +114,9 @@ def parsear_mensaje(texto):
     monto, tokens = parsear_monto(tokens)
     concepto = " ".join(tokens).strip()
     if not concepto:
-        raise ValueError("No encontré el concepto del gasto")
+        raise ValueError("No encontre el concepto del gasto")
     if monto is None:
-        raise ValueError("No encontré el monto")
+        raise ValueError("No encontre el monto")
     tarjeta = calcular_tarjeta(fecha, tarjeta_exp)
     mes = calcular_mes(fecha, tarjeta)
     subcategoria, presupuesto = inferir_categoria(concepto)
@@ -164,8 +136,6 @@ def guardar_en_notion(gasto):
         "Content-Type": "application/json",
         "Notion-Version": "2022-06-28",
     }
-    subcat_id = SUBCATEGORIAS.get(gasto["subcategoria"])
-    presu_id  = PRESUPUESTOS.get(gasto["presupuesto"])
     properties = {
         "Concepto": {"title": [{"text": {"content": gasto["concepto"]}}]},
         "Monto":    {"number": gasto["monto"]},
@@ -173,10 +143,6 @@ def guardar_en_notion(gasto):
         "Estado de Cuenta": {"select": {"name": gasto["tarjeta"]}},
         "Mes":      {"select": {"name": gasto["mes"]}},
     }
-    if subcat_id:
-        properties["Subcategoría"] = {"relation": [{"id": subcat_id}]}
-    if presu_id:
-        properties["Presupuesto"] = {"relation": [{"id": presu_id}]}
     r = requests.post(
         "https://api.notion.com/v1/pages",
         headers=headers,
@@ -186,47 +152,43 @@ def guardar_en_notion(gasto):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 *¡Hola! Soy tu bot de gastos.*\n\n"
-        "Escríbeme así:\n`Concepto Monto`\n\n"
+        "Hola! Soy tu bot de gastos.\n\n"
+        "Escríbeme así: Concepto Monto\n\n"
         "Ejemplos:\n"
-        "`Starbucks 150`\n"
-        "`Gasolina 500 BBVA05`\n"
-        "`Walmart 350 ayer`\n"
-        "`Netflix 299 HEYB25`\n"
-        "`Oxxo Gas 400 15-may`\n\n"
-        "Tarjetas: BBVA05, BBVA12, HEYB25, BMEX04, EFVO",
-        parse_mode="Markdown"
+        "Starbucks 150\n"
+        "Gasolina 500 BBVA05\n"
+        "Walmart 350 ayer\n"
+        "Netflix 299 HEYB25\n\n"
+        "Tarjetas: BBVA05, BBVA12, HEYB25, BMEX04, EFVO"
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text.strip()
     try:
         gasto = parsear_mensaje(texto)
-        guardado, _ = guardar_en_notion(gasto)
+        guardado, respuesta = guardar_en_notion(gasto)
         if guardado:
             await update.message.reply_text(
-                f"✅ *Gasto guardado*\n\n"
-                f"📌 *{gasto['concepto']}*\n"
-                f"💰 ${gasto['monto']:,.2f}\n"
-                f"📅 {gasto['fecha']}\n"
-                f"💳 {gasto['tarjeta']}\n"
-                f"🗓️ Mes: {gasto['mes']}\n"
-                f"🏷️ {gasto['subcategoria']} → {gasto['presupuesto']}",
-                parse_mode="Markdown"
+                f"Gasto guardado\n\n"
+                f"{gasto['concepto']}\n"
+                f"${gasto['monto']:,.2f}\n"
+                f"{gasto['fecha']}\n"
+                f"{gasto['tarjeta']}\n"
+                f"Mes: {gasto['mes']}\n"
+                f"{gasto['subcategoria']} -> {gasto['presupuesto']}"
             )
         else:
-            await update.message.reply_text("⚠️ Error al guardar en Notion.")
+            await update.message.reply_text(f"Error Notion: {respuesta[:300]}")
     except ValueError as e:
-        await update.message.reply_text(f"❓ {e}\n\nEjemplo: `Starbucks 150`", parse_mode="Markdown")
+        await update.message.reply_text(f"Error: {e}\n\nEjemplo: Starbucks 150")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        await update.message.reply_text(f"Error inesperado: {e}")
 
-# ─── SERVIDOR HTTP PARA RENDER ────────────────────────────────────────────────
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot corriendo OK")
+        self.wfile.write(b"OK")
     def log_message(self, format, *args):
         pass
 
@@ -236,16 +198,12 @@ def run_health_server():
     server.serve_forever()
 
 def main():
-    # Arrancar servidor HTTP en hilo separado
     t = threading.Thread(target=run_health_server, daemon=True)
     t.start()
-    print("🌐 Servidor HTTP corriendo...")
-
-    # Arrancar bot
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🤖 Bot de gastos corriendo...")
+    print("Bot corriendo...")
     app.run_polling()
 
 if __name__ == "__main__":
