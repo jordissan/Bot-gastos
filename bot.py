@@ -3,29 +3,27 @@ import re
 import datetime
 import requests
 import threading
-import zoneinfo
+import unicodedata
+from difflib import SequenceMatcher
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from telegram import Update
-from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes, ConversationHandler
 
-TELEGRAM_TOKEN     = os.environ["TELEGRAM_TOKEN"]
-NOTION_TOKEN       = os.environ["NOTION_TOKEN"]
-NOTION_DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
+# ─── CONFIGURACIÓN ───────────────────────────────────────────────────────────
+TELEGRAM_TOKEN      = os.environ["TELEGRAM_TOKEN"]
+NOTION_TOKEN        = os.environ["NOTION_TOKEN"]
+NOTION_DATABASE_ID  = os.environ["NOTION_DATABASE_ID"]
+GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 
-# Usuarios autorizados
 USUARIOS_AUTORIZADOS = {8663298433, 8093171397}
+USUARIOS_NOMBRES = {8663298433: "Jordi", 8093171397: "Nane"}
+USUARIOS_NOTIFICAR = {8663298433: 8093171397, 8093171397: 8663298433}
 
-# Nombres y notificaciones cruzadas
-USUARIOS_NOMBRES = {
-    8663298433: "Jordi",
-    8093171397: "Nane",
-}
-USUARIOS_NOTIFICAR = {
-    8663298433: 8093171397,  # Jordi notifica a Nane
-    8093171397: 8663298433,  # Nane notifica a Jordi
-}
+MONTO_INUSUAL = 5000
+CONFIRMAR_MONTO = 1
+CONFIRMAR_CATEGORIA = 2
 
-# IDs verificados de Subcategorias
+# ─── IDs NOTION VERIFICADOS ───────────────────────────────────────────────────
 SUBCATEGORIAS_IDS = {
     "Super":           "bf7d4b7d0445441ab89b53eec946d028",
     "Abarrotes":       "3587eb0cbb9280c58919c55b065c1e19",
@@ -43,23 +41,22 @@ SUBCATEGORIAS_IDS = {
     "Otros":           "fd99fde0fa724f41a0ffeb7ee9425ec8",
 }
 
-# IDs verificados de Presupuestos
 PRESUPUESTOS_IDS = {
-    "Despensa":        "0e4bbd6e13b34972b39f14f76eb61d7d",
-    "Diversión":       "a1d0605a28694b0baefdc43ac75a798a",
-    "Servicios":       "0a9ef564f8944cc088e302e64ad702b6",
-    "Automovil":       "20f5ab24f9ca4185af6a34254ab3a630",
-    "Restaurantes":    "3547eb0cbb9281e08ef5f3666e091a44",
-    "Salud":           "3547eb0cbb9281a1ba5dfea0791b8d36",
-    "Deuda":           "91ab43856d1e4ae69f21f4203eeb3c54",
-    "MSI":             "1fc7eb0cbb92802ba323cfc943dc0f2c",
-    "Renta":           "eeb6e04137c248468f641a5044b16545",
-    "Ezra":            "3547eb0cbb92817baaa9f6681e6bbabc",
-    "Cuidado personal":"829161723b0b49bf8787663a89c7248d",
-    "Otros":           "1ea7eb0cbb9280cbbe43c1bd54396691",
+    "Despensa":         "0e4bbd6e13b34972b39f14f76eb61d7d",
+    "Diversión":        "a1d0605a28694b0baefdc43ac75a798a",
+    "Servicios":        "0a9ef564f8944cc088e302e64ad702b6",
+    "Automovil":        "20f5ab24f9ca4185af6a34254ab3a630",
+    "Restaurantes":     "3547eb0cbb9281e08ef5f3666e091a44",
+    "Salud":            "3547eb0cbb9281a1ba5dfea0791b8d36",
+    "Deuda":            "91ab43856d1e4ae69f21f4203eeb3c54",
+    "MSI":              "1fc7eb0cbb92802ba323cfc943dc0f2c",
+    "Renta":            "eeb6e04137c248468f641a5044b16545",
+    "Ezra":             "3547eb0cbb92817baaa9f6681e6bbabc",
+    "Cuidado personal": "829161723b0b49bf8787663a89c7248d",
+    "Otros":            "1ea7eb0cbb9280cbbe43c1bd54396691",
+    "Entretenimiento":  "3547eb0cbb92815d8248db75a759646b",
 }
 
-# IDs verificados de Meses 2026
 MESES_IDS = {
     "ENE26": "3487eb0cbb92800a9e6fcf9a2d712e40",
     "FEB26": "3487eb0cbb928062b309eecc92f4035e",
@@ -75,26 +72,187 @@ MESES_IDS = {
     "DIC26": "3447eb0cbb928049a264d12ff9048685",
 }
 
+# ─── REGLAS DE CATEGORÍA (enriquecidas con comportamiento real) ───────────────
 REGLAS_CONCEPTO = [
-    (["walmart", "soriana", "costco", "bodega aurrera", "sam's"], "Super", "Despensa"),
+    # SUPERMERCADOS GRANDES → Super/Despensa
+    (["walmart", "soriana", "costco", "bodega aurrera", "bae plaza", "bae ",
+      "chedraui", "la comer", "sam's", "superama"], "Super", "Despensa"),
+
+    # CALII CALII → Super/Despensa (excepción especial)
     (["calii"], "Super", "Despensa"),
-    (["zarapes"], "Restaurantes", "Despensa"),
-    (["carniceria", "carnes especiales", "barrangueno"], "Carniceria", "Despensa"),
+
+    # ZARAPES → Restaurantes/Despensa (excepción especial)
+    (["zarapes", "merpago*zarapes"], "Restaurantes", "Despensa"),
+
+    # CARNICERÍA / PESCADERÍA → Carniceria/Despensa
+    (["carniceria", "carnes especiales", "barrangueno", "el barranqueno",
+      "pescaderia", "pescaderia", "abts", "altamez", "mariscos"], "Carniceria", "Despensa"),
+
+    # RESTAURANTES → Restaurantes/Restaurantes
     (["restaurante", "taqueria", "tacos", "pizza", "sushi", "pollo bronco",
-      "dq ", "dairy queen", "carl's", "mcdonalds", "burger", "kfc", "subway",
-      "domino", "clip mx*rest", "payclip*rest", "la choco"], "Restaurantes", "Restaurantes"),
-    (["gasolina", "oxxo gas", "oxxogas", "combustible"], "Gasolina", "Automovil"),
-    (["netflix", "spotify", "disney", "hbo", "apple tv", "paramount"], "Streaming", "Servicios"),
-    (["izzi", "telmex", "adobe", "icloud", "capcut", "claude", "conekta*parco"], "Servicios", "Servicios"),
+      "dq ", "dairy queen", "carl's", "mcdonald", "burger", "kfc", "subway",
+      "domino", "clip mx*rest", "payclip*rest", "la choco", "mamma farina",
+      "dolce natura", "los elotis", "punto sur", "barbacos", "barbacoa",
+      "velma", "calena", "bistro", "bistro", "brüm", "brum", "meridiao",
+      "boucherie", "uber eats", "rappi", "la taquiza", "el fogon",
+      "applebees", "chilis", "vips", "ihop", "el torito"], "Restaurantes", "Restaurantes"),
+
+    # GASOLINA → Gasolina/Automovil
+    # CRÍTICO: Oxxo Gas ≠ Oxxo tienda
+    (["oxxo gas", "oxxogas", "oxxo gaspaseos", "gasolina", "bp ", "shell ",
+      "petro", "combustible", "hidrosina"], "Gasolina", "Automovil"),
+
+    # STREAMING → Streaming/Servicios
+    (["netflix", "spotify", "disney", "hbo", "apple tv", "paramount",
+      "crunchyroll", "max ", "prime video", "apple one"], "Streaming", "Servicios"),
+
+    # SERVICIOS DIGITALES → Servicios/Servicios
+    (["izzi", "telmex", "adobe", "icloud", "capcut", "claude", "conekta*parco",
+      "creative market", "dropbox", "notion", "figma", "canva",
+      "microsoft", "office 365", "chatgpt", "openai"], "Servicios", "Servicios"),
     (["google"], "Servicios", "Servicios"),
+
+    # AT&T → Servicios/Servicios
+    (["at&t", "att "], "Servicios", "Servicios"),
+
+    # LUZ → Luz/Servicios
     (["cfe"], "Luz", "Servicios"),
-    (["mapfre", "seguro auto", "qualitas"], "Seguro Auto", "Automovil"),
-    (["farmacia", "benavides", "guadalajara", "ahorro", "similares", "doctor", "hospital"], "Servicios", "Salud"),
-    (["oxxo", "bae ", "naranjitas", "rancherita", "abarrotes", "minisuper", "seven"], "Abarrotes", "Despensa"),
-    (["cine", "teatro", "concierto", "antro", "bar "], "Salidas", "Diversión"),
-    (["starbucks", "cafe ", "helado", "nieve", "panaderia"], "Treat", "Diversión"),
+
+    # SEGURO AUTO → Seguro Auto/Automovil
+    (["mapfre", "seguro auto", "qualitas", "gnp auto", "axa "], "Seguro Auto", "Automovil"),
+
+    # MANTENIMIENTO AUTO → Servicios/Automovil
+    (["autolavado", "refaccion", "mecanico", "llantas", "pennzoil",
+      "valvoline", "jiffy lube"], "Servicios", "Automovil"),
+
+    # SALUD → Servicios/Salud
+    (["farmacia guadalajara", "farmacia benavides", "farmacias del ahorro",
+      "farmacia similares", "farmacia san pablo", "doctor", "hospital",
+      "clinica", "medico", "consulta", "gerber", "nutrileche",
+      "pedialyte", "medicamento", "farmacia"], "Servicios", "Salud"),
+
+    # ABARROTES LOCALES → Abarrotes/Despensa
+    # CRÍTICO: Oxxo tienda ≠ Oxxo Gas
+    (["oxxo", "naranjitas", "rancherita", "super rancherita", "abarrotes",
+      "minisuper", "seven", "mercado ", "tianguis", "barreto",
+      "merpago*abarrotes", "merpago*gro", "abts pegaso",
+      "la rancherita", "abarrotes barreto"], "Abarrotes", "Despensa"),
+
+    # SALIDAS → Salidas/Diversión
+    (["parco", "conekta*parco", "estacionamiento", "cinepolis", "cinemex",
+      "cine ", "teatro", "concierto", "evento", "antro", "bar ",
+      "boliche", "entretenimiento"], "Salidas", "Diversión"),
+
+    # TREAT → Treat/Diversión
+    (["starbucks", "cafe ", "coffee", "brüm", "brum",
+      "helado", "nieve", "nieves", "paleta", "panaderia",
+      "panaderia", "pasteleria", "reposteria", "chocolates",
+      "gustito", "heladeria", "creperia"], "Treat", "Diversión"),
+
+    # AMAZON → Otros/Otros
+    (["amazon"], "Otros", "Otros"),
+
+    # UBER (transporte, no Uber Eats) → Servicios/Automovil
+    (["uber ", "didi ", "cabify"], "Servicios", "Automovil"),
 ]
 
+# ─── UTILIDADES ───────────────────────────────────────────────────────────────
+def normalizar(texto):
+    texto = texto.lower().strip()
+    texto = unicodedata.normalize('NFD', texto)
+    texto = ''.join(c for c in texto if unicodedata.category(c) != 'Mn')
+    return texto
+
+def similitud(a, b):
+    return SequenceMatcher(None, normalizar(a), normalizar(b)).ratio()
+
+def buscar_en_google_maps(concepto):
+    if not GOOGLE_MAPS_API_KEY:
+        return None
+    try:
+        url = "https://places.googleapis.com/v1/places:searchText"
+        headers = {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+            "X-Goog-FieldMask": "places.types,places.displayName"
+        }
+        payload = {
+            "textQuery": f"{concepto} Guadalajara Mexico",
+            "locationBias": {
+                "circle": {
+                    "center": {"latitude": 20.6597, "longitude": -103.3496},
+                    "radius": 50000.0
+                }
+            }
+        }
+        r = requests.post(url, headers=headers, json=payload, timeout=3)
+        if r.status_code == 200:
+            places = r.json().get("places", [])
+            if places:
+                return places[0].get("types", [])
+    except:
+        pass
+    return None
+
+MAPS_TIPO_CATEGORIA = {
+    "restaurant": ("Restaurantes", "Restaurantes"),
+    "cafe": ("Treat", "Diversión"),
+    "bakery": ("Treat", "Diversión"),
+    "supermarket": ("Super", "Despensa"),
+    "grocery_or_supermarket": ("Super", "Despensa"),
+    "convenience_store": ("Abarrotes", "Despensa"),
+    "gas_station": ("Gasolina", "Automovil"),
+    "pharmacy": ("Servicios", "Salud"),
+    "hospital": ("Servicios", "Salud"),
+    "car_wash": ("Servicios", "Automovil"),
+    "car_repair": ("Servicios", "Automovil"),
+    "movie_theater": ("Salidas", "Diversión"),
+    "night_club": ("Salidas", "Diversión"),
+    "bar": ("Salidas", "Diversión"),
+}
+
+def categoria_desde_maps(tipos):
+    if not tipos:
+        return None, None
+    for tipo in tipos:
+        for key, val in MAPS_TIPO_CATEGORIA.items():
+            if key in tipo:
+                return val
+    return None, None
+
+def inferir_categoria(concepto):
+    c = normalizar(concepto)
+
+    # 1. Coincidencia exacta en reglas
+    for palabras, subcat, presu in REGLAS_CONCEPTO:
+        for p in palabras:
+            if normalizar(p) in c:
+                return subcat, presu, True
+
+    # 2. Similitud por typos (min 4 chars, min 80% similitud)
+    mejor_score = 0
+    mejor_resultado = None
+    for palabras, subcat, presu in REGLAS_CONCEPTO:
+        for p in palabras:
+            if len(p) < 4:
+                continue
+            score = similitud(concepto, p)
+            if score > mejor_score and score > 0.80:
+                mejor_score = score
+                mejor_resultado = (subcat, presu)
+    if mejor_resultado:
+        return mejor_resultado[0], mejor_resultado[1], True
+
+    # 3. Google Maps
+    tipos_maps = buscar_en_google_maps(concepto)
+    subcat_maps, presu_maps = categoria_desde_maps(tipos_maps)
+    if subcat_maps:
+        return subcat_maps, presu_maps, True
+
+    # 4. No encontrado — pedir confirmación
+    return "Abarrotes", "Despensa", False
+
+# ─── LÓGICA DE FECHAS Y TARJETAS ─────────────────────────────────────────────
 MESES_ESP = {1:"ENE",2:"FEB",3:"MAR",4:"ABR",5:"MAY",6:"JUN",
              7:"JUL",8:"AGO",9:"SEP",10:"OCT",11:"NOV",12:"DIC"}
 MESES_TEXTO = {
@@ -127,16 +285,8 @@ def calcular_mes(fecha, tarjeta):
         anio += 1
     return f"{MESES_ESP[mes_pago]}{str(anio)[-2:]}"
 
-def inferir_categoria(concepto):
-    c = concepto.lower()
-    for palabras, subcat, presu in REGLAS_CONCEPTO:
-        for p in palabras:
-            if p in c:
-                return subcat, presu
-    return "Abarrotes", "Despensa"
-
 def parsear_fecha(tokens):
-    tz = zoneinfo.ZoneInfo("America/Mexico_City")
+    tz = __import__('zoneinfo').ZoneInfo("America/Mexico_City")
     hoy = datetime.datetime.now(tz).date()
     for i, t in enumerate(tokens):
         tl = t.lower()
@@ -179,12 +329,12 @@ def parsear_mensaje(texto):
     monto, tokens = parsear_monto(tokens)
     concepto = " ".join(tokens).strip()
     if not concepto:
-        raise ValueError("No encontre el concepto del gasto")
+        raise ValueError("No encontré el concepto del gasto")
     if monto is None:
-        raise ValueError("No encontre el monto")
+        raise ValueError("No encontré el monto")
     tarjeta = calcular_tarjeta(fecha, tarjeta_exp)
     mes = calcular_mes(fecha, tarjeta)
-    subcategoria, presupuesto = inferir_categoria(concepto)
+    subcategoria, presupuesto, seguro = inferir_categoria(concepto)
     return {
         "concepto": concepto.title(),
         "monto": monto,
@@ -193,15 +343,16 @@ def parsear_mensaje(texto):
         "mes": mes,
         "subcategoria": subcategoria,
         "presupuesto": presupuesto,
+        "seguro": seguro,
     }
 
+# ─── NOTION ───────────────────────────────────────────────────────────────────
 def guardar_en_notion(gasto):
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
         "Content-Type": "application/json",
         "Notion-Version": "2022-06-28",
     }
-
     properties = {
         "Concepto": {"title": [{"text": {"content": gasto["concepto"]}}]},
         "Monto":    {"number": gasto["monto"]},
@@ -209,19 +360,15 @@ def guardar_en_notion(gasto):
         "Estado de Cuenta": {"rich_text": [{"text": {"content": gasto["tarjeta"]}}]},
         "Pago":     {"select": {"name": gasto["tarjeta"]}},
     }
-
     mes_id = MESES_IDS.get(gasto["mes"])
     if mes_id:
         properties["Mes"] = {"relation": [{"id": mes_id}]}
-
     subcat_id = SUBCATEGORIAS_IDS.get(gasto["subcategoria"])
     if subcat_id:
         properties["Subcategoria"] = {"relation": [{"id": subcat_id}]}
-
     presu_id = PRESUPUESTOS_IDS.get(gasto["presupuesto"])
     if presu_id:
         properties["Presupuesto"] = {"relation": [{"id": presu_id}]}
-
     r = requests.post(
         "https://api.notion.com/v1/pages",
         headers=headers,
@@ -229,9 +376,38 @@ def guardar_en_notion(gasto):
     )
     return r.status_code == 200, r.text
 
+# ─── HELPERS ─────────────────────────────────────────────────────────────────
+def formato_mensaje(gasto, prefijo="✅ Gasto guardado", nombre=None):
+    from datetime import datetime as dt
+    fecha_fmt = dt.strptime(gasto['fecha'], '%Y-%m-%d').strftime('%d %b %Y').lower()
+    encabezado = f"🔔 Nuevo gasto de {nombre}" if nombre else prefijo
+    return (
+        f"{encabezado}\n\n"
+        f"📌 {gasto['concepto']}\n"
+        f"💵 ${gasto['monto']:,.2f}\n"
+        f"🗓️ {fecha_fmt}\n"
+        f"💳 {gasto['tarjeta']}  •  Mes: {gasto['mes']}\n"
+        f"🏷️ {gasto['subcategoria']}  •  {gasto['presupuesto']}"
+    )
+
+async def enviar_y_notificar(update, context, gasto):
+    user_id = update.effective_user.id
+    nombre = USUARIOS_NOMBRES.get(user_id, "Alguien")
+    await update.message.reply_text(formato_mensaje(gasto))
+    notificar_a = USUARIOS_NOTIFICAR.get(user_id)
+    if notificar_a:
+        await context.bot.send_message(
+            chat_id=notificar_a,
+            text=formato_mensaje(gasto, nombre=nombre)
+        )
+
+# ─── HANDLERS ────────────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in USUARIOS_AUTORIZADOS:
+        await update.message.reply_text("⛔ No tienes acceso.")
+        return
     await update.message.reply_text(
-        "Hola! Soy tu bot de gastos.\n\n"
+        "👋 Hola! Soy tu bot de gastos.\n\n"
         "Escríbeme así: Concepto Monto\n\n"
         "Ejemplos:\n"
         "Starbucks 150\n"
@@ -243,48 +419,114 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id not in USUARIOS_AUTORIZADOS:
-        await update.message.reply_text("⛔ No tienes acceso a este bot.")
-        return
+    if update.effective_user.id not in USUARIOS_AUTORIZADOS:
+        await update.message.reply_text("⛔ No tienes acceso.")
+        return ConversationHandler.END
+
     texto = update.message.text.strip()
     try:
         gasto = parsear_mensaje(texto)
-        guardado, respuesta = guardar_en_notion(gasto)
-        if guardado:
-            from datetime import datetime
-            fecha_fmt = datetime.strptime(gasto['fecha'], '%Y-%m-%d').strftime('%d %b %Y').lower()
-            user_id = update.message.from_user.id
-            nombre = USUARIOS_NOMBRES.get(user_id, "Alguien")
-            
-            msg = (
-                f"✅ Gasto guardado\n\n"
-                f"📌 {gasto['concepto']}\n"
-                f"💵 ${gasto['monto']:,.2f}\n"
-                f"🗓️ {fecha_fmt}\n"
-                f"💳 {gasto['tarjeta']}  •  Mes: {gasto['mes']}\n"
-                f"🏷️ {gasto['subcategoria']}  •  {gasto['presupuesto']}"
-            )
-            await update.message.reply_text(msg)
-            
-            # Notificar al otro usuario
-            notificar_a = USUARIOS_NOTIFICAR.get(user_id)
-            if notificar_a:
-                notif = (
-                    f"🔔 Nuevo gasto de {nombre}\n\n"
-                    f"📌 {gasto['concepto']}\n"
-                    f"💵 ${gasto['monto']:,.2f}\n"
-                    f"🗓️ {fecha_fmt}\n"
-                    f"💳 {gasto['tarjeta']}  •  Mes: {gasto['mes']}\n"
-                    f"🏷️ {gasto['subcategoria']}  •  {gasto['presupuesto']}"
-                )
-                await context.bot.send_message(chat_id=notificar_a, text=notif)
-        else:
-            await update.message.reply_text(f"Error Notion: {respuesta[:300]}")
-    except ValueError as e:
-        await update.message.reply_text(f"Error: {e}\n\nEjemplo: Starbucks 150")
-    except Exception as e:
-        await update.message.reply_text(f"Error inesperado: {e}")
 
+        # MEJORA 4: Detectar monto inusual
+        if gasto["monto"] >= MONTO_INUSUAL:
+            context.user_data["gasto_pendiente"] = gasto
+            await update.message.reply_text(
+                f"⚠️ El monto ${gasto['monto']:,.2f} es inusual.\n"
+                f"¿Confirmas el gasto de {gasto['concepto']}?\n\n"
+                f"Responde SI para guardar o NO para cancelar.",
+                reply_markup=ReplyKeyboardMarkup([["SI", "NO"]], one_time_keyboard=True, resize_keyboard=True)
+            )
+            return CONFIRMAR_MONTO
+
+        # MEJORA 3: Preguntar categoría si no está seguro
+        if not gasto["seguro"]:
+            context.user_data["gasto_pendiente"] = gasto
+            opciones = [
+                ["Restaurantes", "Super"],
+                ["Abarrotes", "Gasolina"],
+                ["Servicios", "Treat"],
+                ["Salidas", "Otros"]
+            ]
+            await update.message.reply_text(
+                f"❓ No reconocí bien '{gasto['concepto']}'.\n"
+                f"¿En qué categoría va?",
+                reply_markup=ReplyKeyboardMarkup(opciones, one_time_keyboard=True, resize_keyboard=True)
+            )
+            return CONFIRMAR_CATEGORIA
+
+        guardado, _ = guardar_en_notion(gasto)
+        if guardado:
+            await enviar_y_notificar(update, context, gasto)
+        else:
+            await update.message.reply_text("⚠️ Error al guardar en Notion.")
+
+    except ValueError as e:
+        await update.message.reply_text(f"❓ {e}\n\nEjemplo: Starbucks 150")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+    return ConversationHandler.END
+
+async def confirmar_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    respuesta = update.message.text.strip().upper()
+    gasto = context.user_data.get("gasto_pendiente")
+    if respuesta == "SI" and gasto:
+        guardado, _ = guardar_en_notion(gasto)
+        if guardado:
+            await enviar_y_notificar(update, context, gasto)
+        else:
+            await update.message.reply_text("⚠️ Error al guardar en Notion.", reply_markup=ReplyKeyboardRemove())
+    else:
+        await update.message.reply_text("❌ Gasto cancelado.", reply_markup=ReplyKeyboardRemove())
+    context.user_data.pop("gasto_pendiente", None)
+    return ConversationHandler.END
+
+async def confirmar_categoria(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    categoria = update.message.text.strip()
+    gasto = context.user_data.get("gasto_pendiente")
+    if not gasto:
+        await update.message.reply_text("❌ Error, intenta de nuevo.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+
+    # Mapear categoría seleccionada a presupuesto
+    CATEGORIA_PRESUPUESTO = {
+        "Restaurantes": "Restaurantes",
+        "Super": "Despensa",
+        "Abarrotes": "Despensa",
+        "Gasolina": "Automovil",
+        "Servicios": "Servicios",
+        "Treat": "Diversión",
+        "Salidas": "Diversión",
+        "Otros": "Otros",
+    }
+    gasto["subcategoria"] = categoria
+    gasto["presupuesto"] = CATEGORIA_PRESUPUESTO.get(categoria, "Otros")
+
+    guardado, _ = guardar_en_notion(gasto)
+    if guardado:
+        await update.message.reply_text(
+            formato_mensaje(gasto),
+            reply_markup=ReplyKeyboardRemove()
+        )
+        notificar_a = USUARIOS_NOTIFICAR.get(update.effective_user.id)
+        nombre = USUARIOS_NOMBRES.get(update.effective_user.id, "Alguien")
+        if notificar_a:
+            await context.bot.send_message(
+                chat_id=notificar_a,
+                text=formato_mensaje(gasto, nombre=nombre)
+            )
+    else:
+        await update.message.reply_text("⚠️ Error al guardar en Notion.", reply_markup=ReplyKeyboardRemove())
+
+    context.user_data.pop("gasto_pendiente", None)
+    return ConversationHandler.END
+
+async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("gasto_pendiente", None)
+    await update.message.reply_text("❌ Cancelado.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+# ─── SERVIDOR HTTP ────────────────────────────────────────────────────────────
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -298,13 +540,25 @@ def run_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     server.serve_forever()
 
+# ─── ARRANQUE ────────────────────────────────────────────────────────────────
 def main():
     t = threading.Thread(target=run_health_server, daemon=True)
     t.start()
+
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)],
+        states={
+            CONFIRMAR_MONTO:     [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_monto)],
+            CONFIRMAR_CATEGORIA: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_categoria)],
+        },
+        fallbacks=[CommandHandler("cancelar", cancelar)],
+    )
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("Bot corriendo...")
+    app.add_handler(conv_handler)
+    print("🤖 Bot corriendo con todas las mejoras...")
     app.run_polling()
 
 if __name__ == "__main__":
