@@ -15,6 +15,16 @@ NOTION_DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 # Usuarios autorizados
 USUARIOS_AUTORIZADOS = {8663298433, 8093171397}
 
+# Nombres y notificaciones cruzadas
+USUARIOS_NOMBRES = {
+    8663298433: "Jordi",
+    8093171397: "Nane",
+}
+USUARIOS_NOTIFICAR = {
+    8663298433: 8093171397,  # Jordi notifica a Nane
+    8093171397: 8663298433,  # Nane notifica a Jordi
+}
+
 # IDs verificados de Subcategorias
 SUBCATEGORIAS_IDS = {
     "Super":           "bf7d4b7d0445441ab89b53eec946d028",
@@ -243,7 +253,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if guardado:
             from datetime import datetime
             fecha_fmt = datetime.strptime(gasto['fecha'], '%Y-%m-%d').strftime('%d %b %Y').lower()
-            await update.message.reply_text(
+            user_id = update.message.from_user.id
+            nombre = USUARIOS_NOMBRES.get(user_id, "Alguien")
+            
+            msg = (
                 f"✅ Gasto guardado\n\n"
                 f"📌 {gasto['concepto']}\n"
                 f"💵 ${gasto['monto']:,.2f}\n"
@@ -251,6 +264,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"💳 {gasto['tarjeta']}  •  Mes: {gasto['mes']}\n"
                 f"🏷️ {gasto['subcategoria']}  •  {gasto['presupuesto']}"
             )
+            await update.message.reply_text(msg)
+            
+            # Notificar al otro usuario
+            notificar_a = USUARIOS_NOTIFICAR.get(user_id)
+            if notificar_a:
+                notif = (
+                    f"🔔 Nuevo gasto de {nombre}\n\n"
+                    f"📌 {gasto['concepto']}\n"
+                    f"💵 ${gasto['monto']:,.2f}\n"
+                    f"🗓️ {fecha_fmt}\n"
+                    f"💳 {gasto['tarjeta']}  •  Mes: {gasto['mes']}\n"
+                    f"🏷️ {gasto['subcategoria']}  •  {gasto['presupuesto']}"
+                )
+                await context.bot.send_message(chat_id=notificar_a, text=notif)
         else:
             await update.message.reply_text(f"Error Notion: {respuesta[:300]}")
     except ValueError as e:
