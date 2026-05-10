@@ -12,6 +12,9 @@ TELEGRAM_TOKEN     = os.environ["TELEGRAM_TOKEN"]
 NOTION_TOKEN       = os.environ["NOTION_TOKEN"]
 NOTION_DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 
+# Usuarios autorizados
+USUARIOS_AUTORIZADOS = {8663298433, 8093171397}
+
 # IDs verificados de Subcategorias
 SUBCATEGORIAS_IDS = {
     "Super":           "bf7d4b7d0445441ab89b53eec946d028",
@@ -230,6 +233,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id not in USUARIOS_AUTORIZADOS:
+        await update.message.reply_text("⛔ No tienes acceso a este bot.")
+        return
     texto = update.message.text.strip()
     try:
         gasto = parsear_mensaje(texto)
