@@ -530,13 +530,17 @@ async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", "2")
         self.end_headers()
         self.wfile.write(b"OK")
+        self.wfile.flush()
     def log_message(self, format, *args):
         pass
 
 def run_health_server():
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
+    print(f"Servidor HTTP en puerto {port}")
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     server.serve_forever()
 
