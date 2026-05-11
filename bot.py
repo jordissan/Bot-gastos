@@ -6,13 +6,14 @@ import threading
 import unicodedata
 from difflib import SequenceMatcher
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes, ConversationHandler
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes, ConversationHandler
 
-# ─── CONFIGURACIÓN ───────────────────────────────────────────────────────────
+# CONFIGURACION
 TELEGRAM_TOKEN      = os.environ["TELEGRAM_TOKEN"]
 NOTION_TOKEN        = os.environ["NOTION_TOKEN"]
 NOTION_DATABASE_ID  = os.environ["NOTION_DATABASE_ID"]
+NOTION_APRENDIZAJE_ID = "3ba6f37c717948a1a6aeac3b384ff33c"
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 
 USUARIOS_AUTORIZADOS = {8663298433, 8093171397}
@@ -22,8 +23,11 @@ USUARIOS_NOTIFICAR = {8663298433: 8093171397, 8093171397: 8663298433}
 MONTO_INUSUAL = 5000
 CONFIRMAR_MONTO = 1
 CONFIRMAR_CATEGORIA = 2
+CORREGIR_ELEGIR = 3
+CORREGIR_CATEGORIA = 4
+CORREGIR_PRESUPUESTO = 5
 
-# ─── IDs NOTION VERIFICADOS ───────────────────────────────────────────────────
+# IDs NOTION
 SUBCATEGORIAS_IDS = {
     "Super":           "bf7d4b7d0445441ab89b53eec946d028",
     "Abarrotes":       "3587eb0cbb9280c58919c55b065c1e19",
@@ -54,7 +58,6 @@ PRESUPUESTOS_IDS = {
     "Ezra":             "3547eb0cbb92817baaa9f6681e6bbabc",
     "Cuidado personal": "829161723b0b49bf8787663a89c7248d",
     "Otros":            "1ea7eb0cbb9280cbbe43c1bd54396691",
-    "Entretenimiento":  "3547eb0cbb92815d8248db75a759646b",
 }
 
 MESES_IDS = {
@@ -72,91 +75,59 @@ MESES_IDS = {
     "DIC26": "3447eb0cbb928049a264d12ff9048685",
 }
 
-# ─── REGLAS DE CATEGORÍA (enriquecidas con comportamiento real) ───────────────
 REGLAS_CONCEPTO = [
-    # SUPERMERCADOS GRANDES → Super/Despensa
     (["walmart", "soriana", "costco", "bodega aurrera", "bae plaza", "bae ",
       "chedraui", "la comer", "sam's", "superama"], "Super", "Despensa"),
-
-    # CALII CALII → Super/Despensa (excepción especial)
     (["calii"], "Super", "Despensa"),
-
-    # ZARAPES → Restaurantes/Despensa (excepción especial)
     (["zarapes", "merpago*zarapes"], "Restaurantes", "Despensa"),
-
-    # CARNICERÍA / PESCADERÍA → Carniceria/Despensa
     (["carniceria", "carnes especiales", "barrangueno", "el barranqueno",
-      "pescaderia", "pescaderia", "abts", "altamez", "mariscos"], "Carniceria", "Despensa"),
-
-    # RESTAURANTES → Restaurantes/Restaurantes
+      "pescaderia", "abts", "altamez", "mariscos"], "Carniceria", "Despensa"),
     (["restaurante", "taqueria", "tacos", "pizza", "sushi", "pollo bronco",
       "dq ", "dairy queen", "carl's", "mcdonald", "burger", "kfc", "subway",
       "domino", "clip mx*rest", "payclip*rest", "la choco", "mamma farina",
       "dolce natura", "los elotis", "punto sur", "barbacos", "barbacoa",
-      "velma", "calena", "bistro", "bistro", "brüm", "brum", "meridiao",
+      "velma", "calena", "bistro", "brüm", "brum", "meridiao",
       "boucherie", "uber eats", "rappi", "la taquiza", "el fogon",
       "applebees", "chilis", "vips", "ihop", "el torito"], "Restaurantes", "Restaurantes"),
-
-    # GASOLINA → Gasolina/Automovil
-    # CRÍTICO: Oxxo Gas ≠ Oxxo tienda
     (["oxxo gas", "oxxogas", "oxxo gaspaseos", "gasolina", "bp ", "shell ",
       "petro", "combustible", "hidrosina"], "Gasolina", "Automovil"),
-
-    # STREAMING → Streaming/Servicios
     (["netflix", "spotify", "disney", "hbo", "apple tv", "paramount",
       "crunchyroll", "max ", "prime video", "apple one"], "Streaming", "Servicios"),
-
-    # SERVICIOS DIGITALES → Servicios/Servicios
     (["izzi", "telmex", "adobe", "icloud", "capcut", "claude", "conekta*parco",
-      "creative market", "dropbox", "notion", "figma", "canva",
-      "microsoft", "office 365", "chatgpt", "openai"], "Servicios", "Servicios"),
+      "creative market", "dropbox", "figma", "canva", "microsoft", "chatgpt"], "Servicios", "Servicios"),
     (["google"], "Servicios", "Servicios"),
-
-    # AT&T → Servicios/Servicios
     (["at&t", "att "], "Servicios", "Servicios"),
-
-    # LUZ → Luz/Servicios
     (["cfe"], "Luz", "Servicios"),
-
-    # SEGURO AUTO → Seguro Auto/Automovil
     (["mapfre", "seguro auto", "qualitas", "gnp auto", "axa "], "Seguro Auto", "Automovil"),
-
-    # MANTENIMIENTO AUTO → Servicios/Automovil
-    (["autolavado", "refaccion", "mecanico", "llantas", "pennzoil",
-      "valvoline", "jiffy lube"], "Servicios", "Automovil"),
-
-    # SALUD → Servicios/Salud
+    (["autolavado", "refaccion", "mecanico", "llantas", "pennzoil"], "Servicios", "Automovil"),
     (["farmacia guadalajara", "farmacia benavides", "farmacias del ahorro",
-      "farmacia similares", "farmacia san pablo", "doctor", "hospital",
-      "clinica", "medico", "consulta", "gerber", "nutrileche",
-      "pedialyte", "medicamento", "farmacia"], "Servicios", "Salud"),
-
-    # ABARROTES LOCALES → Abarrotes/Despensa
-    # CRÍTICO: Oxxo tienda ≠ Oxxo Gas
+      "farmacia similares", "doctor", "hospital", "clinica", "medico",
+      "consulta", "gerber", "nutrileche", "pedialyte", "farmacia"], "Servicios", "Salud"),
     (["oxxo", "naranjitas", "rancherita", "super rancherita", "abarrotes",
       "minisuper", "seven", "mercado ", "tianguis", "barreto",
-      "merpago*abarrotes", "merpago*gro", "abts pegaso",
-      "la rancherita", "abarrotes barreto"], "Abarrotes", "Despensa"),
-
-    # SALIDAS → Salidas/Diversión
+      "merpago*abarrotes", "merpago*gro"], "Abarrotes", "Despensa"),
     (["parco", "conekta*parco", "estacionamiento", "cinepolis", "cinemex",
-      "cine ", "teatro", "concierto", "evento", "antro", "bar ",
-      "boliche", "entretenimiento"], "Salidas", "Diversión"),
-
-    # TREAT → Treat/Diversión
+      "cine ", "teatro", "concierto", "evento", "antro", "bar "], "Salidas", "Diversión"),
     (["starbucks", "cafe ", "coffee", "brüm", "brum",
       "helado", "nieve", "nieves", "paleta", "panaderia",
-      "panaderia", "pasteleria", "reposteria", "chocolates",
-      "gustito", "heladeria", "creperia"], "Treat", "Diversión"),
-
-    # AMAZON → Otros/Otros
+      "pasteleria", "reposteria", "chocolates"], "Treat", "Diversión"),
     (["amazon"], "Otros", "Otros"),
-
-    # UBER (transporte, no Uber Eats) → Servicios/Automovil
     (["uber ", "didi ", "cabify"], "Servicios", "Automovil"),
 ]
 
-# ─── UTILIDADES ───────────────────────────────────────────────────────────────
+MESES_ESP = {1:"ENE",2:"FEB",3:"MAR",4:"ABR",5:"MAY",6:"JUN",
+             7:"JUL",8:"AGO",9:"SEP",10:"OCT",11:"NOV",12:"DIC"}
+MESES_TEXTO = {
+    "ene":1,"feb":2,"mar":3,"abr":4,"may":5,"jun":6,
+    "jul":7,"ago":8,"sep":9,"oct":10,"nov":11,"dic":12,
+    "enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,
+    "julio":7,"agosto":8,"septiembre":9,"octubre":10,"noviembre":11,"diciembre":12
+}
+
+# HISTORIAL DE GASTOS RECIENTES (en memoria)
+historial_gastos = []  # Lista de dicts con {concepto, monto, fecha, tarjeta, mes, subcategoria, presupuesto, notion_id}
+
+# UTILIDADES
 def normalizar(texto):
     texto = texto.lower().strip()
     texto = unicodedata.normalize('NFD', texto)
@@ -166,6 +137,70 @@ def normalizar(texto):
 def similitud(a, b):
     return SequenceMatcher(None, normalizar(a), normalizar(b)).ratio()
 
+def buscar_en_aprendizaje(concepto):
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+    r = requests.post(
+        f"https://api.notion.com/v1/databases/{NOTION_APRENDIZAJE_ID}/query",
+        headers=headers,
+        json={"filter": {"property": "Concepto", "title": {"equals": concepto.lower()}}}
+    )
+    if r.status_code == 200:
+        results = r.json().get("results", [])
+        if results:
+            props = results[0]["properties"]
+            subcat = props.get("Subcategoria", {}).get("rich_text", [])
+            presu = props.get("Presupuesto", {}).get("rich_text", [])
+            if subcat and presu:
+                return subcat[0]["text"]["content"], presu[0]["text"]["content"]
+    return None, None
+
+def guardar_en_aprendizaje(concepto, subcategoria, presupuesto):
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+    # Verificar si ya existe
+    r = requests.post(
+        f"https://api.notion.com/v1/databases/{NOTION_APRENDIZAJE_ID}/query",
+        headers=headers,
+        json={"filter": {"property": "Concepto", "title": {"equals": concepto.lower()}}}
+    )
+    if r.status_code == 200:
+        results = r.json().get("results", [])
+        if results:
+            # Actualizar
+            page_id = results[0]["id"]
+            usos_actual = results[0]["properties"].get("Usos", {}).get("number", 0) or 0
+            requests.patch(
+                f"https://api.notion.com/v1/pages/{page_id}",
+                headers=headers,
+                json={"properties": {
+                    "Subcategoria": {"rich_text": [{"text": {"content": subcategoria}}]},
+                    "Presupuesto": {"rich_text": [{"text": {"content": presupuesto}}]},
+                    "Usos": {"number": usos_actual + 1}
+                }}
+            )
+            return
+    # Crear nuevo
+    requests.post(
+        "https://api.notion.com/v1/pages",
+        headers=headers,
+        json={
+            "parent": {"database_id": NOTION_APRENDIZAJE_ID},
+            "properties": {
+                "Concepto": {"title": [{"text": {"content": concepto.lower()}}]},
+                "Subcategoria": {"rich_text": [{"text": {"content": subcategoria}}]},
+                "Presupuesto": {"rich_text": [{"text": {"content": presupuesto}}]},
+                "Usos": {"number": 1}
+            }
+        }
+    )
+
 def buscar_en_google_maps(concepto):
     if not GOOGLE_MAPS_API_KEY:
         return None
@@ -174,7 +209,7 @@ def buscar_en_google_maps(concepto):
         headers = {
             "Content-Type": "application/json",
             "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
-            "X-Goog-FieldMask": "places.types,places.displayName"
+            "X-Goog-FieldMask": "places.types"
         }
         payload = {
             "textQuery": f"{concepto} Guadalajara Mexico",
@@ -222,14 +257,16 @@ def categoria_desde_maps(tipos):
 
 def inferir_categoria(concepto):
     c = normalizar(concepto)
-
-    # 1. Coincidencia exacta en reglas
+    # 1. Reglas hardcodeadas
     for palabras, subcat, presu in REGLAS_CONCEPTO:
         for p in palabras:
             if normalizar(p) in c:
                 return subcat, presu, True
-
-    # 2. Similitud por typos (min 4 chars, min 80% similitud)
+    # 2. Aprendizaje en Notion
+    subcat_ap, presu_ap = buscar_en_aprendizaje(concepto)
+    if subcat_ap and presu_ap:
+        return subcat_ap, presu_ap, True
+    # 3. Similitud typos
     mejor_score = 0
     mejor_resultado = None
     for palabras, subcat, presu in REGLAS_CONCEPTO:
@@ -242,25 +279,13 @@ def inferir_categoria(concepto):
                 mejor_resultado = (subcat, presu)
     if mejor_resultado:
         return mejor_resultado[0], mejor_resultado[1], True
-
-    # 3. Google Maps
+    # 4. Google Maps
     tipos_maps = buscar_en_google_maps(concepto)
     subcat_maps, presu_maps = categoria_desde_maps(tipos_maps)
     if subcat_maps:
         return subcat_maps, presu_maps, True
-
-    # 4. No encontrado — pedir confirmación
+    # 5. No encontrado
     return "Abarrotes", "Despensa", False
-
-# ─── LÓGICA DE FECHAS Y TARJETAS ─────────────────────────────────────────────
-MESES_ESP = {1:"ENE",2:"FEB",3:"MAR",4:"ABR",5:"MAY",6:"JUN",
-             7:"JUL",8:"AGO",9:"SEP",10:"OCT",11:"NOV",12:"DIC"}
-MESES_TEXTO = {
-    "ene":1,"feb":2,"mar":3,"abr":4,"may":5,"jun":6,
-    "jul":7,"ago":8,"sep":9,"oct":10,"nov":11,"dic":12,
-    "enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,
-    "julio":7,"agosto":8,"septiembre":9,"octubre":10,"noviembre":11,"diciembre":12
-}
 
 def calcular_tarjeta(fecha, tarjeta_explicita=None):
     if tarjeta_explicita:
@@ -286,7 +311,8 @@ def calcular_mes(fecha, tarjeta):
     return f"{MESES_ESP[mes_pago]}{str(anio)[-2:]}"
 
 def parsear_fecha(tokens):
-    tz = __import__('zoneinfo').ZoneInfo("America/Mexico_City")
+    import zoneinfo
+    tz = zoneinfo.ZoneInfo("America/Mexico_City")
     hoy = datetime.datetime.now(tz).date()
     for i, t in enumerate(tokens):
         tl = t.lower()
@@ -329,9 +355,9 @@ def parsear_mensaje(texto):
     monto, tokens = parsear_monto(tokens)
     concepto = " ".join(tokens).strip()
     if not concepto:
-        raise ValueError("No encontré el concepto del gasto")
+        raise ValueError("No encontre el concepto del gasto")
     if monto is None:
-        raise ValueError("No encontré el monto")
+        raise ValueError("No encontre el monto")
     tarjeta = calcular_tarjeta(fecha, tarjeta_exp)
     mes = calcular_mes(fecha, tarjeta)
     subcategoria, presupuesto, seguro = inferir_categoria(concepto)
@@ -346,7 +372,6 @@ def parsear_mensaje(texto):
         "seguro": seguro,
     }
 
-# ─── NOTION ───────────────────────────────────────────────────────────────────
 def guardar_en_notion(gasto):
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -374,15 +399,35 @@ def guardar_en_notion(gasto):
         headers=headers,
         json={"parent": {"database_id": NOTION_DATABASE_ID}, "properties": properties}
     )
-    return r.status_code == 200, r.text
+    return r.status_code == 200, r.json().get("id", ""), r.text
 
-# ─── HELPERS ─────────────────────────────────────────────────────────────────
-def formato_mensaje(gasto, prefijo="✅ Gasto guardado", nombre=None):
+def actualizar_en_notion(page_id, subcategoria, presupuesto):
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+    properties = {}
+    subcat_id = SUBCATEGORIAS_IDS.get(subcategoria)
+    if subcat_id:
+        properties["Subcategoria"] = {"relation": [{"id": subcat_id}]}
+    presu_id = PRESUPUESTOS_IDS.get(presupuesto)
+    if presu_id:
+        properties["Presupuesto"] = {"relation": [{"id": presu_id}]}
+    r = requests.patch(
+        f"https://api.notion.com/v1/pages/{page_id}",
+        headers=headers,
+        json={"properties": properties}
+    )
+    return r.status_code == 200
+
+def formato_mensaje(gasto, prefijo="Gasto guardado", nombre=None):
     from datetime import datetime as dt
     fecha_fmt = dt.strptime(gasto['fecha'], '%Y-%m-%d').strftime('%d %b %Y').lower()
-    encabezado = f"🔔 Nuevo gasto de {nombre}" if nombre else prefijo
+    encabezado = f"Nuevo gasto de {nombre}" if nombre else prefijo
+    emoji = "checkmark" if not nombre else "bell"
     return (
-        f"{encabezado}\n\n"
+        f"{'Nuevo gasto de ' + nombre if nombre else chr(9989) + ' Gasto guardado'}\n\n"
         f"📌 {gasto['concepto']}\n"
         f"💵 ${gasto['monto']:,.2f}\n"
         f"🗓️ {fecha_fmt}\n"
@@ -390,55 +435,210 @@ def formato_mensaje(gasto, prefijo="✅ Gasto guardado", nombre=None):
         f"🏷️ {gasto['subcategoria']}  •  {gasto['presupuesto']}"
     )
 
-async def enviar_y_notificar(update, context, gasto):
+async def enviar_y_notificar(update, context, gasto, notion_id):
+    global historial_gastos
     user_id = update.effective_user.id
     nombre = USUARIOS_NOMBRES.get(user_id, "Alguien")
-    await update.message.reply_text(formato_mensaje(gasto))
+
+    # Guardar en historial
+    gasto_con_id = {**gasto, "notion_id": notion_id}
+    historial_gastos.insert(0, gasto_con_id)
+    historial_gastos = historial_gastos[:10]  # Guardar solo los 10 últimos
+
+    await update.message.reply_text(formato_mensaje(gasto), reply_markup=ReplyKeyboardRemove())
+
+    # Notificar con botón de corregir
     notificar_a = USUARIOS_NOTIFICAR.get(user_id)
     if notificar_a:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✏️ Corregir categoría", callback_data=f"corregir:{notion_id}:{gasto['concepto']}")
+        ]])
         await context.bot.send_message(
             chat_id=notificar_a,
-            text=formato_mensaje(gasto, nombre=nombre)
+            text=f"🔔 Nuevo gasto de {nombre}\n\n"
+                 f"📌 {gasto['concepto']}\n"
+                 f"💵 ${gasto['monto']:,.2f}\n"
+                 f"🗓️ {gasto['fecha']}\n"
+                 f"💳 {gasto['tarjeta']}  •  Mes: {gasto['mes']}\n"
+                 f"🏷️ {gasto['subcategoria']}  •  {gasto['presupuesto']}",
+            reply_markup=keyboard
         )
 
-# ─── HANDLERS ────────────────────────────────────────────────────────────────
+# COMANDO /corregir
+async def cmd_corregir(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in USUARIOS_AUTORIZADOS:
+        return ConversationHandler.END
+
+    if not historial_gastos:
+        await update.message.reply_text("No hay gastos recientes para corregir.")
+        return ConversationHandler.END
+
+    ultimos = historial_gastos[:3]
+    texto = "Elige el gasto a corregir:\n\n"
+    opciones = []
+    for i, g in enumerate(ultimos):
+        texto += f"{i+1}. {g['concepto']} ${g['monto']:,.2f} ({g['subcategoria']})\n"
+        opciones.append([f"{i+1}. {g['concepto']} ${g['monto']:,.2f}"])
+
+    await update.message.reply_text(
+        texto,
+        reply_markup=ReplyKeyboardMarkup(opciones, one_time_keyboard=True, resize_keyboard=True)
+    )
+    return CORREGIR_ELEGIR
+
+async def corregir_elegir(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    texto = update.message.text.strip()
+    try:
+        idx = int(texto[0]) - 1
+        gasto = historial_gastos[idx]
+        context.user_data["gasto_corregir"] = gasto
+    except:
+        await update.message.reply_text("Opcion no valida.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+
+    opciones = [
+        ["Restaurantes", "Super"],
+        ["Abarrotes", "Gasolina"],
+        ["Servicios", "Treat"],
+        ["Salidas", "Streaming"],
+        ["Luz", "Seguro Auto"],
+        ["Otros", "Carniceria"],
+    ]
+    await update.message.reply_text(
+        f"Corriendo: {gasto['concepto']}\n\nElige la nueva subcategoria:",
+        reply_markup=ReplyKeyboardMarkup(opciones, one_time_keyboard=True, resize_keyboard=True)
+    )
+    return CORREGIR_CATEGORIA
+
+async def corregir_categoria(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    nueva_sub = update.message.text.strip()
+    context.user_data["nueva_subcategoria"] = nueva_sub
+
+    CATEGORIA_PRESUPUESTO = {
+        "Restaurantes": ["Restaurantes", "Despensa"],
+        "Super": ["Despensa"],
+        "Abarrotes": ["Despensa"],
+        "Gasolina": ["Automovil"],
+        "Servicios": ["Servicios", "Automovil", "Salud"],
+        "Treat": ["Diversión"],
+        "Salidas": ["Diversión"],
+        "Streaming": ["Servicios"],
+        "Luz": ["Servicios"],
+        "Seguro Auto": ["Automovil"],
+        "Otros": ["Otros"],
+        "Carniceria": ["Despensa"],
+    }
+    presupuestos = CATEGORIA_PRESUPUESTO.get(nueva_sub, ["Otros"])
+    if len(presupuestos) == 1:
+        context.user_data["nuevo_presupuesto"] = presupuestos[0]
+        return await aplicar_correccion(update, context)
+
+    await update.message.reply_text(
+        f"Elige el presupuesto:",
+        reply_markup=ReplyKeyboardMarkup([[p] for p in presupuestos], one_time_keyboard=True, resize_keyboard=True)
+    )
+    return CORREGIR_PRESUPUESTO
+
+async def corregir_presupuesto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["nuevo_presupuesto"] = update.message.text.strip()
+    return await aplicar_correccion(update, context)
+
+async def aplicar_correccion(update, context):
+    gasto = context.user_data.get("gasto_corregir")
+    nueva_sub = context.user_data.get("nueva_subcategoria")
+    nuevo_presu = context.user_data.get("nuevo_presupuesto")
+
+    if not gasto or not nueva_sub or not nuevo_presu:
+        await update.message.reply_text("Error al corregir.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+
+    exito = actualizar_en_notion(gasto["notion_id"], nueva_sub, nuevo_presu)
+
+    if exito:
+        # Actualizar historial en memoria
+        for g in historial_gastos:
+            if g["notion_id"] == gasto["notion_id"]:
+                g["subcategoria"] = nueva_sub
+                g["presupuesto"] = nuevo_presu
+
+        # Guardar aprendizaje
+        guardar_en_aprendizaje(gasto["concepto"].lower(), nueva_sub, nuevo_presu)
+
+        await update.message.reply_text(
+            f"Corregido en Notion y aprendizaje guardado\n\n"
+            f"📌 {gasto['concepto']}\n"
+            f"🏷️ {nueva_sub}  •  {nuevo_presu}",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    else:
+        await update.message.reply_text("Error al actualizar Notion.", reply_markup=ReplyKeyboardRemove())
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+# CALLBACK BOTON INLINE (desde notificacion de Nane)
+async def callback_corregir(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data.split(":", 2)
+    notion_id = data[1]
+    concepto = data[2] if len(data) > 2 else "Gasto"
+
+    context.user_data["gasto_corregir"] = {
+        "notion_id": notion_id,
+        "concepto": concepto
+    }
+
+    opciones = [
+        ["Restaurantes", "Super"],
+        ["Abarrotes", "Gasolina"],
+        ["Servicios", "Treat"],
+        ["Salidas", "Streaming"],
+        ["Luz", "Seguro Auto"],
+        ["Otros", "Carniceria"],
+    ]
+    await query.message.reply_text(
+        f"Corriendo: {concepto}\n\nElige la nueva subcategoria:",
+        reply_markup=ReplyKeyboardMarkup(opciones, one_time_keyboard=True, resize_keyboard=True)
+    )
+    return CORREGIR_CATEGORIA
+
+# HANDLERS PRINCIPALES
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
-        await update.message.reply_text("⛔ No tienes acceso.")
+        await update.message.reply_text("No tienes acceso.")
         return
     await update.message.reply_text(
-        "👋 Hola! Soy tu bot de gastos.\n\n"
-        "Escríbeme así: Concepto Monto\n\n"
+        "Hola! Soy tu bot de gastos.\n\n"
+        "Escríbeme: Concepto Monto\n\n"
+        "Comandos:\n"
+        "/corregir - Corregir categoria de un gasto reciente\n\n"
         "Ejemplos:\n"
         "Starbucks 150\n"
         "Gasolina 500 BBVA05\n"
         "Walmart 350 ayer\n"
-        "Netflix 299 HEYB25\n"
-        "Oxxo Gas 400 15-may\n\n"
+        "Netflix 299 HEYB25\n\n"
         "Tarjetas: BBVA05, BBVA12, HEYB25, BMEX04, EFVO"
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
-        await update.message.reply_text("⛔ No tienes acceso.")
         return ConversationHandler.END
 
     texto = update.message.text.strip()
     try:
         gasto = parsear_mensaje(texto)
 
-        # MEJORA 4: Detectar monto inusual
         if gasto["monto"] >= MONTO_INUSUAL:
             context.user_data["gasto_pendiente"] = gasto
             await update.message.reply_text(
-                f"⚠️ El monto ${gasto['monto']:,.2f} es inusual.\n"
-                f"¿Confirmas el gasto de {gasto['concepto']}?\n\n"
-                f"Responde SI para guardar o NO para cancelar.",
+                f"El monto ${gasto['monto']:,.2f} es inusual.\n"
+                f"Confirmas el gasto de {gasto['concepto']}?",
                 reply_markup=ReplyKeyboardMarkup([["SI", "NO"]], one_time_keyboard=True, resize_keyboard=True)
             )
             return CONFIRMAR_MONTO
 
-        # MEJORA 3: Preguntar categoría si no está seguro
         if not gasto["seguro"]:
             context.user_data["gasto_pendiente"] = gasto
             opciones = [
@@ -448,22 +648,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ["Salidas", "Otros"]
             ]
             await update.message.reply_text(
-                f"❓ No reconocí bien '{gasto['concepto']}'.\n"
-                f"¿En qué categoría va?",
+                f"No reconoci bien '{gasto['concepto']}'.\nEn que categoria va?",
                 reply_markup=ReplyKeyboardMarkup(opciones, one_time_keyboard=True, resize_keyboard=True)
             )
             return CONFIRMAR_CATEGORIA
 
-        guardado, _ = guardar_en_notion(gasto)
+        guardado, notion_id, _ = guardar_en_notion(gasto)
         if guardado:
-            await enviar_y_notificar(update, context, gasto)
+            await enviar_y_notificar(update, context, gasto, notion_id)
         else:
-            await update.message.reply_text("⚠️ Error al guardar en Notion.")
+            await update.message.reply_text("Error al guardar en Notion.")
 
     except ValueError as e:
-        await update.message.reply_text(f"❓ {e}\n\nEjemplo: Starbucks 150")
+        await update.message.reply_text(f"{e}\n\nEjemplo: Starbucks 150")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        await update.message.reply_text(f"Error: {e}")
 
     return ConversationHandler.END
 
@@ -471,13 +670,13 @@ async def confirmar_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     respuesta = update.message.text.strip().upper()
     gasto = context.user_data.get("gasto_pendiente")
     if respuesta == "SI" and gasto:
-        guardado, _ = guardar_en_notion(gasto)
+        guardado, notion_id, _ = guardar_en_notion(gasto)
         if guardado:
-            await enviar_y_notificar(update, context, gasto)
+            await enviar_y_notificar(update, context, gasto, notion_id)
         else:
-            await update.message.reply_text("⚠️ Error al guardar en Notion.", reply_markup=ReplyKeyboardRemove())
+            await update.message.reply_text("Error al guardar.", reply_markup=ReplyKeyboardRemove())
     else:
-        await update.message.reply_text("❌ Gasto cancelado.", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("Gasto cancelado.", reply_markup=ReplyKeyboardRemove())
     context.user_data.pop("gasto_pendiente", None)
     return ConversationHandler.END
 
@@ -485,48 +684,36 @@ async def confirmar_categoria(update: Update, context: ContextTypes.DEFAULT_TYPE
     categoria = update.message.text.strip()
     gasto = context.user_data.get("gasto_pendiente")
     if not gasto:
-        await update.message.reply_text("❌ Error, intenta de nuevo.", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("Error.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
 
-    # Mapear categoría seleccionada a presupuesto
     CATEGORIA_PRESUPUESTO = {
-        "Restaurantes": "Restaurantes",
-        "Super": "Despensa",
-        "Abarrotes": "Despensa",
-        "Gasolina": "Automovil",
-        "Servicios": "Servicios",
-        "Treat": "Diversión",
-        "Salidas": "Diversión",
-        "Otros": "Otros",
+        "Restaurantes": "Restaurantes", "Super": "Despensa",
+        "Abarrotes": "Despensa", "Gasolina": "Automovil",
+        "Servicios": "Servicios", "Treat": "Diversión",
+        "Salidas": "Diversión", "Otros": "Otros",
     }
     gasto["subcategoria"] = categoria
     gasto["presupuesto"] = CATEGORIA_PRESUPUESTO.get(categoria, "Otros")
 
-    guardado, _ = guardar_en_notion(gasto)
+    # Guardar aprendizaje
+    guardar_en_aprendizaje(gasto["concepto"].lower(), categoria, gasto["presupuesto"])
+
+    guardado, notion_id, _ = guardar_en_notion(gasto)
     if guardado:
-        await update.message.reply_text(
-            formato_mensaje(gasto),
-            reply_markup=ReplyKeyboardRemove()
-        )
-        notificar_a = USUARIOS_NOTIFICAR.get(update.effective_user.id)
-        nombre = USUARIOS_NOMBRES.get(update.effective_user.id, "Alguien")
-        if notificar_a:
-            await context.bot.send_message(
-                chat_id=notificar_a,
-                text=formato_mensaje(gasto, nombre=nombre)
-            )
+        await enviar_y_notificar(update, context, gasto, notion_id)
     else:
-        await update.message.reply_text("⚠️ Error al guardar en Notion.", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("Error al guardar.", reply_markup=ReplyKeyboardRemove())
 
     context.user_data.pop("gasto_pendiente", None)
     return ConversationHandler.END
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.pop("gasto_pendiente", None)
-    await update.message.reply_text("❌ Cancelado.", reply_markup=ReplyKeyboardRemove())
+    context.user_data.clear()
+    await update.message.reply_text("Cancelado.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# ─── SERVIDOR HTTP ────────────────────────────────────────────────────────────
+# SERVIDOR HTTP
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -544,7 +731,6 @@ def run_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     server.serve_forever()
 
-# ─── ARRANQUE ────────────────────────────────────────────────────────────────
 def main():
     t = threading.Thread(target=run_health_server, daemon=True)
     t.start()
@@ -552,10 +738,17 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).job_queue(None).build()
 
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)],
+        entry_points=[
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message),
+            CommandHandler("corregir", cmd_corregir),
+            CallbackQueryHandler(callback_corregir, pattern="^corregir:"),
+        ],
         states={
             CONFIRMAR_MONTO:     [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_monto)],
             CONFIRMAR_CATEGORIA: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_categoria)],
+            CORREGIR_ELEGIR:     [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_elegir)],
+            CORREGIR_CATEGORIA:  [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_categoria)],
+            CORREGIR_PRESUPUESTO:[MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_presupuesto)],
         },
         fallbacks=[
             CommandHandler("cancelar", cancelar),
@@ -566,8 +759,8 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_handler)
-    print("🤖 Bot corriendo con todas las mejoras...")
-    app.run_polling()
+    print("Bot corriendo con correccion y aprendizaje...")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
