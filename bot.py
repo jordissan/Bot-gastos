@@ -545,7 +545,7 @@ def main():
     t = threading.Thread(target=run_health_server, daemon=True)
     t.start()
 
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).job_queue(None).build()
 
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)],
@@ -557,7 +557,6 @@ def main():
             CommandHandler("cancelar", cancelar),
             CommandHandler("start", start),
         ],
-        conversation_timeout=60,
         allow_reentry=True,
     )
 
