@@ -495,6 +495,13 @@ async def aplicar_correccion(update,context,sub=None,pre=None):
         if nueva_sub: resumen+=f"🏷️ Subcategoria: {nueva_sub}\n"
         if nuevo_pre: resumen+=f"💰 Presupuesto: {nuevo_pre}\n"
         await update.message.reply_text(f"✅ Corregido y aprendido\n\n{resumen}",reply_markup=ReplyKeyboardRemove())
+        # Notificar al otro usuario
+        uid=update.effective_user.id
+        nombre=USUARIOS_NOMBRES.get(uid,"Alguien")
+        notif=USUARIOS_NOTIFICAR.get(uid)
+        if notif:
+            msg_correccion=f"✏️ {nombre} corrigió un gasto\n\n{resumen}"
+            await context.bot.send_message(chat_id=notif,text=msg_correccion)
     else:
         await update.message.reply_text("❌ Error al actualizar Notion.",reply_markup=ReplyKeyboardRemove())
     context.user_data.clear(); return ConversationHandler.END
