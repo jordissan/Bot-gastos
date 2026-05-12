@@ -1,14 +1,21 @@
-import os, re, datetime, requests, threading, unicodedata
+import os, re, datetime, requests, threading, unicodedata, json, logging
 from difflib import SequenceMatcher
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes, ConversationHandler
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN        = os.environ["TELEGRAM_TOKEN"]
 NOTION_TOKEN          = os.environ["NOTION_TOKEN"]
 NOTION_DATABASE_ID    = os.environ["NOTION_DATABASE_ID"]
 NOTION_APRENDIZAJE_ID = "3ba6f37c717948a1a6aeac3b384ff33c"
 GOOGLE_MAPS_API_KEY   = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+WEBHOOK_SECRET        = os.environ.get("WEBHOOK_SECRET", "")  # Opcional pero recomendado
+
+# Render te da la URL pública del servicio
+RENDER_EXTERNAL_URL   = os.environ.get("RENDER_EXTERNAL_URL", "")  # e.g. https://bot-gastos-socj.onrender.com
 
 USUARIOS_AUTORIZADOS = {8663298433, 8093171397}
 USUARIOS_NOMBRES     = {8663298433: "Jordi", 8093171397: "Nane"}
@@ -495,7 +502,6 @@ async def aplicar_correccion(update,context,sub=None,pre=None):
         if nueva_sub: resumen+=f"🏷️ Subcategoria: {nueva_sub}\n"
         if nuevo_pre: resumen+=f"💰 Presupuesto: {nuevo_pre}\n"
         await update.message.reply_text(f"✅ Corregido y aprendido\n\n{resumen}",reply_markup=ReplyKeyboardRemove())
-        # Notificar al otro usuario
         uid=update.effective_user.id
         nombre=USUARIOS_NOMBRES.get(uid,"Alguien")
         notif=USUARIOS_NOTIFICAR.get(uid)
@@ -541,44 +547,122 @@ async def start(update,context):
         "/cancelar — cancelar cualquier accion en curso"
     )
 
-class H(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200); self.send_header("Content-Type","text/plain"); self.send_header("Content-Length","2"); self.end_headers(); self.wfile.write(b"OK"); self.wfile.flush()
-    def log_message(self,*a): pass
+# ── WEBHOOK HANDLER ──────────────────────────────────────────────────────────
+# La aplicación PTB se inicializa una sola vez en el arranque
+_ptb_app = None
 
-def run_http():
-    port=int(os.environ.get("PORT",10000)); print(f"HTTP en {port}")
-    HTTPServer(("0.0.0.0",port),H).serve_forever()
+def get_app():
+    global _ptb_app
+    return _ptb_app
+
+class WebhookHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        # Health check para UptimeRobot
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"OK")
+        self.wfile.flush()
+
+    def do_POST(self):
+        import asyncio
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+
+            # Verificar secret token si está configurado
+            if WEBHOOK_SECRET:
+                token_header = self.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+                if token_header != WEBHOOK_SECRET:
+                    self.send_response(403)
+                    self.end_headers()
+                    return
+
+            update_data = json.loads(body.decode("utf-8"))
+            app = get_app()
+            if app:
+                update = Update.de_json(update_data, app.bot)
+                # Procesar el update en el event loop del bot
+                asyncio.run_coroutine_threadsafe(
+                    app.process_update(update),
+                    app.update_processor._loop if hasattr(app.update_processor, '_loop') else asyncio.get_event_loop()
+                )
+            self.send_response(200)
+            self.end_headers()
+        except Exception as e:
+            logger.error(f"Error en webhook POST: {e}")
+            self.send_response(200)  # Siempre 200 para que Telegram no reintente
+            self.end_headers()
+
+    def log_message(self, *a):
+        pass
+
+# ── MAIN ─────────────────────────────────────────────────────────────────────
+import asyncio
+
+async def setup_webhook(app):
+    webhook_url = f"{RENDER_EXTERNAL_URL}/webhook"
+    params = {"url": webhook_url, "drop_pending_updates": True}
+    if WEBHOOK_SECRET:
+        params["secret_token"] = WEBHOOK_SECRET
+    await app.bot.set_webhook(**params)
+    info = await app.bot.get_webhook_info()
+    logger.info(f"Webhook configurado: {info.url}")
 
 def main():
-    threading.Thread(target=run_http,daemon=True).start()
-    app=Application.builder().token(TELEGRAM_TOKEN).job_queue(None).build()
+    global _ptb_app
 
-    conv_gasto=ConversationHandler(
-        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND,handle_gasto)],
-        states={CONFIRMAR_MONTO:[MessageHandler(filters.TEXT & ~filters.COMMAND,confirmar_monto)],CONFIRMAR_CAT:[MessageHandler(filters.TEXT & ~filters.COMMAND,confirmar_cat)]},
-        fallbacks=[CommandHandler("cancelar",cancelar),CommandHandler("start",start)],
-        allow_reentry=True,
-    )
+    # Construir la app PTB (sin job_queue, sin polling)
+    app = Application.builder().token(TELEGRAM_TOKEN).updater(None).job_queue(None).build()
+    _ptb_app = app
 
-    conv_corregir=ConversationHandler(
-        entry_points=[CommandHandler("corregir",cmd_corregir),CallbackQueryHandler(callback_corregir,pattern="^cor:")],
+    conv_gasto = ConversationHandler(
+        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gasto)],
         states={
-            CORREGIR_ELEGIR: [MessageHandler(filters.TEXT & ~filters.COMMAND,corregir_elegir)],
-            CORREGIR_QUE:    [MessageHandler(filters.TEXT & ~filters.COMMAND,corregir_que)],
-            CORREGIR_CAT_GRP:[MessageHandler(filters.TEXT & ~filters.COMMAND,corregir_cat_grp)],
-            CORREGIR_SUBCAT: [MessageHandler(filters.TEXT & ~filters.COMMAND,corregir_subcat)],
-            CORREGIR_PRESU:  [MessageHandler(filters.TEXT & ~filters.COMMAND,corregir_presu)],
+            CONFIRMAR_MONTO: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_monto)],
+            CONFIRMAR_CAT:   [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_cat)],
         },
-        fallbacks=[CommandHandler("cancelar",cancelar)],
+        fallbacks=[CommandHandler("cancelar", cancelar), CommandHandler("start", start)],
         allow_reentry=True,
     )
 
-    app.add_handler(CommandHandler("start",start))
+    conv_corregir = ConversationHandler(
+        entry_points=[CommandHandler("corregir", cmd_corregir), CallbackQueryHandler(callback_corregir, pattern="^cor:")],
+        states={
+            CORREGIR_ELEGIR:  [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_elegir)],
+            CORREGIR_QUE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_que)],
+            CORREGIR_CAT_GRP: [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_cat_grp)],
+            CORREGIR_SUBCAT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_subcat)],
+            CORREGIR_PRESU:   [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_presu)],
+        },
+        fallbacks=[CommandHandler("cancelar", cancelar)],
+        allow_reentry=True,
+    )
+
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_corregir)
     app.add_handler(conv_gasto)
-    print("Bot corriendo v_final3...")
-    app.run_polling(drop_pending_updates=True)
 
-if __name__=="__main__":
+    # Inicializar PTB y registrar el webhook
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(app.initialize())
+    loop.run_until_complete(setup_webhook(app))
+    loop.run_until_complete(app.start())
+
+    # Hacer accesible el loop para procesar updates desde el handler HTTP
+    app.update_processor._loop = loop
+
+    # Levantar el servidor HTTP (maneja GET para UptimeRobot y POST para el webhook)
+    port = int(os.environ.get("PORT", 10000))
+    logger.info(f"HTTP en {port}")
+    server = HTTPServer(("0.0.0.0", port), WebhookHandler)
+
+    # Correr el servidor HTTP en el thread principal; el loop de asyncio corre en segundo plano
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    logger.info("Bot corriendo v_webhook...")
+    server.serve_forever()
+
+if __name__ == "__main__":
     main()
