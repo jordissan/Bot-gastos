@@ -256,11 +256,13 @@ def calcular_tarjeta(fecha,exp=None):
 
 def calcular_mes(fecha,tarjeta):
     d,m,y=fecha.day,fecha.month,fecha.year
-    if tarjeta=="BBVA05": mp=m+1 if d>=5 else m
-    elif tarjeta=="BBVA12": mp=m+2 if d>=12 else m+1
-    elif tarjeta=="HEYB25": mp=m+2 if d>=25 else m+1
-    elif tarjeta=="BMEX04": mp=m+1 if d>=4 else m
-    else: mp=m+1
+    # Mes = mes en que vence el pago (corte + ~20 dias naturales)
+    # El dia exacto del corte ya pertenece al ciclo nuevo
+    if   tarjeta=="BBVA12": mp=m+1 if d>=12 else m   # corte dia 12, vence ~fin mes siguiente
+    elif tarjeta=="BBVA05": mp=m+1 if d>=5  else m   # corte dia 5,  vence ~dia 25 mes siguiente
+    elif tarjeta=="BMEX04": mp=m+1 if d>=4  else m   # corte dia 4,  vence ~dia 24 mes siguiente
+    elif tarjeta=="HEYB25": mp=m+2 if d>=25 else m+1 # corte dia 25, vence ~dia 14 del mes+2
+    else: mp=m  # EFVO: efectivo, mes = mes del gasto
     while mp>12: mp-=12; y+=1
     return f"{MESES_ESP[mp]}{str(y)[-2:]}"
 
