@@ -565,6 +565,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OK")
         self.wfile.flush()
 
+    def do_HEAD(self):
+        # UptimeRobot a veces usa HEAD en lugar de GET
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+
     def do_POST(self):
         import asyncio
         try:
