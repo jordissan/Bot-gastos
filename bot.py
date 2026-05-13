@@ -1,4 +1,4 @@
-import os, re, datetime, requests, threading, unicodedata, json, logging
+import os, re, datetime, requests, threading, unicodedata, json, logging, time
 from difflib import SequenceMatcher
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
@@ -11,11 +11,10 @@ TELEGRAM_TOKEN        = os.environ["TELEGRAM_TOKEN"]
 NOTION_TOKEN          = os.environ["NOTION_TOKEN"]
 NOTION_DATABASE_ID    = os.environ["NOTION_DATABASE_ID"]
 NOTION_APRENDIZAJE_ID = "3ba6f37c717948a1a6aeac3b384ff33c"
+NOTION_HISTORIAL_ID   = "35f7eb0cbb9280ae8f02f69b4f242298"
 GOOGLE_MAPS_API_KEY   = os.environ.get("GOOGLE_MAPS_API_KEY", "")
-WEBHOOK_SECRET        = os.environ.get("WEBHOOK_SECRET", "")  # Opcional pero recomendado
-
-# Render te da la URL pública del servicio
-RENDER_EXTERNAL_URL   = os.environ.get("RENDER_EXTERNAL_URL", "")  # e.g. https://bot-gastos-socj.onrender.com
+WEBHOOK_SECRET        = os.environ.get("WEBHOOK_SECRET", "")
+RENDER_EXTERNAL_URL   = os.environ.get("RENDER_EXTERNAL_URL", "")
 
 USUARIOS_AUTORIZADOS = {8663298433, 8093171397}
 USUARIOS_NOMBRES     = {8663298433: "Jordi", 8093171397: "Nane"}
@@ -65,21 +64,17 @@ PR = {
     "Deuda":"91ab43856d1e4ae69f21f4203eeb3c54","MSI":"1fc7eb0cbb92802ba323cfc943dc0f2c",
     "Renta":"eeb6e04137c248468f641a5044b16545","Ezra":"3547eb0cbb92817baaa9f6681e6bbabc",
     "Cuidado personal":"829161723b0b49bf8787663a89c7248d","Vacaciones":"545753674d4e4d0ca0fd8be7d33db21e",
-    "Impuestos":"224cdb40f1f749c7b5d6e165ad31170d","Entretenimiento":"3547eb0cbb92815d8248db75a759646b",
+    "Impuestos":"224cdb40f1f749c7b5d6e165ad31110d","Entretenimiento":"3547eb0cbb92815d8248db75a759646b",
     "Generosidad":"f4cac9f4b95e4508942ad02ae69ddffe","Iglesia":"89b897bd6fa24b8d897adf380491130e",
     "Personal":"3c42302c396c4f4abffa38bff79ccac6","Departamento":"1af955c917f54a2da39e9bbb8e4032ff",
     "Otros":"1ea7eb0cbb9280cbbe43c1bd54396691",
 }
 
-# ID de la base de datos de Balance/Meses en Notion
+# ── NOTION BALANCE (meses dinamicos) ─────────────────────────────────────────
 NOTION_BALANCE_ID = os.environ.get("NOTION_BALANCE_ID", "")
-
-# Cache en memoria para no repetir el request por cada gasto
 _meses_cache: dict = {}
 
 def buscar_mes_id(mes: str):
-    """Busca el ID de la pagina de un mes en Notion por nombre (ej: JUN26).
-    Usa cache en memoria para evitar requests repetidos en la misma sesion."""
     if mes in _meses_cache:
         return _meses_cache[mes]
     if not NOTION_BALANCE_ID:
@@ -97,13 +92,27 @@ def buscar_mes_id(mes: str):
             if results:
                 mid = results[0]["id"]
                 _meses_cache[mes] = mid
-                logger.info(f"Mes {mes} encontrado: {mid}")
                 return mid
-        logger.warning(f"Mes {mes} no encontrado en Notion (status {r.status_code})")
+        logger.warning(f"Mes {mes} no encontrado en Notion")
     except Exception as e:
         logger.error(f"Error buscando mes {mes}: {e}")
     return None
 
+# ── CONCEPTOS UNIVOCOS — nunca guardar en Aprendizaje ────────────────────────
+# Son conceptos que SIEMPRE mapean a la misma categoria sin excepcion posible
+CONCEPTOS_UNIVOCOS = {
+    "netflix","spotify","disney","hbo","apple tv","paramount","crunchyroll",
+    "max","prime video","izzi","telmex","adobe","icloud","capcut","claude",
+    "figma","canva","microsoft","chatgpt","at&t","att","cfe","mapfre",
+    "seguro auto","qualitas","walmart","soriana","bodega aurrera","oxxo gas","oxxogas",
+    "sam's","chedraui","zarapes",
+}
+
+def es_concepto_univoco(concepto: str) -> bool:
+    c = normalizar(concepto)
+    return any(normalizar(u) in c for u in CONCEPTOS_UNIVOCOS)
+
+# ── GRUPOS / MENUS ───────────────────────────────────────────────────────────
 GRUPOS_CAT = {
     "🚗 Automovil":    ["Gasolina","Estacionamento","Mantenimiento","VW POLO","Seguro Auto"],
     "👤 Personal":     ["Ropa","Calzado","Doctor","Medicina","Gimnasio","Corte de pelo","Cuidado personal","Gasto personal"],
@@ -206,11 +215,12 @@ REGLAS_CONCEPTO = [
     (["uber ","didi ","cabify"],"Gasolina","Automovil"),
 ]
 
-MESES_ESP = {1:"ENE",2:"FEB",3:"MAR",4:"ABR",5:"MAY",6:"JUN",7:"JUL",8:"AGO",9:"SEP",10:"OCT",11:"NOV",12:"DIC"}
-MESES_TEXTO = {"ene":1,"feb":2,"mar":3,"abr":4,"may":5,"jun":6,"jul":7,"ago":8,"sep":9,"oct":10,"nov":11,"dic":12,"enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,"julio":7,"agosto":8,"septiembre":9,"octubre":10,"noviembre":11,"diciembre":12}
+MESES_ESP   = {1:"ENE",2:"FEB",3:"MAR",4:"ABR",5:"MAY",6:"JUN",7:"JUL",8:"AGO",9:"SEP",10:"OCT",11:"NOV",12:"DIC"}
+MESES_TEXTO = {"ene":1,"feb":2,"mar":3,"abr":4,"may":5,"jun":6,"jul":7,"ago":8,"sep":9,"oct":10,"nov":11,"dic":12,
+               "enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,"julio":7,"agosto":8,
+               "septiembre":9,"octubre":10,"noviembre":11,"diciembre":12}
 
-historial_gastos = []
-
+# ── HELPERS ──────────────────────────────────────────────────────────────────
 def normalizar(t):
     t=t.lower().strip(); t=unicodedata.normalize("NFD",t)
     return "".join(c for c in t if unicodedata.category(c)!="Mn")
@@ -218,36 +228,210 @@ def normalizar(t):
 def similitud(a,b): return SequenceMatcher(None,normalizar(a),normalizar(b)).ratio()
 def nh(): return {"Authorization":f"Bearer {NOTION_TOKEN}","Content-Type":"application/json","Notion-Version":"2022-06-28"}
 
+# ── REINTENTOS ───────────────────────────────────────────────────────────────
+def notion_request(method, url, **kwargs):
+    """Wrapper con 3 reintentos automaticos (espera 2s entre cada uno)."""
+    intentos = 3
+    for i in range(intentos):
+        try:
+            r = requests.request(method, url, **kwargs)
+            if r.status_code < 500:
+                return r
+            logger.warning(f"Notion error {r.status_code}, intento {i+1}/{intentos}")
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Notion request exception: {e}, intento {i+1}/{intentos}")
+        if i < intentos - 1:
+            time.sleep(2)
+    return None
+
+# ── APRENDIZAJE ──────────────────────────────────────────────────────────────
 def buscar_aprendizaje(concepto):
-    r=requests.post(f"https://api.notion.com/v1/databases/{NOTION_APRENDIZAJE_ID}/query",headers=nh(),json={"filter":{"property":"Concepto","title":{"equals":concepto.lower()}}})
-    if r.status_code==200:
-        res=r.json().get("results",[])
+    r = notion_request("POST",
+        f"https://api.notion.com/v1/databases/{NOTION_APRENDIZAJE_ID}/query",
+        headers=nh(),
+        json={"filter":{"property":"Concepto","title":{"equals":concepto.lower()}}},
+        timeout=5)
+    if r and r.status_code == 200:
+        res = r.json().get("results", [])
         if res:
-            p=res[0]["properties"]; s=p.get("Subcategoria",{}).get("rich_text",[]); b=p.get("Presupuesto",{}).get("rich_text",[])
-            if s and b: return s[0]["text"]["content"],b[0]["text"]["content"]
-    return None,None
+            p = res[0]["properties"]
+            s = p.get("Subcategoria",{}).get("rich_text",[])
+            b = p.get("Presupuesto",{}).get("rich_text",[])
+            if s and b: return s[0]["text"]["content"], b[0]["text"]["content"]
+    return None, None
 
-def guardar_aprendizaje(concepto,sub,pre):
-    r=requests.post(f"https://api.notion.com/v1/databases/{NOTION_APRENDIZAJE_ID}/query",headers=nh(),json={"filter":{"property":"Concepto","title":{"equals":concepto.lower()}}})
-    if r.status_code==200:
-        res=r.json().get("results",[])
+def guardar_aprendizaje(concepto, sub, pre):
+    """Guarda o actualiza aprendizaje. Omite conceptos univocos y actualiza fecha."""
+    # No guardar si es un concepto que siempre tiene la misma categoria
+    if es_concepto_univoco(concepto):
+        logger.info(f"Concepto univoco '{concepto}' — omitiendo aprendizaje")
+        return
+
+    hoy = datetime.date.today().isoformat()
+    r = notion_request("POST",
+        f"https://api.notion.com/v1/databases/{NOTION_APRENDIZAJE_ID}/query",
+        headers=nh(),
+        json={"filter":{"property":"Concepto","title":{"equals":concepto.lower()}}},
+        timeout=5)
+    if r and r.status_code == 200:
+        res = r.json().get("results", [])
         if res:
-            pid=res[0]["id"]; u=res[0]["properties"].get("Usos",{}).get("number",0) or 0
-            requests.patch(f"https://api.notion.com/v1/pages/{pid}",headers=nh(),json={"properties":{"Subcategoria":{"rich_text":[{"text":{"content":sub}}]},"Presupuesto":{"rich_text":[{"text":{"content":pre}}]},"Usos":{"number":u+1}}})
+            pid = res[0]["id"]
+            u = res[0]["properties"].get("Usos",{}).get("number",0) or 0
+            notion_request("PATCH",
+                f"https://api.notion.com/v1/pages/{pid}",
+                headers=nh(),
+                json={"properties":{
+                    "Subcategoria":{"rich_text":[{"text":{"content":sub}}]},
+                    "Presupuesto":{"rich_text":[{"text":{"content":pre}}]},
+                    "Usos":{"number":u+1},
+                    "Fecha":{"date":{"start":hoy}},
+                }},
+                timeout=5)
             return
-    requests.post("https://api.notion.com/v1/pages",headers=nh(),json={"parent":{"database_id":NOTION_APRENDIZAJE_ID},"properties":{"Concepto":{"title":[{"text":{"content":concepto.lower()}}]},"Subcategoria":{"rich_text":[{"text":{"content":sub}}]},"Presupuesto":{"rich_text":[{"text":{"content":pre}}]},"Usos":{"number":1}}})
+    notion_request("POST",
+        "https://api.notion.com/v1/pages",
+        headers=nh(),
+        json={"parent":{"database_id":NOTION_APRENDIZAJE_ID},"properties":{
+            "Concepto":{"title":[{"text":{"content":concepto.lower()}}]},
+            "Subcategoria":{"rich_text":[{"text":{"content":sub}}]},
+            "Presupuesto":{"rich_text":[{"text":{"content":pre}}]},
+            "Usos":{"number":1},
+            "Fecha":{"date":{"start":hoy}},
+        }},
+        timeout=5)
 
+def limpiar_aprendizaje():
+    """Limpia entradas obsoletas de la base de aprendizaje.
+    Regla 1: Usos=1 y sin actividad en 90 dias -> borrar
+    Regla 2: Si hay mas de 150 entradas, borrar las de menor uso hasta llegar a 100"""
+    try:
+        hoy = datetime.date.today()
+        limite_90 = (hoy - datetime.timedelta(days=90)).isoformat()
+        # Traer todas las entradas
+        r = notion_request("POST",
+            f"https://api.notion.com/v1/databases/{NOTION_APRENDIZAJE_ID}/query",
+            headers=nh(), json={"page_size":200}, timeout=10)
+        if not r or r.status_code != 200: return
+        entradas = r.json().get("results", [])
+        borradas = 0
+        # Regla 1: Usos=1 y fecha antigua
+        for e in entradas:
+            p = e["properties"]
+            usos = p.get("Usos",{}).get("number",0) or 0
+            fecha_raw = p.get("Fecha",{}).get("date")
+            fecha_str = fecha_raw["start"] if fecha_raw else None
+            if usos == 1 and fecha_str and fecha_str < limite_90:
+                notion_request("DELETE", f"https://api.notion.com/v1/pages/{e['id']}",
+                    headers=nh(), timeout=5)
+                borradas += 1
+        # Regla 2: limite de 150 entradas
+        if len(entradas) - borradas > 150:
+            sobrantes = sorted(entradas, key=lambda e: e["properties"].get("Usos",{}).get("number",0) or 0)
+            por_borrar = (len(entradas) - borradas) - 100
+            for e in sobrantes[:por_borrar]:
+                notion_request("DELETE", f"https://api.notion.com/v1/pages/{e['id']}",
+                    headers=nh(), timeout=5)
+                borradas += 1
+        if borradas: logger.info(f"Limpieza aprendizaje: {borradas} entradas eliminadas")
+    except Exception as ex:
+        logger.error(f"Error en limpiar_aprendizaje: {ex}")
+
+# ── HISTORIAL PERSISTENTE ────────────────────────────────────────────────────
+MAX_HISTORIAL = 5
+
+def guardar_historial_notion(gasto, usuario_id):
+    """Guarda el gasto en la base Historial Bot (mantiene solo los ultimos 5)."""
+    try:
+        # Guardar nueva entrada
+        notion_request("POST",
+            "https://api.notion.com/v1/pages",
+            headers=nh(),
+            json={"parent":{"database_id":NOTION_HISTORIAL_ID},"properties":{
+                "Concepto":  {"title":[{"text":{"content":gasto["concepto"]}}]},
+                "Monto":     {"number":gasto["monto"]},
+                "Fecha":     {"date":{"start":gasto["fecha"]}},
+                "Tarjeta":   {"rich_text":[{"text":{"content":gasto["tarjeta"]}}]},
+                "Mes":       {"rich_text":[{"text":{"content":gasto["mes"]}}]},
+                "Subcategoria":{"rich_text":[{"text":{"content":gasto["subcategoria"]}}]},
+                "Presupuesto": {"rich_text":[{"text":{"content":gasto["presupuesto"]}}]},
+                "NotionID":  {"rich_text":[{"text":{"content":gasto.get("notion_id","")}}]},
+                "UsuarioID": {"number":usuario_id},
+            }},
+            timeout=5)
+        # Limpiar entradas viejas — mantener solo las ultimas MAX_HISTORIAL por usuario
+        r = notion_request("POST",
+            f"https://api.notion.com/v1/databases/{NOTION_HISTORIAL_ID}/query",
+            headers=nh(),
+            json={
+                "filter":{"property":"UsuarioID","number":{"equals":usuario_id}},
+                "sorts":[{"timestamp":"created_time","direction":"descending"}],
+                "page_size": 20,
+            },
+            timeout=5)
+        if r and r.status_code == 200:
+            entradas = r.json().get("results",[])
+            for vieja in entradas[MAX_HISTORIAL:]:
+                notion_request("PATCH",
+                    f"https://api.notion.com/v1/pages/{vieja['id']}",
+                    headers=nh(),
+                    json={"archived": True},
+                    timeout=5)
+    except Exception as ex:
+        logger.error(f"Error guardando historial: {ex}")
+
+def cargar_historial_notion(usuario_id):
+    """Carga los ultimos MAX_HISTORIAL gastos del usuario desde Notion."""
+    try:
+        r = notion_request("POST",
+            f"https://api.notion.com/v1/databases/{NOTION_HISTORIAL_ID}/query",
+            headers=nh(),
+            json={
+                "filter":{"property":"UsuarioID","number":{"equals":usuario_id}},
+                "sorts":[{"timestamp":"created_time","direction":"descending"}],
+                "page_size": MAX_HISTORIAL,
+            },
+            timeout=5)
+        if r and r.status_code == 200:
+            resultado = []
+            for e in r.json().get("results",[]):
+                p = e["properties"]
+                def txt(campo): return (p.get(campo,{}).get("rich_text",[{}])[0].get("text",{}).get("content","") if p.get(campo,{}).get("rich_text") else "")
+                resultado.append({
+                    "concepto":    (p.get("Concepto",{}).get("title",[{}])[0].get("text",{}).get("content","") if p.get("Concepto",{}).get("title") else ""),
+                    "monto":       p.get("Monto",{}).get("number",0) or 0,
+                    "fecha":       (p.get("Fecha",{}).get("date",{}) or {}).get("start",""),
+                    "tarjeta":     txt("Tarjeta"),
+                    "mes":         txt("Mes"),
+                    "subcategoria":txt("Subcategoria"),
+                    "presupuesto": txt("Presupuesto"),
+                    "notion_id":   txt("NotionID"),
+                })
+            return resultado
+    except Exception as ex:
+        logger.error(f"Error cargando historial: {ex}")
+    return []
+
+# ── MAPS ─────────────────────────────────────────────────────────────────────
 def buscar_maps(concepto):
     if not GOOGLE_MAPS_API_KEY: return None
     try:
-        r=requests.post("https://places.googleapis.com/v1/places:searchText",headers={"Content-Type":"application/json","X-Goog-Api-Key":GOOGLE_MAPS_API_KEY,"X-Goog-FieldMask":"places.types"},json={"textQuery":f"{concepto} Guadalajara Mexico","locationBias":{"circle":{"center":{"latitude":20.6597,"longitude":-103.3496},"radius":50000.0}}},timeout=3)
+        r=requests.post("https://places.googleapis.com/v1/places:searchText",
+            headers={"Content-Type":"application/json","X-Goog-Api-Key":GOOGLE_MAPS_API_KEY,"X-Goog-FieldMask":"places.types"},
+            json={"textQuery":f"{concepto} Guadalajara Mexico","locationBias":{"circle":{"center":{"latitude":20.6597,"longitude":-103.3496},"radius":50000.0}}},
+            timeout=3)
         if r.status_code==200:
             p=r.json().get("places",[])
             if p: return p[0].get("types",[])
     except: pass
     return None
 
-MAPS_TIPOS={"restaurant":("Restaurantes","Restaurantes"),"cafe":("Treat","Diversión"),"bakery":("Treat","Diversión"),"supermarket":("Super","Despensa"),"grocery_or_supermarket":("Super","Despensa"),"convenience_store":("Abarrotes","Despensa"),"gas_station":("Gasolina","Automovil"),"pharmacy":("Medicina","Personal"),"hospital":("Doctor","Personal"),"car_wash":("Mantenimiento","Automovil"),"movie_theater":("Cine","Diversión"),"night_club":("Salidas","Diversión"),"bar":("Salidas","Diversión")}
+MAPS_TIPOS={"restaurant":("Restaurantes","Restaurantes"),"cafe":("Treat","Diversión"),"bakery":("Treat","Diversión"),
+            "supermarket":("Super","Despensa"),"grocery_or_supermarket":("Super","Despensa"),
+            "convenience_store":("Abarrotes","Despensa"),"gas_station":("Gasolina","Automovil"),
+            "pharmacy":("Medicina","Personal"),"hospital":("Doctor","Personal"),
+            "car_wash":("Mantenimiento","Automovil"),"movie_theater":("Cine","Diversión"),
+            "night_club":("Salidas","Diversión"),"bar":("Salidas","Diversión")}
 
 def cat_maps(tipos):
     if not tipos: return None,None
@@ -256,6 +440,7 @@ def cat_maps(tipos):
             if k in t: return v
     return None,None
 
+# ── INFERENCIA ───────────────────────────────────────────────────────────────
 def inferir_categoria(concepto):
     c=normalizar(concepto)
     for palabras,sub,pre in REGLAS_CONCEPTO:
@@ -274,22 +459,22 @@ def inferir_categoria(concepto):
     if sm: return sm,pm,True
     return "Abarrotes","Despensa",False
 
+# ── TARJETAS Y MESES ─────────────────────────────────────────────────────────
 def calcular_tarjeta(fecha,exp=None):
     if exp: return exp.upper()
     return "BBVA05" if 5<=fecha.day<=11 else "BBVA12"
 
 def calcular_mes(fecha,tarjeta):
     d,m,y=fecha.day,fecha.month,fecha.year
-    # Mes = mes en que vence el pago (corte + ~20 dias naturales)
-    # El dia exacto del corte ya pertenece al ciclo nuevo
-    if   tarjeta=="BBVA12": mp=m+1 if d>=12 else m   # corte dia 12, vence ~fin mes siguiente
-    elif tarjeta=="BBVA05": mp=m+1 if d>=5  else m   # corte dia 5,  vence ~dia 25 mes siguiente
-    elif tarjeta=="BMEX04": mp=m+1 if d>=4  else m   # corte dia 4,  vence ~dia 24 mes siguiente
-    elif tarjeta=="HEYB25": mp=m+2 if d>=25 else m+1 # corte dia 25, vence ~dia 14 del mes+2
-    else: mp=m  # EFVO: efectivo, mes = mes del gasto
+    if   tarjeta=="BBVA12": mp=m+1 if d>=12 else m
+    elif tarjeta=="BBVA05": mp=m+1 if d>=5  else m
+    elif tarjeta=="BMEX04": mp=m+1 if d>=4  else m
+    elif tarjeta=="HEYB25": mp=m+2 if d>=25 else m+1
+    else: mp=m  # EFVO
     while mp>12: mp-=12; y+=1
     return f"{MESES_ESP[mp]}{str(y)[-2:]}"
 
+# ── PARSEO ───────────────────────────────────────────────────────────────────
 def parsear_fecha(tokens):
     import zoneinfo; hoy=datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
     for i,t in enumerate(tokens):
@@ -329,16 +514,26 @@ def parsear_mensaje(texto):
     sub,pre,seguro=inferir_categoria(concepto)
     return {"concepto":concepto.title(),"monto":monto,"fecha":fecha.strftime("%Y-%m-%d"),"tarjeta":tarjeta,"mes":mes,"subcategoria":sub,"presupuesto":pre,"seguro":seguro}
 
+# ── NOTION GASTOS ────────────────────────────────────────────────────────────
 def guardar_notion(gasto):
-    props={"Concepto":{"title":[{"text":{"content":gasto["concepto"]}}]},"Monto":{"number":gasto["monto"]},"Fecha":{"date":{"start":gasto["fecha"]}},"Estado de Cuenta":{"rich_text":[{"text":{"content":gasto["tarjeta"]}}]},"Pago":{"select":{"name":gasto["tarjeta"]}}}
+    props={
+        "Concepto":{"title":[{"text":{"content":gasto["concepto"]}}]},
+        "Monto":{"number":gasto["monto"]},
+        "Fecha":{"date":{"start":gasto["fecha"]}},
+        "Estado de Cuenta":{"rich_text":[{"text":{"content":gasto["tarjeta"]}}]},
+        "Pago":{"select":{"name":gasto["tarjeta"]}},
+    }
     mid=buscar_mes_id(gasto["mes"])
     if mid: props["Mes"]={"relation":[{"id":mid}]}
     sid=SC.get(gasto["subcategoria"])
     if sid: props["Subcategoria"]={"relation":[{"id":sid}]}
     pid=PR.get(gasto["presupuesto"])
     if pid: props["Presupuesto"]={"relation":[{"id":pid}]}
-    r=requests.post("https://api.notion.com/v1/pages",headers=nh(),json={"parent":{"database_id":NOTION_DATABASE_ID},"properties":props})
-    return r.status_code==200,r.json().get("id",""),r.text
+    r=notion_request("POST","https://api.notion.com/v1/pages",headers=nh(),
+        json={"parent":{"database_id":NOTION_DATABASE_ID},"properties":props},timeout=8)
+    if r and r.status_code==200:
+        return True, r.json().get("id",""), ""
+    return False, "", (r.text if r else "Sin respuesta")
 
 def actualizar_notion(page_id,sub=None,pre=None):
     props={}
@@ -348,9 +543,11 @@ def actualizar_notion(page_id,sub=None,pre=None):
     if pre:
         pid=PR.get(pre)
         if pid: props["Presupuesto"]={"relation":[{"id":pid}]}
-    r=requests.patch(f"https://api.notion.com/v1/pages/{page_id}",headers=nh(),json={"properties":props})
-    return r.status_code==200
+    r=notion_request("PATCH",f"https://api.notion.com/v1/pages/{page_id}",
+        headers=nh(),json={"properties":props},timeout=8)
+    return r is not None and r.status_code==200
 
+# ── MENSAJES ─────────────────────────────────────────────────────────────────
 def fmt(f):
     from datetime import datetime as dt
     return dt.strptime(f,"%Y-%m-%d").strftime("%d %b %Y").lower()
@@ -359,20 +556,28 @@ def msg_gasto(g,nombre=None):
     enc=f"🔔 Nuevo gasto de {nombre}" if nombre else "✅ Gasto guardado"
     return f"{enc}\n\n📌 {g['concepto']}\n💵 ${g['monto']:,.2f}\n🗓️ {fmt(g['fecha'])}\n💳 {g['tarjeta']}  •  Mes: {g['mes']}\n🏷️ {g['subcategoria']}  •  {g['presupuesto']}"
 
+# ── REGISTRAR Y NOTIFICAR ────────────────────────────────────────────────────
 async def registrar_y_notificar(update,context,gasto):
-    global historial_gastos
-    ok,nid,_=guardar_notion(gasto)
+    ok,nid,err=guardar_notion(gasto)
     if not ok:
-        await update.message.reply_text("Error al guardar en Notion.",reply_markup=ReplyKeyboardRemove()); return
-    historial_gastos.insert(0,{**gasto,"notion_id":nid})
-    historial_gastos=historial_gastos[:10]
+        logger.error(f"Error guardando en Notion: {err}")
+        await update.message.reply_text("❌ Error al guardar en Notion. Intenta de nuevo.",reply_markup=ReplyKeyboardRemove())
+        return
+    gasto_completo = {**gasto,"notion_id":nid}
+    uid = update.effective_user.id
+    # Historial persistente en Notion (no en RAM)
+    threading.Thread(target=guardar_historial_notion, args=(gasto_completo, uid), daemon=True).start()
+    # Limpieza periodica de aprendizaje (1 de cada 50 gastos aprox, no bloquea)
+    import random
+    if random.randint(1,50)==1:
+        threading.Thread(target=limpiar_aprendizaje, daemon=True).start()
     await update.message.reply_text(msg_gasto(gasto),reply_markup=ReplyKeyboardRemove())
-    uid=update.effective_user.id; notif=USUARIOS_NOTIFICAR.get(uid); nombre=USUARIOS_NOMBRES.get(uid,"Alguien")
+    notif=USUARIOS_NOTIFICAR.get(uid); nombre=USUARIOS_NOMBRES.get(uid,"Alguien")
     if notif:
         kb=InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Corregir categoría",callback_data=f"cor:{nid}:{gasto['concepto']}")]])
         await context.bot.send_message(chat_id=notif,text=msg_gasto(gasto,nombre=nombre),reply_markup=kb)
 
-# CONV GASTO
+# ── CONV GASTO ───────────────────────────────────────────────────────────────
 async def handle_gasto(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
     texto=update.message.text.strip()
@@ -380,11 +585,15 @@ async def handle_gasto(update,context):
         gasto=parsear_mensaje(texto)
         if gasto["monto"]>=MONTO_INUSUAL:
             context.user_data["gasto_p"]=gasto
-            await update.message.reply_text(f"⚠️ El monto ${gasto['monto']:,.2f} es inusual.\n¿Confirmas '{gasto['concepto']}'?",reply_markup=ReplyKeyboardMarkup([["✅ SI","❌ NO"]],one_time_keyboard=True,resize_keyboard=True))
+            await update.message.reply_text(
+                f"⚠️ El monto ${gasto['monto']:,.2f} es inusual.\n¿Confirmas '{gasto['concepto']}'?",
+                reply_markup=ReplyKeyboardMarkup([["✅ SI","❌ NO"]],one_time_keyboard=True,resize_keyboard=True))
             return CONFIRMAR_MONTO
         if not gasto["seguro"]:
             context.user_data["gasto_p"]=gasto
-            await update.message.reply_text(f"❓ No reconoci '{gasto['concepto']}'.\n¿En qué categoría va?",reply_markup=ReplyKeyboardMarkup(menu_grupos(),one_time_keyboard=True,resize_keyboard=True))
+            await update.message.reply_text(
+                f"❓ No reconoci '{gasto['concepto']}'.\n¿En qué categoría va?",
+                reply_markup=ReplyKeyboardMarkup(menu_grupos(),one_time_keyboard=True,resize_keyboard=True))
             return CONFIRMAR_CAT
         await registrar_y_notificar(update,context,gasto)
     except ValueError as e: await update.message.reply_text(f"❓ {e}\n\nEjemplo: Starbucks 150")
@@ -410,12 +619,13 @@ async def confirmar_cat(update,context):
     await registrar_y_notificar(update,context,gasto)
     return ConversationHandler.END
 
-# CONV CORREGIR
+# ── CONV CORREGIR ────────────────────────────────────────────────────────────
 async def cmd_corregir(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
-    if not historial_gastos:
+    uid = update.effective_user.id
+    ultimos = cargar_historial_notion(uid)
+    if not ultimos:
         await update.message.reply_text("No hay gastos recientes para corregir."); return ConversationHandler.END
-    ultimos=historial_gastos[:3]
     texto="✏️ Elige el gasto a corregir:\n\n"
     for i,g in enumerate(ultimos): texto+=f"{i+1}. {g['concepto']}  ${g['monto']:,.2f}\n    🏷️ {g['subcategoria']}  •  {g['presupuesto']}\n\n"
     context.user_data["historial_corregir"]=ultimos
@@ -460,8 +670,7 @@ async def corregir_cat_grp(update,context):
         context.user_data.clear(); await update.message.reply_text("❌ Cancelado.",reply_markup=ReplyKeyboardRemove()); return ConversationHandler.END
     if txt==BTN_REGRESAR:
         gasto=context.user_data.get("gasto_corregir",{})
-        await update.message.reply_text(
-            f"📌 {gasto.get('concepto','')}\n\n¿Qué quieres corregir?",
+        await update.message.reply_text(f"📌 {gasto.get('concepto','')}\n\n¿Qué quieres corregir?",
             reply_markup=ReplyKeyboardMarkup(menu_que_corregir(),one_time_keyboard=True,resize_keyboard=True))
         return CORREGIR_QUE
     grp=grupo_key(txt); context.user_data["grupo_elegido"]=grp
@@ -470,11 +679,12 @@ async def corregir_cat_grp(update,context):
         context.user_data["nueva_sub"]=subcats[0]
         que=context.user_data.get("que_corregir","")
         if "Ambas" in que:
-            await update.message.reply_text(f"Subcategoria: {subcats[0]}\n\n💰 Elige el presupuesto:",reply_markup=ReplyKeyboardMarkup(menu_presupuesto(),one_time_keyboard=True,resize_keyboard=True))
+            await update.message.reply_text(f"Subcategoria: {subcats[0]}\n\n💰 Elige el presupuesto:",
+                reply_markup=ReplyKeyboardMarkup(menu_presupuesto(),one_time_keyboard=True,resize_keyboard=True))
             return CORREGIR_PRESU
         return await aplicar_correccion(update,context,sub=subcats[0])
     menu=[[s] for s in subcats]+[[BTN_REGRESAR,BTN_CANCELAR]]
-    await update.message.reply_text(f"🏷️ Elige la subcategoria:",reply_markup=ReplyKeyboardMarkup(menu,one_time_keyboard=True,resize_keyboard=True))
+    await update.message.reply_text("🏷️ Elige la subcategoria:",reply_markup=ReplyKeyboardMarkup(menu,one_time_keyboard=True,resize_keyboard=True))
     return CORREGIR_SUBCAT
 
 async def corregir_subcat(update,context):
@@ -482,12 +692,14 @@ async def corregir_subcat(update,context):
     if txt==BTN_CANCELAR:
         context.user_data.clear(); await update.message.reply_text("❌ Cancelado.",reply_markup=ReplyKeyboardRemove()); return ConversationHandler.END
     if txt==BTN_REGRESAR:
-        await update.message.reply_text("🏷️ Paso 1: Elige la categoría principal:",reply_markup=ReplyKeyboardMarkup(menu_grupos(),one_time_keyboard=True,resize_keyboard=True))
+        await update.message.reply_text("🏷️ Paso 1: Elige la categoría principal:",
+            reply_markup=ReplyKeyboardMarkup(menu_grupos(),one_time_keyboard=True,resize_keyboard=True))
         return CORREGIR_CAT_GRP
     context.user_data["nueva_sub"]=txt
     que=context.user_data.get("que_corregir","")
     if "Ambas" in que:
-        await update.message.reply_text("💰 Elige el presupuesto:",reply_markup=ReplyKeyboardMarkup(menu_presupuesto(),one_time_keyboard=True,resize_keyboard=True))
+        await update.message.reply_text("💰 Elige el presupuesto:",
+            reply_markup=ReplyKeyboardMarkup(menu_presupuesto(),one_time_keyboard=True,resize_keyboard=True))
         return CORREGIR_PRESU
     return await aplicar_correccion(update,context,sub=txt)
 
@@ -502,12 +714,15 @@ async def corregir_presu(update,context):
             subcats=GRUPOS_CAT.get(grp,[grp])
             if len(subcats)>1:
                 menu=[[s] for s in subcats]+[[BTN_REGRESAR,BTN_CANCELAR]]
-                await update.message.reply_text("🏷️ Elige la subcategoria:",reply_markup=ReplyKeyboardMarkup(menu,one_time_keyboard=True,resize_keyboard=True))
+                await update.message.reply_text("🏷️ Elige la subcategoria:",
+                    reply_markup=ReplyKeyboardMarkup(menu,one_time_keyboard=True,resize_keyboard=True))
                 return CORREGIR_SUBCAT
-            await update.message.reply_text("🏷️ Paso 1: Elige la categoría principal:",reply_markup=ReplyKeyboardMarkup(menu_grupos(),one_time_keyboard=True,resize_keyboard=True))
+            await update.message.reply_text("🏷️ Paso 1: Elige la categoría principal:",
+                reply_markup=ReplyKeyboardMarkup(menu_grupos(),one_time_keyboard=True,resize_keyboard=True))
             return CORREGIR_CAT_GRP
         gasto=context.user_data.get("gasto_corregir",{})
-        await update.message.reply_text(f"📌 {gasto.get('concepto','')}\n\n¿Qué quieres corregir?",reply_markup=ReplyKeyboardMarkup(menu_que_corregir(),one_time_keyboard=True,resize_keyboard=True))
+        await update.message.reply_text(f"📌 {gasto.get('concepto','')}\n\n¿Qué quieres corregir?",
+            reply_markup=ReplyKeyboardMarkup(menu_que_corregir(),one_time_keyboard=True,resize_keyboard=True))
         return CORREGIR_QUE
     return await aplicar_correccion(update,context,pre=presu_limpio(txt))
 
@@ -519,10 +734,6 @@ async def aplicar_correccion(update,context,sub=None,pre=None):
         await update.message.reply_text("Error.",reply_markup=ReplyKeyboardRemove()); return ConversationHandler.END
     ok=actualizar_notion(gasto["notion_id"],sub=nueva_sub,pre=nuevo_pre)
     if ok:
-        for g in historial_gastos:
-            if g["notion_id"]==gasto["notion_id"]:
-                if nueva_sub: g["subcategoria"]=nueva_sub
-                if nuevo_pre: g["presupuesto"]=nuevo_pre
         guardar_aprendizaje(gasto["concepto"].lower(),nueva_sub or gasto.get("subcategoria",""),nuevo_pre or gasto.get("presupuesto",""))
         resumen=f"📌 {gasto['concepto']}\n"
         if nueva_sub: resumen+=f"🏷️ Subcategoria: {nueva_sub}\n"
@@ -532,8 +743,7 @@ async def aplicar_correccion(update,context,sub=None,pre=None):
         nombre=USUARIOS_NOMBRES.get(uid,"Alguien")
         notif=USUARIOS_NOTIFICAR.get(uid)
         if notif:
-            msg_correccion=f"✏️ {nombre} corrigió un gasto\n\n{resumen}"
-            await context.bot.send_message(chat_id=notif,text=msg_correccion)
+            await context.bot.send_message(chat_id=notif,text=f"✏️ {nombre} corrigió un gasto\n\n{resumen}")
     else:
         await update.message.reply_text("❌ Error al actualizar Notion.",reply_markup=ReplyKeyboardRemove())
     context.user_data.clear(); return ConversationHandler.END
@@ -573,8 +783,7 @@ async def start(update,context):
         "/cancelar — cancelar cualquier accion en curso"
     )
 
-# ── WEBHOOK HANDLER ──────────────────────────────────────────────────────────
-# La aplicación PTB se inicializa una sola vez en el arranque
+# ── WEBHOOK HANDLER ───────────────────────────────────────────────────────────
 _ptb_app = None
 
 def get_app():
@@ -583,7 +792,6 @@ def get_app():
 
 class WebhookHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        # Health check para UptimeRobot
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", "2")
@@ -592,7 +800,6 @@ class WebhookHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def do_HEAD(self):
-        # UptimeRobot a veces usa HEAD en lugar de GET
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
@@ -602,20 +809,16 @@ class WebhookHandler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
-
-            # Verificar secret token si está configurado
             if WEBHOOK_SECRET:
                 token_header = self.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
                 if token_header != WEBHOOK_SECRET:
                     self.send_response(403)
                     self.end_headers()
                     return
-
             update_data = json.loads(body.decode("utf-8"))
             app = get_app()
             if app:
                 update = Update.de_json(update_data, app.bot)
-                # Procesar el update en el event loop del bot
                 asyncio.run_coroutine_threadsafe(
                     app.process_update(update),
                     app.update_processor._loop if hasattr(app.update_processor, '_loop') else asyncio.get_event_loop()
@@ -624,13 +827,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.end_headers()
         except Exception as e:
             logger.error(f"Error en webhook POST: {e}")
-            self.send_response(200)  # Siempre 200 para que Telegram no reintente
+            self.send_response(200)
             self.end_headers()
 
     def log_message(self, *a):
         pass
 
-# ── MAIN ─────────────────────────────────────────────────────────────────────
+# ── MAIN ──────────────────────────────────────────────────────────────────────
 import asyncio
 
 async def setup_webhook(app):
@@ -644,8 +847,6 @@ async def setup_webhook(app):
 
 def main():
     global _ptb_app
-
-    # Construir la app PTB (sin job_queue, sin polling)
     app = Application.builder().token(TELEGRAM_TOKEN).updater(None).job_queue(None).build()
     _ptb_app = app
 
@@ -676,24 +877,18 @@ def main():
     app.add_handler(conv_corregir)
     app.add_handler(conv_gasto)
 
-    # Inicializar PTB y registrar el webhook
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(app.initialize())
     loop.run_until_complete(setup_webhook(app))
     loop.run_until_complete(app.start())
-
-    # Hacer accesible el loop para procesar updates desde el handler HTTP
     app.update_processor._loop = loop
 
-    # Levantar el servidor HTTP (maneja GET para UptimeRobot y POST para el webhook)
     port = int(os.environ.get("PORT", 10000))
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
-
-    # Correr el servidor HTTP en el thread principal; el loop de asyncio corre en segundo plano
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_webhook...")
+    logger.info("Bot corriendo v_final4...")
     server.serve_forever()
 
 if __name__ == "__main__":
