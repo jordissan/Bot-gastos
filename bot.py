@@ -71,14 +71,38 @@ PR = {
     "Otros":"1ea7eb0cbb9280cbbe43c1bd54396691",
 }
 
-MESES_IDS = {
-    "ENE26":"3487eb0cbb92800a9e6fcf9a2d712e40","FEB26":"3487eb0cbb928062b309eecc92f4035e",
-    "MAR26":"3487eb0cbb9280648018ffe4171ad173","ABR26":"3447eb0cbb928007822cdf54ad63c9de",
-    "MAY26":"3447eb0cbb928051bddee3da069f31f7","JUN26":"3447eb0cbb9280678db1fd1faa5a98cd",
-    "JUL26":"3447eb0cbb9280b3ac4bf0106118f576","AGO26":"3447eb0cbb92808daae4d029edda14b7",
-    "SEP26":"3447eb0cbb9280ae861bc6db426e8c58","OCT26":"3447eb0cbb928093bf97e20b4540ad79",
-    "NOV26":"3447eb0cbb928007b6f5c3fbab7eecd6","DIC26":"3447eb0cbb928049a264d12ff9048685",
-}
+# ID de la base de datos de Balance/Meses en Notion
+NOTION_BALANCE_ID = os.environ.get("NOTION_BALANCE_ID", "")
+
+# Cache en memoria para no repetir el request por cada gasto
+_meses_cache: dict = {}
+
+def buscar_mes_id(mes: str):
+    """Busca el ID de la pagina de un mes en Notion por nombre (ej: JUN26).
+    Usa cache en memoria para evitar requests repetidos en la misma sesion."""
+    if mes in _meses_cache:
+        return _meses_cache[mes]
+    if not NOTION_BALANCE_ID:
+        logger.warning("NOTION_BALANCE_ID no configurado")
+        return None
+    try:
+        r = requests.post(
+            f"https://api.notion.com/v1/databases/{NOTION_BALANCE_ID}/query",
+            headers=nh(),
+            json={"filter": {"property": "Name", "title": {"equals": mes}}},
+            timeout=5,
+        )
+        if r.status_code == 200:
+            results = r.json().get("results", [])
+            if results:
+                mid = results[0]["id"]
+                _meses_cache[mes] = mid
+                logger.info(f"Mes {mes} encontrado: {mid}")
+                return mid
+        logger.warning(f"Mes {mes} no encontrado en Notion (status {r.status_code})")
+    except Exception as e:
+        logger.error(f"Error buscando mes {mes}: {e}")
+    return None
 
 GRUPOS_CAT = {
     "🚗 Automovil":    ["Gasolina","Estacionamento","Mantenimiento","VW POLO","Seguro Auto"],
@@ -307,7 +331,7 @@ def parsear_mensaje(texto):
 
 def guardar_notion(gasto):
     props={"Concepto":{"title":[{"text":{"content":gasto["concepto"]}}]},"Monto":{"number":gasto["monto"]},"Fecha":{"date":{"start":gasto["fecha"]}},"Estado de Cuenta":{"rich_text":[{"text":{"content":gasto["tarjeta"]}}]},"Pago":{"select":{"name":gasto["tarjeta"]}}}
-    mid=MESES_IDS.get(gasto["mes"])
+    mid=buscar_mes_id(gasto["mes"])
     if mid: props["Mes"]={"relation":[{"id":mid}]}
     sid=SC.get(gasto["subcategoria"])
     if sid: props["Subcategoria"]={"relation":[{"id":sid}]}
