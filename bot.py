@@ -28,6 +28,7 @@ CORREGIR_QUE     = 11
 CORREGIR_CAT_GRP = 12
 CORREGIR_SUBCAT  = 13
 CORREGIR_PRESU   = 14
+PRUEBA_GASTO     = 20
 
 SC = {
     "Super":"bf7d4b7d0445441ab89b53eec946d028","Abarrotes":"3587eb0cbb9280c58919c55b065c1e19",
@@ -459,6 +460,25 @@ def inferir_categoria(concepto):
     if sm: return sm,pm,True
     return "Abarrotes","Despensa",False
 
+def inferir_categoria_con_origen(concepto):
+    """Como inferir_categoria pero devuelve (sub, pre, seguro, origen_emoji, origen_texto)."""
+    c=normalizar(concepto)
+    for palabras,sub,pre in REGLAS_CONCEPTO:
+        for p in palabras:
+            if normalizar(p) in c: return sub,pre,True,"📋",f"regla: {p}"
+    sa,pa=buscar_aprendizaje(concepto)
+    if sa: return sa,pa,True,"🧠","aprendizaje"
+    mejor=0; mejor_r=None; mejor_p=None
+    for palabras,sub,pre in REGLAS_CONCEPTO:
+        for p in palabras:
+            if len(p)<4: continue
+            s=similitud(concepto,p)
+            if s>mejor and s>0.80: mejor=s; mejor_r=(sub,pre); mejor_p=p
+    if mejor_r: return mejor_r[0],mejor_r[1],True,"🔤",f"similitud con: {mejor_p}"
+    tipos=buscar_maps(concepto); sm,pm=cat_maps(tipos)
+    if sm: return sm,pm,True,"🗺️","Google Maps"
+    return "Abarrotes","Despensa",False,"❓","sin categoría"
+
 # ── TARJETAS Y MESES ─────────────────────────────────────────────────────────
 def calcular_tarjeta(fecha,exp=None):
     if exp: return exp.upper()
@@ -759,6 +779,46 @@ async def callback_corregir(update,context):
         reply_markup=ReplyKeyboardMarkup(menu_que_corregir(),one_time_keyboard=True,resize_keyboard=True))
     return CORREGIR_QUE
 
+async def cmd_prueba(update,context):
+    if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
+    await update.message.reply_text(
+        "🧪 Modo prueba activado. Escribe el gasto normalmente.\n"
+        "No se registrará nada en Notion. El modo prueba dura solo un mensaje."
+    )
+    return PRUEBA_GASTO
+
+async def handle_prueba(update,context):
+    if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
+    texto=update.message.text.strip()
+    try:
+        # Parsear sin guardar nada
+        tokens=texto.strip().split()
+        import zoneinfo; hoy=datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+        fecha,tokens2=parsear_fecha(tokens); texp,tokens2=parsear_tarjeta(tokens2); monto,tokens2=parsear_monto(tokens2)
+        concepto=" ".join(tokens2).strip()
+        if not concepto: raise ValueError("No encontré el concepto")
+        if monto is None: raise ValueError("No encontré el monto")
+        tarjeta=calcular_tarjeta(fecha,texp); mes=calcular_mes(fecha,tarjeta)
+        sub,pre,seguro,origen_emoji,origen_texto=inferir_categoria_con_origen(concepto)
+        from datetime import datetime as dt
+        fecha_fmt=dt.strptime(fecha.strftime("%Y-%m-%d"),"%Y-%m-%d").strftime("%d %b %Y").lower()
+        respuesta=(
+            f"🧪 Resultado de prueba\n\n"
+            f"📌 {concepto.title()}\n"
+            f"💵 ${monto:,.2f}\n"
+            f"🗓️ {fecha_fmt}\n"
+            f"💳 {tarjeta}  •  Mes: {mes}\n"
+            f"🏷️ {sub}  •  {pre}\n\n"
+            f"🔍 Origen: {origen_emoji} {origen_texto}\n\n"
+            f"Nada fue registrado en Notion. Ya saliste del modo prueba."
+        )
+        await update.message.reply_text(respuesta)
+    except ValueError as e:
+        await update.message.reply_text(f"❓ {e}\n\nEjemplo: Starbucks 150\n\nYa saliste del modo prueba.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}\n\nYa saliste del modo prueba.")
+    return ConversationHandler.END
+
 async def cancelar(update,context):
     context.user_data.clear()
     await update.message.reply_text("❌ Cancelado.",reply_markup=ReplyKeyboardRemove())
@@ -780,6 +840,7 @@ async def start(update,context):
         "BBVA05  BBVA12  HEYB25  BMEX04  EFVO\n\n"
         "Comandos:\n"
         "/corregir — corregir subcategoria o presupuesto de un gasto reciente\n"
+        "/prueba — simular un gasto sin registrar nada en Notion\n"
         "/cancelar — cancelar cualquier accion en curso"
     )
 
@@ -850,6 +911,15 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).updater(None).job_queue(None).build()
     _ptb_app = app
 
+    conv_prueba = ConversationHandler(
+        entry_points=[CommandHandler("prueba", cmd_prueba)],
+        states={
+            PRUEBA_GASTO: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_prueba)],
+        },
+        fallbacks=[CommandHandler("cancelar", cancelar)],
+        allow_reentry=True,
+    )
+
     conv_gasto = ConversationHandler(
         entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gasto)],
         states={
@@ -874,6 +944,7 @@ def main():
     )
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(conv_prueba)
     app.add_handler(conv_corregir)
     app.add_handler(conv_gasto)
 
@@ -888,7 +959,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_final4...")
+    logger.info("Bot corriendo v_final5...")
     server.serve_forever()
 
 if __name__ == "__main__":
