@@ -79,6 +79,11 @@ def normalizar(t):
 def similitud(a,b): return SequenceMatcher(None,normalizar(a),normalizar(b)).ratio()
 def nh(): return {"Authorization":f"Bearer {NOTION_TOKEN}","Content-Type":"application/json","Notion-Version":"2022-06-28"}
 
+def notion_deep_link(page_id: str) -> str:
+    """Deep link que abre la pagina directamente en la app nativa de Notion en iOS."""
+    pid = page_id.replace("-", "")
+    return f"notion://www.notion.so/{pid}"
+
 # ── REINTENTOS ───────────────────────────────────────────────────────────────
 def notion_request(method, url, **kwargs):
     intentos = 3
@@ -100,9 +105,7 @@ _meses_cache: dict = {}
 
 def buscar_mes_id(mes: str):
     """Busca el ID del mes en la BD Balance.
-    Busca por tipo 'title' en lugar de nombre de propiedad,
-    por lo que funciona sin importar como se llame la columna en Notion.
-    Sin auto-creacion: si no existe, loguea error claro y retorna None."""
+    Busca por tipo 'title' sin importar como se llame la columna en Notion."""
     if mes in _meses_cache:
         return _meses_cache[mes]
     if not NOTION_BALANCE_ID:
@@ -116,7 +119,6 @@ def buscar_mes_id(mes: str):
             timeout=8)
         if r and r.status_code == 200:
             for page in r.json().get("results", []):
-                # Busca la propiedad de tipo title sin importar su nombre
                 for prop_val in page.get("properties", {}).values():
                     if prop_val.get("type") == "title":
                         title_list = prop_val.get("title", [])
@@ -570,28 +572,55 @@ def fmt(f):
     from datetime import datetime as dt
     return dt.strptime(f,"%Y-%m-%d").strftime("%d %b %Y").lower()
 
-def msg_gasto(g,nombre=None):
-    enc=f"🔔 Nuevo gasto de {nombre}" if nombre else "✅ Gasto guardado"
-    return f"{enc}\n\n📌 {g['concepto']}\n💵 ${g['monto']:,.2f}\n🗓️ {fmt(g['fecha'])}\n💳 {g['tarjeta']}  •  Mes: {g['mes']}\n🏷️ {g['subcategoria']}  •  {g['presupuesto']}"
+def msg_gasto(g, nombre=None, notion_id=None):
+    """Genera el mensaje de confirmacion del gasto.
+    Si se pasa notion_id incluye un deep link que abre la app nativa de Notion en iOS."""
+    enc = f"🔔 Nuevo gasto de {nombre}" if nombre else "✅ Gasto guardado"
+    msg = (
+        f"{enc}\n\n"
+        f"📌 {g['concepto']}\n"
+        f"💵 ${g['monto']:,.2f}\n"
+        f"🗓️ {fmt(g['fecha'])}\n"
+        f"💳 {g['tarjeta']}  •  Mes: {g['mes']}\n"
+        f"🏷️ {g['subcategoria']}  •  {g['presupuesto']}"
+    )
+    if notion_id:
+        url = notion_deep_link(notion_id)
+        msg += f"\n[📎 Ver en Notion]({url})"
+    return msg
 
 # ── REGISTRAR Y NOTIFICAR ────────────────────────────────────────────────────
-async def registrar_y_notificar(update,context,gasto):
-    ok,nid,err=guardar_notion(gasto)
+async def registrar_y_notificar(update, context, gasto):
+    ok, nid, err = guardar_notion(gasto)
     if not ok:
         logger.error(f"Error guardando en Notion: {err}")
-        await update.message.reply_text("❌ Error al guardar en Notion. Intenta de nuevo.",reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("❌ Error al guardar en Notion. Intenta de nuevo.", reply_markup=ReplyKeyboardRemove())
         return
-    gasto_completo = {**gasto,"notion_id":nid}
+    gasto_completo = {**gasto, "notion_id": nid}
     uid = update.effective_user.id
     threading.Thread(target=guardar_historial_notion, args=(gasto_completo, uid), daemon=True).start()
     import random
-    if random.randint(1,50)==1:
+    if random.randint(1, 50) == 1:
         threading.Thread(target=limpiar_aprendizaje, daemon=True).start()
-    await update.message.reply_text(msg_gasto(gasto),reply_markup=ReplyKeyboardRemove())
-    notif=USUARIOS_NOTIFICAR.get(uid); nombre=USUARIOS_NOMBRES.get(uid,"Alguien")
+
+    # Confirmacion al que registra — con link
+    await update.message.reply_text(
+        msg_gasto(gasto, notion_id=nid),
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode="Markdown"
+    )
+
+    # Notificacion al otro — con link y boton corregir
+    notif = USUARIOS_NOTIFICAR.get(uid)
+    nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
     if notif:
-        kb=InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Corregir categoría",callback_data=f"cor:{nid}:{gasto['concepto']}")]])
-        await context.bot.send_message(chat_id=notif,text=msg_gasto(gasto,nombre=nombre),reply_markup=kb)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Corregir categoría", callback_data=f"cor:{nid}:{gasto['concepto']}")]])
+        await context.bot.send_message(
+            chat_id=notif,
+            text=msg_gasto(gasto, nombre=nombre, notion_id=nid),
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
 
 # ── REGISTRAR VIA SHORTCUT (iOS) ─────────────────────────────────────────────
 async def registrar_via_shortcut(texto: str, user_id: int):
@@ -619,16 +648,22 @@ async def registrar_via_shortcut(texto: str, user_id: int):
     if random.randint(1, 50) == 1:
         threading.Thread(target=limpiar_aprendizaje, daemon=True).start()
 
-    msg = msg_gasto(gasto)
+    msg = msg_gasto(gasto, notion_id=nid)
     if not gasto.get("seguro"):
         msg += "\n\n⚠️ Categoría inferida — usa /corregir si no es correcta."
-    await app.bot.send_message(chat_id=user_id, text=msg)
+
+    await app.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
 
     notif = USUARIOS_NOTIFICAR.get(user_id)
     nombre = USUARIOS_NOMBRES.get(user_id, "Alguien")
     if notif:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Corregir categoría", callback_data=f"cor:{nid}:{gasto['concepto']}")]])
-        await app.bot.send_message(chat_id=notif, text=msg_gasto(gasto, nombre=nombre), reply_markup=kb)
+        await app.bot.send_message(
+            chat_id=notif,
+            text=msg_gasto(gasto, nombre=nombre, notion_id=nid),
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
 
     return True, msg
 
@@ -781,27 +816,48 @@ async def corregir_presu(update,context):
         return CORREGIR_QUE
     return await aplicar_correccion(update,context,pre=presu_limpio(txt))
 
-async def aplicar_correccion(update,context,sub=None,pre=None):
-    gasto=context.user_data.get("gasto_corregir")
-    nueva_sub=sub or context.user_data.get("nueva_sub")
-    nuevo_pre=pre
+async def aplicar_correccion(update, context, sub=None, pre=None):
+    gasto     = context.user_data.get("gasto_corregir")
+    nueva_sub = sub or context.user_data.get("nueva_sub")
+    nuevo_pre = pre
     if not gasto:
-        await update.message.reply_text("Error.",reply_markup=ReplyKeyboardRemove()); return ConversationHandler.END
-    ok=actualizar_notion(gasto["notion_id"],sub=nueva_sub,pre=nuevo_pre)
+        await update.message.reply_text("Error.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+
+    ok = actualizar_notion(gasto["notion_id"], sub=nueva_sub, pre=nuevo_pre)
     if ok:
-        guardar_aprendizaje(gasto["concepto"].lower(),nueva_sub or gasto.get("subcategoria",""),nuevo_pre or gasto.get("presupuesto",""))
-        resumen=f"📌 {gasto['concepto']}\n"
-        if nueva_sub: resumen+=f"🏷️ Subcategoria: {nueva_sub}\n"
-        if nuevo_pre: resumen+=f"💰 Presupuesto: {nuevo_pre}\n"
-        await update.message.reply_text(f"✅ Corregido y aprendido\n\n{resumen}",reply_markup=ReplyKeyboardRemove())
-        uid=update.effective_user.id
-        nombre=USUARIOS_NOMBRES.get(uid,"Alguien")
-        notif=USUARIOS_NOTIFICAR.get(uid)
+        guardar_aprendizaje(
+            gasto["concepto"].lower(),
+            nueva_sub or gasto.get("subcategoria", ""),
+            nuevo_pre or gasto.get("presupuesto", "")
+        )
+        resumen = f"📌 {gasto['concepto']}\n"
+        if nueva_sub: resumen += f"🏷️ {nueva_sub}\n"
+        if nuevo_pre: resumen += f"💰 {nuevo_pre}\n"
+
+        # Deep link al gasto corregido
+        nid  = gasto.get("notion_id", "")
+        link = f"\n[📎 Ver en Notion]({notion_deep_link(nid)})" if nid else ""
+
+        await update.message.reply_text(
+            f"✅ Corregido\n\n{resumen}{link}",
+            reply_markup=ReplyKeyboardRemove(),
+            parse_mode="Markdown"
+        )
+        uid    = update.effective_user.id
+        nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
+        notif  = USUARIOS_NOTIFICAR.get(uid)
         if notif:
-            await context.bot.send_message(chat_id=notif,text=f"✏️ {nombre} corrigió un gasto\n\n{resumen}")
+            await context.bot.send_message(
+                chat_id=notif,
+                text=f"✏️ {nombre} corrigió un gasto\n\n{resumen}{link}",
+                parse_mode="Markdown"
+            )
     else:
-        await update.message.reply_text("❌ Error al actualizar Notion.",reply_markup=ReplyKeyboardRemove())
-    context.user_data.clear(); return ConversationHandler.END
+        await update.message.reply_text("❌ Error al actualizar Notion.", reply_markup=ReplyKeyboardRemove())
+
+    context.user_data.clear()
+    return ConversationHandler.END
 
 async def callback_corregir(update,context):
     query=update.callback_query; await query.answer()
@@ -1049,7 +1105,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_final7...")
+    logger.info("Bot corriendo v_final8...")
     server.serve_forever()
 
 if __name__ == "__main__":
