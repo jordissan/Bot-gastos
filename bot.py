@@ -80,9 +80,9 @@ def similitud(a,b): return SequenceMatcher(None,normalizar(a),normalizar(b)).rat
 def nh(): return {"Authorization":f"Bearer {NOTION_TOKEN}","Content-Type":"application/json","Notion-Version":"2022-06-28"}
 
 def notion_deep_link(page_id: str) -> str:
-    """Deep link que abre la pagina directamente en la app nativa de Notion en iOS."""
+    """URL de Notion. En iOS abre la app nativa via universal links."""
     pid = page_id.replace("-", "")
-    return f"notion://www.notion.so/{pid}"
+    return f"https://www.notion.so/{pid}"
 
 # ── REINTENTOS ───────────────────────────────────────────────────────────────
 def notion_request(method, url, **kwargs):
