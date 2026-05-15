@@ -71,75 +71,69 @@ PR = {
     "Otros":"1ea7eb0cbb9280cbbe43c1bd54396691",
 }
 
-# ── NOTION BALANCE (meses dinamicos con autocreacion) ─────────────────────────
+# ── HELPERS ──────────────────────────────────────────────────────────────────
+def normalizar(t):
+    t=t.lower().strip(); t=unicodedata.normalize("NFD",t)
+    return "".join(c for c in t if unicodedata.category(c)!="Mn")
+
+def similitud(a,b): return SequenceMatcher(None,normalizar(a),normalizar(b)).ratio()
+def nh(): return {"Authorization":f"Bearer {NOTION_TOKEN}","Content-Type":"application/json","Notion-Version":"2022-06-28"}
+
+# ── REINTENTOS ───────────────────────────────────────────────────────────────
+def notion_request(method, url, **kwargs):
+    intentos = 3
+    for i in range(intentos):
+        try:
+            r = requests.request(method, url, **kwargs)
+            if r.status_code < 500:
+                return r
+            logger.warning(f"Notion error {r.status_code}, intento {i+1}/{intentos}")
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Notion request exception: {e}, intento {i+1}/{intentos}")
+        if i < intentos - 1:
+            time.sleep(2)
+    return None
+
+# ── NOTION BALANCE (meses dinamicos) ─────────────────────────────────────────
 NOTION_BALANCE_ID = os.environ.get("NOTION_BALANCE_ID", "")
 _meses_cache: dict = {}
 
 def buscar_mes_id(mes: str):
     """Busca el ID del mes en la BD Balance.
-    Si no lo encuentra (por cualquier razon), lo crea automaticamente.
-    Nunca debe devolver None si NOTION_BALANCE_ID esta configurado."""
+    Busca por tipo 'title' en lugar de nombre de propiedad,
+    por lo que funciona sin importar como se llame la columna en Notion.
+    Sin auto-creacion: si no existe, loguea error claro y retorna None."""
     if mes in _meses_cache:
         return _meses_cache[mes]
     if not NOTION_BALANCE_ID:
         logger.warning("NOTION_BALANCE_ID no configurado")
         return None
     try:
-        # Intento 1: buscar por nombre exacto
         r = notion_request("POST",
-            f"https://api.notion.com/v1/databases/{NOTION_BALANCE_ID}/query",
-            headers=nh(),
-            json={"filter": {"property": "Name", "title": {"equals": mes}}},
-            timeout=8)
-        if r and r.status_code == 200:
-            results = r.json().get("results", [])
-            if results:
-                mid = results[0]["id"]
-                _meses_cache[mes] = mid
-                logger.info(f"Mes {mes} encontrado: {mid}")
-                return mid
-
-        # Intento 2: listar todos y buscar manualmente (por si el filtro falla)
-        logger.warning(f"Mes {mes} no encontrado con filtro, buscando en lista completa...")
-        r2 = notion_request("POST",
             f"https://api.notion.com/v1/databases/{NOTION_BALANCE_ID}/query",
             headers=nh(),
             json={"page_size": 50},
             timeout=8)
-        if r2 and r2.status_code == 200:
-            for page in r2.json().get("results", []):
-                title_list = page.get("properties", {}).get("Name", {}).get("title", [])
-                nombre = title_list[0]["text"]["content"] if title_list else ""
-                if nombre == mes:
-                    mid = page["id"]
-                    _meses_cache[mes] = mid
-                    logger.info(f"Mes {mes} encontrado en lista completa: {mid}")
-                    return mid
-
-        # Intento 3: crear el mes si realmente no existe
-        logger.warning(f"Mes {mes} no existe en Balance, creando automaticamente...")
-        r3 = notion_request("POST",
-            "https://api.notion.com/v1/pages",
-            headers=nh(),
-            json={
-                "parent": {"database_id": NOTION_BALANCE_ID},
-                "properties": {
-                    "Name": {"title": [{"text": {"content": mes}}]}
-                }
-            },
-            timeout=8)
-        if r3 and r3.status_code == 200:
-            mid = r3.json().get("id")
-            _meses_cache[mes] = mid
-            logger.info(f"Mes {mes} creado exitosamente: {mid}")
-            return mid
+        if r and r.status_code == 200:
+            for page in r.json().get("results", []):
+                # Busca la propiedad de tipo title sin importar su nombre
+                for prop_val in page.get("properties", {}).values():
+                    if prop_val.get("type") == "title":
+                        title_list = prop_val.get("title", [])
+                        nombre = title_list[0]["text"]["content"] if title_list else ""
+                        if nombre == mes:
+                            mid = page["id"]
+                            _meses_cache[mes] = mid
+                            logger.info(f"Mes {mes} encontrado: {mid}")
+                            return mid
+            logger.error(f"Mes {mes} no encontrado en BD Balance — verifícalo en Notion")
         else:
-            logger.error(f"Error creando mes {mes}: {r3.text if r3 else 'sin respuesta'}")
+            logger.error(f"Error consultando BD Balance: {r.status_code if r else 'sin respuesta'}")
     except Exception as e:
         logger.error(f"Error en buscar_mes_id({mes}): {e}")
     return None
 
-# ── CONCEPTOS UNIVOCOS — nunca guardar en Aprendizaje ────────────────────────
+# ── CONCEPTOS UNIVOCOS ────────────────────────────────────────────────────────
 CONCEPTOS_UNIVOCOS = {
     "netflix","spotify","disney","hbo","apple tv","paramount","crunchyroll",
     "max","prime video","izzi","telmex","adobe","icloud","capcut","claude",
@@ -260,30 +254,6 @@ MESES_TEXTO = {"ene":1,"feb":2,"mar":3,"abr":4,"may":5,"jun":6,"jul":7,"ago":8,"
                "enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,"julio":7,"agosto":8,
                "septiembre":9,"octubre":10,"noviembre":11,"diciembre":12}
 
-# ── HELPERS ──────────────────────────────────────────────────────────────────
-def normalizar(t):
-    t=t.lower().strip(); t=unicodedata.normalize("NFD",t)
-    return "".join(c for c in t if unicodedata.category(c)!="Mn")
-
-def similitud(a,b): return SequenceMatcher(None,normalizar(a),normalizar(b)).ratio()
-def nh(): return {"Authorization":f"Bearer {NOTION_TOKEN}","Content-Type":"application/json","Notion-Version":"2022-06-28"}
-
-# ── REINTENTOS ───────────────────────────────────────────────────────────────
-def notion_request(method, url, **kwargs):
-    """Wrapper con 3 reintentos automaticos (espera 2s entre cada uno)."""
-    intentos = 3
-    for i in range(intentos):
-        try:
-            r = requests.request(method, url, **kwargs)
-            if r.status_code < 500:
-                return r
-            logger.warning(f"Notion error {r.status_code}, intento {i+1}/{intentos}")
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Notion request exception: {e}, intento {i+1}/{intentos}")
-        if i < intentos - 1:
-            time.sleep(2)
-    return None
-
 # ── APRENDIZAJE ──────────────────────────────────────────────────────────────
 def buscar_aprendizaje(concepto):
     r = notion_request("POST",
@@ -377,15 +347,15 @@ def guardar_historial_notion(gasto, usuario_id):
             "https://api.notion.com/v1/pages",
             headers=nh(),
             json={"parent":{"database_id":NOTION_HISTORIAL_ID},"properties":{
-                "Concepto":  {"title":[{"text":{"content":gasto["concepto"]}}]},
-                "Monto":     {"number":gasto["monto"]},
-                "Fecha":     {"date":{"start":gasto["fecha"]}},
-                "Tarjeta":   {"rich_text":[{"text":{"content":gasto["tarjeta"]}}]},
-                "Mes":       {"rich_text":[{"text":{"content":gasto["mes"]}}]},
+                "Concepto":    {"title":[{"text":{"content":gasto["concepto"]}}]},
+                "Monto":       {"number":gasto["monto"]},
+                "Fecha":       {"date":{"start":gasto["fecha"]}},
+                "Tarjeta":     {"rich_text":[{"text":{"content":gasto["tarjeta"]}}]},
+                "Mes":         {"rich_text":[{"text":{"content":gasto["mes"]}}]},
                 "Subcategoria":{"rich_text":[{"text":{"content":gasto["subcategoria"]}}]},
                 "Presupuesto": {"rich_text":[{"text":{"content":gasto["presupuesto"]}}]},
-                "NotionID":  {"rich_text":[{"text":{"content":gasto.get("notion_id","")}}]},
-                "UsuarioID": {"number":usuario_id},
+                "NotionID":    {"rich_text":[{"text":{"content":gasto.get("notion_id","")}}]},
+                "UsuarioID":   {"number":usuario_id},
             }},
             timeout=5)
         r = notion_request("POST",
@@ -568,11 +538,11 @@ def guardar_notion(gasto):
         "Estado de Cuenta":{"rich_text":[{"text":{"content":gasto["tarjeta"]}}]},
         "Pago":{"select":{"name":gasto["tarjeta"]}},
     }
-    mid=buscar_mes_id(gasto["mes"])
+    mid = buscar_mes_id(gasto["mes"])
     if mid:
-        props["Mes"]={"relation":[{"id":mid}]}
+        props["Mes"] = {"relation":[{"id":mid}]}
     else:
-        logger.error(f"No se pudo obtener/crear el mes {gasto['mes']} — gasto guardado SIN mes")
+        logger.error(f"Mes {gasto['mes']} sin ID — gasto guardado SIN relacion de mes")
     sid=SC.get(gasto["subcategoria"])
     if sid: props["Subcategoria"]={"relation":[{"id":sid}]}
     pid=PR.get(gasto["presupuesto"])
@@ -963,12 +933,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 app  = get_app()
                 loop = getattr(getattr(app, "update_processor", None), "_loop", None)
                 if loop:
-                    future   = asyncio.run_coroutine_threadsafe(
+                    future  = asyncio.run_coroutine_threadsafe(
                         registrar_via_shortcut(texto, user_id), loop)
-                    ok, msg  = future.result(timeout=15)
+                    ok, msg = future.result(timeout=15)
                 else:
                     logger.error("/log: loop no disponible")
-                    ok, msg  = False, "Loop no disponible"
+                    ok, msg = False, "Loop no disponible"
 
                 resp = json.dumps({"ok": ok, "msg": msg}, ensure_ascii=False).encode()
                 self.send_response(200)
@@ -1079,7 +1049,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_final6...")
+    logger.info("Bot corriendo v_final7...")
     server.serve_forever()
 
 if __name__ == "__main__":
