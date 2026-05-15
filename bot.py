@@ -597,6 +597,46 @@ async def registrar_y_notificar(update,context,gasto):
         kb=InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Corregir categoría",callback_data=f"cor:{nid}:{gasto['concepto']}")]])
         await context.bot.send_message(chat_id=notif,text=msg_gasto(gasto,nombre=nombre),reply_markup=kb)
 
+# ── REGISTRAR VIA SHORTCUT (iOS) ─────────────────────────────────────────────
+async def registrar_via_shortcut(texto: str, user_id: int):
+    """Procesa y registra un gasto enviado desde el Shortcut de iOS sin update/context."""
+    import random
+    app = get_app()
+    if not app:
+        return False, "Bot no disponible"
+    try:
+        gasto = parsear_mensaje(texto)
+    except ValueError as e:
+        await app.bot.send_message(chat_id=user_id, text=f"❓ {e}\n\nEjemplo: Oxxo 45")
+        return False, str(e)
+    except Exception as e:
+        await app.bot.send_message(chat_id=user_id, text=f"❌ Error al procesar: {e}")
+        return False, str(e)
+
+    ok, nid, err = guardar_notion(gasto)
+    if not ok:
+        logger.error(f"Error Notion via shortcut: {err}")
+        await app.bot.send_message(chat_id=user_id, text="❌ Error al guardar en Notion. Intenta de nuevo.")
+        return False, f"Error Notion: {err}"
+
+    gasto_completo = {**gasto, "notion_id": nid}
+    threading.Thread(target=guardar_historial_notion, args=(gasto_completo, user_id), daemon=True).start()
+    if random.randint(1, 50) == 1:
+        threading.Thread(target=limpiar_aprendizaje, daemon=True).start()
+
+    msg = msg_gasto(gasto)
+    if not gasto.get("seguro"):
+        msg += "\n\n⚠️ Categoría inferida — usa /corregir si no es correcta."
+    await app.bot.send_message(chat_id=user_id, text=msg)
+
+    notif = USUARIOS_NOTIFICAR.get(user_id)
+    nombre = USUARIOS_NOMBRES.get(user_id, "Alguien")
+    if notif:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Corregir categoría", callback_data=f"cor:{nid}:{gasto['concepto']}")]])
+        await app.bot.send_message(chat_id=notif, text=msg_gasto(gasto, nombre=nombre), reply_markup=kb)
+
+    return True, msg
+
 # ── CONV GASTO ───────────────────────────────────────────────────────────────
 async def handle_gasto(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
@@ -867,6 +907,59 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         import asyncio
+        path = self.path.split("?")[0]
+
+        # ── /log  →  iOS Shortcut ─────────────────────────────────────────
+        if path == "/log":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body   = self.rfile.read(length)
+                data   = json.loads(body.decode("utf-8"))
+
+                SC_SECRET = os.environ.get("SHORTCUT_SECRET", "")
+                if SC_SECRET and data.get("secret") != SC_SECRET:
+                    self.send_response(403)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"ok":false,"error":"unauthorized"}')
+                    return
+
+                texto   = data.get("text", "").strip()
+                user_id = int(data.get("user_id", 8663298433))
+
+                if not texto:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"ok":false,"error":"texto vacio"}')
+                    return
+
+                app  = get_app()
+                loop = getattr(getattr(app, "update_processor", None), "_loop", None)
+                if loop:
+                    future   = asyncio.run_coroutine_threadsafe(
+                        registrar_via_shortcut(texto, user_id), loop)
+                    ok, msg  = future.result(timeout=15)
+                else:
+                    ok, msg  = False, "Loop no disponible"
+
+                resp = json.dumps({"ok": ok, "msg": msg}, ensure_ascii=False).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+            except Exception as e:
+                logger.error(f"Error en /log: {e}")
+                resp = json.dumps({"ok": False, "error": str(e)}).encode()
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+            return
+
+        # ── /webhook  →  Telegram ─────────────────────────────────────────
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
