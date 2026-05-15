@@ -1,4 +1,4 @@
-import os, re, datetime, requests, threading, unicodedata, json, logging, time
+import os, re, datetime, requests, threading, unicodedata, json, logging, time, base64
 from difflib import SequenceMatcher
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
@@ -13,6 +13,7 @@ NOTION_DATABASE_ID    = os.environ["NOTION_DATABASE_ID"]
 NOTION_APRENDIZAJE_ID = "3ba6f37c717948a1a6aeac3b384ff33c"
 NOTION_HISTORIAL_ID   = "35f7eb0cbb9280ae8f02f69b4f242298"
 GOOGLE_MAPS_API_KEY   = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+GOOGLE_VISION_API_KEY = os.environ.get("GOOGLE_VISION_API_KEY", "")
 WEBHOOK_SECRET        = os.environ.get("WEBHOOK_SECRET", "")
 RENDER_EXTERNAL_URL   = os.environ.get("RENDER_EXTERNAL_URL", "")
 
@@ -29,6 +30,7 @@ CORREGIR_CAT_GRP = 12
 CORREGIR_SUBCAT  = 13
 CORREGIR_PRESU   = 14
 PRUEBA_GASTO     = 20
+FOTO_CONFIRMAR   = 30
 
 SC = {
     "Super":"bf7d4b7d0445441ab89b53eec946d028","Abarrotes":"3587eb0cbb9280c58919c55b065c1e19",
@@ -99,13 +101,11 @@ def notion_request(method, url, **kwargs):
             time.sleep(2)
     return None
 
-# ── NOTION BALANCE (meses dinamicos) ─────────────────────────────────────────
+# ── NOTION BALANCE ────────────────────────────────────────────────────────────
 NOTION_BALANCE_ID = os.environ.get("NOTION_BALANCE_ID", "")
 _meses_cache: dict = {}
 
 def buscar_mes_id(mes: str):
-    """Busca el ID del mes en la BD Balance.
-    Busca por tipo 'title' sin importar como se llame la columna en Notion."""
     if mes in _meses_cache:
         return _meses_cache[mes]
     if not NOTION_BALANCE_ID:
@@ -114,9 +114,7 @@ def buscar_mes_id(mes: str):
     try:
         r = notion_request("POST",
             f"https://api.notion.com/v1/databases/{NOTION_BALANCE_ID}/query",
-            headers=nh(),
-            json={"page_size": 50},
-            timeout=8)
+            headers=nh(), json={"page_size": 50}, timeout=8)
         if r and r.status_code == 200:
             for page in r.json().get("results", []):
                 for prop_val in page.get("properties", {}).values():
@@ -128,7 +126,7 @@ def buscar_mes_id(mes: str):
                             _meses_cache[mes] = mid
                             logger.info(f"Mes {mes} encontrado: {mid}")
                             return mid
-            logger.error(f"Mes {mes} no encontrado en BD Balance — verifícalo en Notion")
+            logger.error(f"Mes {mes} no encontrado en BD Balance")
         else:
             logger.error(f"Error consultando BD Balance: {r.status_code if r else 'sin respuesta'}")
     except Exception as e:
@@ -256,6 +254,95 @@ MESES_TEXTO = {"ene":1,"feb":2,"mar":3,"abr":4,"may":5,"jun":6,"jul":7,"ago":8,"
                "enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,"julio":7,"agosto":8,
                "septiembre":9,"octubre":10,"noviembre":11,"diciembre":12}
 
+# ── GOOGLE VISION OCR ─────────────────────────────────────────────────────────
+def ocr_ticket(image_bytes: bytes) -> str:
+    """Llama a Google Vision API y devuelve el texto completo del ticket."""
+    if not GOOGLE_VISION_API_KEY:
+        logger.warning("GOOGLE_VISION_API_KEY no configurado")
+        return ""
+    try:
+        payload = {
+            "requests": [{
+                "image": {"content": base64.b64encode(image_bytes).decode()},
+                "features": [{"type": "TEXT_DETECTION", "maxResults": 1}]
+            }]
+        }
+        r = requests.post(
+            f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}",
+            json=payload, timeout=10)
+        if r.status_code == 200:
+            anotaciones = r.json().get("responses", [{}])[0].get("textAnnotations", [])
+            if anotaciones:
+                return anotaciones[0].get("description", "")
+        else:
+            logger.error(f"Vision API error {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        logger.error(f"Error en ocr_ticket: {e}")
+    return ""
+
+def parsear_ticket(texto: str) -> dict:
+    """Extrae concepto, monto y fecha del texto OCR de un ticket.
+    Devuelve dict con claves: concepto (str), monto (float|None), fecha (date)."""
+    import zoneinfo
+    hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+    lineas = [l.strip() for l in texto.split("\n") if l.strip()]
+
+    # ── Monto: busca TOTAL primero, luego el número más grande del ticket ──
+    monto = None
+    patrones_total = [
+        r'TOTAL\s*\$?\s*([\d,]+\.?\d*)',
+        r'IMPORTE\s*TOTAL\s*\$?\s*([\d,]+\.?\d*)',
+        r'IMPORTE\s*\$?\s*([\d,]+\.?\d*)',
+        r'A\s*PAGAR\s*\$?\s*([\d,]+\.?\d*)',
+        r'SUBTOTAL\s*\$?\s*([\d,]+\.?\d*)',
+    ]
+    for patron in patrones_total:
+        m = re.search(patron, texto, re.IGNORECASE)
+        if m:
+            try:
+                monto = float(m.group(1).replace(",", ""))
+                break
+            except:
+                pass
+    # Fallback: número más grande que parezca un precio
+    if monto is None:
+        candidatos = re.findall(r'\b(\d{1,5}\.\d{2})\b', texto)
+        if candidatos:
+            monto = max(float(c.replace(",", "")) for c in candidatos)
+
+    # ── Fecha ──────────────────────────────────────────────────────────────
+    fecha = hoy
+    patrones_fecha = [
+        r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})',   # dd/mm/aa o dd-mm-aaaa
+        r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})',       # aaaa/mm/dd
+    ]
+    for patron in patrones_fecha:
+        m = re.search(patron, texto)
+        if m:
+            try:
+                g = m.groups()
+                if len(g[0]) == 4:          # aaaa/mm/dd
+                    y, mo, d = int(g[0]), int(g[1]), int(g[2])
+                else:                        # dd/mm/aa(aa)
+                    d, mo, y = int(g[0]), int(g[1]), int(g[2])
+                    if y < 100: y += 2000
+                fecha = datetime.date(y, mo, d)
+                break
+            except:
+                pass
+
+    # ── Concepto: primera línea significativa (letras, no solo números) ───
+    concepto = "Ticket"
+    for linea in lineas[:8]:
+        # Saltar líneas que son solo números, fechas, RFC, etc.
+        if len(linea) < 3: continue
+        if re.match(r'^[\d\s\$\.\,\-\*\/\:]+$', linea): continue
+        if re.match(r'^RFC', linea, re.IGNORECASE): continue
+        concepto = linea.title()
+        break
+
+    return {"concepto": concepto, "monto": monto, "fecha": fecha}
+
 # ── APRENDIZAJE ──────────────────────────────────────────────────────────────
 def buscar_aprendizaje(concepto):
     r = notion_request("POST",
@@ -274,7 +361,6 @@ def buscar_aprendizaje(concepto):
 
 def guardar_aprendizaje(concepto, sub, pre):
     if es_concepto_univoco(concepto):
-        logger.info(f"Concepto univoco '{concepto}' — omitiendo aprendizaje")
         return
     hoy = datetime.date.today().isoformat()
     r = notion_request("POST",
@@ -287,19 +373,16 @@ def guardar_aprendizaje(concepto, sub, pre):
         if res:
             pid = res[0]["id"]
             u = res[0]["properties"].get("Usos",{}).get("number",0) or 0
-            notion_request("PATCH",
-                f"https://api.notion.com/v1/pages/{pid}",
+            notion_request("PATCH", f"https://api.notion.com/v1/pages/{pid}",
                 headers=nh(),
                 json={"properties":{
                     "Subcategoria":{"rich_text":[{"text":{"content":sub}}]},
                     "Presupuesto":{"rich_text":[{"text":{"content":pre}}]},
                     "Usos":{"number":u+1},
                     "Fecha":{"date":{"start":hoy}},
-                }},
-                timeout=5)
+                }}, timeout=5)
             return
-    notion_request("POST",
-        "https://api.notion.com/v1/pages",
+    notion_request("POST", "https://api.notion.com/v1/pages",
         headers=nh(),
         json={"parent":{"database_id":NOTION_APRENDIZAJE_ID},"properties":{
             "Concepto":{"title":[{"text":{"content":concepto.lower()}}]},
@@ -307,8 +390,7 @@ def guardar_aprendizaje(concepto, sub, pre):
             "Presupuesto":{"rich_text":[{"text":{"content":pre}}]},
             "Usos":{"number":1},
             "Fecha":{"date":{"start":hoy}},
-        }},
-        timeout=5)
+        }}, timeout=5)
 
 def limpiar_aprendizaje():
     try:
@@ -345,8 +427,7 @@ MAX_HISTORIAL = 5
 
 def guardar_historial_notion(gasto, usuario_id):
     try:
-        notion_request("POST",
-            "https://api.notion.com/v1/pages",
+        notion_request("POST", "https://api.notion.com/v1/pages",
             headers=nh(),
             json={"parent":{"database_id":NOTION_HISTORIAL_ID},"properties":{
                 "Concepto":    {"title":[{"text":{"content":gasto["concepto"]}}]},
@@ -358,8 +439,7 @@ def guardar_historial_notion(gasto, usuario_id):
                 "Presupuesto": {"rich_text":[{"text":{"content":gasto["presupuesto"]}}]},
                 "NotionID":    {"rich_text":[{"text":{"content":gasto.get("notion_id","")}}]},
                 "UsuarioID":   {"number":usuario_id},
-            }},
-            timeout=5)
+            }}, timeout=5)
         r = notion_request("POST",
             f"https://api.notion.com/v1/databases/{NOTION_HISTORIAL_ID}/query",
             headers=nh(),
@@ -367,16 +447,12 @@ def guardar_historial_notion(gasto, usuario_id):
                 "filter":{"property":"UsuarioID","number":{"equals":usuario_id}},
                 "sorts":[{"timestamp":"created_time","direction":"descending"}],
                 "page_size": 20,
-            },
-            timeout=5)
+            }, timeout=5)
         if r and r.status_code == 200:
             entradas = r.json().get("results",[])
             for vieja in entradas[MAX_HISTORIAL:]:
-                notion_request("PATCH",
-                    f"https://api.notion.com/v1/pages/{vieja['id']}",
-                    headers=nh(),
-                    json={"archived": True},
-                    timeout=5)
+                notion_request("PATCH", f"https://api.notion.com/v1/pages/{vieja['id']}",
+                    headers=nh(), json={"archived": True}, timeout=5)
     except Exception as ex:
         logger.error(f"Error guardando historial: {ex}")
 
@@ -389,8 +465,7 @@ def cargar_historial_notion(usuario_id):
                 "filter":{"property":"UsuarioID","number":{"equals":usuario_id}},
                 "sorts":[{"timestamp":"created_time","direction":"descending"}],
                 "page_size": MAX_HISTORIAL,
-            },
-            timeout=5)
+            }, timeout=5)
         if r and r.status_code == 200:
             resultado = []
             for e in r.json().get("results",[]):
@@ -487,11 +562,11 @@ def calcular_mes(fecha,tarjeta):
     elif tarjeta=="BBVA05": mp=m+1 if d>=5  else m
     elif tarjeta=="BMEX04": mp=m+1 if d>=4  else m
     elif tarjeta=="HEYB25": mp=m+2 if d>=25 else m+1
-    else: mp=m  # EFVO
+    else: mp=m
     while mp>12: mp-=12; y+=1
     return f"{MESES_ESP[mp]}{str(y)[-2:]}"
 
-# ── PARSEO ───────────────────────────────────────────────────────────────────
+# ── PARSEO TEXTO ─────────────────────────────────────────────────────────────
 def parsear_fecha(tokens):
     import zoneinfo; hoy=datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
     for i,t in enumerate(tokens):
@@ -573,8 +648,6 @@ def fmt(f):
     return dt.strptime(f,"%Y-%m-%d").strftime("%d %b %Y").lower()
 
 def msg_gasto(g, nombre=None, notion_id=None):
-    """Genera el mensaje de confirmacion del gasto.
-    Si se pasa notion_id incluye un deep link que abre la app nativa de Notion en iOS."""
     enc = f"🔔 Nuevo gasto de {nombre}" if nombre else "✅ Gasto guardado"
     msg = (
         f"{enc}\n\n"
@@ -585,8 +658,7 @@ def msg_gasto(g, nombre=None, notion_id=None):
         f"🏷️ {g['subcategoria']}  •  {g['presupuesto']}"
     )
     if notion_id:
-        url = notion_deep_link(notion_id)
-        msg += f"\n[📎 Ver en Notion]({url})"
+        msg += f"\n[📎 Ver en Notion]({notion_deep_link(notion_id)})"
     return msg
 
 # ── REGISTRAR Y NOTIFICAR ────────────────────────────────────────────────────
@@ -600,17 +672,13 @@ async def registrar_y_notificar(update, context, gasto):
     uid = update.effective_user.id
     threading.Thread(target=guardar_historial_notion, args=(gasto_completo, uid), daemon=True).start()
     import random
-    if random.randint(1, 50) == 1:
+    if random.randint(1,50)==1:
         threading.Thread(target=limpiar_aprendizaje, daemon=True).start()
-
-    # Confirmacion al que registra — con link
     await update.message.reply_text(
         msg_gasto(gasto, notion_id=nid),
         reply_markup=ReplyKeyboardRemove(),
         parse_mode="Markdown"
     )
-
-    # Notificacion al otro — con link y boton corregir
     notif = USUARIOS_NOTIFICAR.get(uid)
     nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
     if notif:
@@ -651,7 +719,6 @@ async def registrar_via_shortcut(texto: str, user_id: int):
     msg = msg_gasto(gasto, notion_id=nid)
     if not gasto.get("seguro"):
         msg += "\n\n⚠️ Categoría inferida — usa /corregir si no es correcta."
-
     await app.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
 
     notif = USUARIOS_NOTIFICAR.get(user_id)
@@ -664,10 +731,121 @@ async def registrar_via_shortcut(texto: str, user_id: int):
             reply_markup=kb,
             parse_mode="Markdown"
         )
-
     return True, msg
 
-# ── CONV GASTO ───────────────────────────────────────────────────────────────
+# ── CONV FOTO (Google Vision) ─────────────────────────────────────────────────
+async def handle_foto(update, context):
+    """Recibe foto de ticket, hace OCR y muestra preview con botones Confirmar/Cancelar."""
+    if update.effective_user.id not in USUARIOS_AUTORIZADOS:
+        return ConversationHandler.END
+
+    if not GOOGLE_VISION_API_KEY:
+        await update.message.reply_text("❌ Google Vision no está configurado. Agrega GOOGLE_VISION_API_KEY en Render.")
+        return ConversationHandler.END
+
+    msg_espera = await update.message.reply_text("📸 Analizando ticket...")
+
+    # Descargar foto (mayor resolución disponible)
+    photo = update.message.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+    image_bytes = await file.download_as_bytearray()
+
+    # OCR
+    texto_ocr = ocr_ticket(bytes(image_bytes))
+    if not texto_ocr:
+        await msg_espera.edit_text("❌ No pude leer el ticket. Intenta con mejor iluminación o más cerca.")
+        return ConversationHandler.END
+
+    logger.info(f"OCR resultado:\n{texto_ocr[:300]}")
+
+    # Parsear
+    datos = parsear_ticket(texto_ocr)
+    if not datos["monto"]:
+        await msg_espera.edit_text("❌ No encontré el monto total en el ticket. Regístralo manualmente.")
+        return ConversationHandler.END
+
+    # Construir gasto completo
+    fecha   = datos["fecha"]
+    tarjeta = calcular_tarjeta(fecha)
+    mes     = calcular_mes(fecha, tarjeta)
+    sub, pre, seguro = inferir_categoria(datos["concepto"])
+
+    gasto = {
+        "concepto":    datos["concepto"],
+        "monto":       datos["monto"],
+        "fecha":       fecha.strftime("%Y-%m-%d"),
+        "tarjeta":     tarjeta,
+        "mes":         mes,
+        "subcategoria": sub,
+        "presupuesto":  pre,
+        "seguro":       seguro,
+    }
+    context.user_data["gasto_foto"] = gasto
+
+    # Preview con botones
+    aviso = "\n⚠️ Categoría inferida." if not seguro else ""
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Confirmar", callback_data="foto_confirmar"),
+        InlineKeyboardButton("❌ Cancelar",  callback_data="foto_cancelar"),
+    ]])
+    await msg_espera.edit_text(
+        f"📋 Resumen del ticket\n\n"
+        f"📌 {gasto['concepto']}\n"
+        f"💵 ${gasto['monto']:,.2f}\n"
+        f"🗓️ {fmt(gasto['fecha'])}\n"
+        f"💳 {gasto['tarjeta']}  •  Mes: {gasto['mes']}\n"
+        f"🏷️ {gasto['subcategoria']}  •  {gasto['presupuesto']}"
+        f"{aviso}",
+        reply_markup=kb
+    )
+    return FOTO_CONFIRMAR
+
+async def callback_foto(update, context):
+    """Maneja Confirmar / Cancelar del gasto de foto."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "foto_cancelar":
+        context.user_data.clear()
+        await query.message.edit_text("❌ Registro cancelado.")
+        return ConversationHandler.END
+
+    # Confirmar
+    gasto = context.user_data.pop("gasto_foto", None)
+    if not gasto:
+        await query.message.edit_text("❌ Error: no se encontró el gasto.")
+        return ConversationHandler.END
+
+    ok, nid, err = guardar_notion(gasto)
+    if not ok:
+        logger.error(f"Error guardando gasto foto: {err}")
+        await query.message.edit_text("❌ Error al guardar en Notion.")
+        return ConversationHandler.END
+
+    gasto_completo = {**gasto, "notion_id": nid}
+    uid = query.from_user.id
+    threading.Thread(target=guardar_historial_notion, args=(gasto_completo, uid), daemon=True).start()
+
+    # Editar el preview con confirmacion + link
+    await query.message.edit_text(
+        msg_gasto(gasto, notion_id=nid),
+        parse_mode="Markdown"
+    )
+
+    # Notificar al otro
+    notif  = USUARIOS_NOTIFICAR.get(uid)
+    nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
+    if notif:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Corregir categoría", callback_data=f"cor:{nid}:{gasto['concepto']}")]])
+        await context.bot.send_message(
+            chat_id=notif,
+            text=msg_gasto(gasto, nombre=nombre, notion_id=nid),
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+    return ConversationHandler.END
+
+# ── CONV GASTO (texto) ───────────────────────────────────────────────────────
 async def handle_gasto(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
     texto=update.message.text.strip()
@@ -823,29 +1001,25 @@ async def aplicar_correccion(update, context, sub=None, pre=None):
     if not gasto:
         await update.message.reply_text("Error.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
-
     ok = actualizar_notion(gasto["notion_id"], sub=nueva_sub, pre=nuevo_pre)
     if ok:
         guardar_aprendizaje(
             gasto["concepto"].lower(),
-            nueva_sub or gasto.get("subcategoria", ""),
-            nuevo_pre or gasto.get("presupuesto", "")
+            nueva_sub or gasto.get("subcategoria",""),
+            nuevo_pre or gasto.get("presupuesto","")
         )
         resumen = f"📌 {gasto['concepto']}\n"
         if nueva_sub: resumen += f"🏷️ {nueva_sub}\n"
         if nuevo_pre: resumen += f"💰 {nuevo_pre}\n"
-
-        # Deep link al gasto corregido
-        nid  = gasto.get("notion_id", "")
+        nid  = gasto.get("notion_id","")
         link = f"\n[📎 Ver en Notion]({notion_deep_link(nid)})" if nid else ""
-
         await update.message.reply_text(
             f"✅ Corregido\n\n{resumen}{link}",
             reply_markup=ReplyKeyboardRemove(),
             parse_mode="Markdown"
         )
         uid    = update.effective_user.id
-        nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
+        nombre = USUARIOS_NOMBRES.get(uid,"Alguien")
         notif  = USUARIOS_NOTIFICAR.get(uid)
         if notif:
             await context.bot.send_message(
@@ -855,7 +1029,6 @@ async def aplicar_correccion(update, context, sub=None, pre=None):
             )
     else:
         await update.message.reply_text("❌ Error al actualizar Notion.", reply_markup=ReplyKeyboardRemove())
-
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -926,12 +1099,12 @@ async def start(update,context):
         "Walmart 350 ayer\n"
         "Netflix 299 HEYB25\n"
         "Oxxo Gas 400 15-may\n\n"
-        "Tarjetas disponibles:\n"
-        "BBVA05  BBVA12  HEYB25  BMEX04  EFVO\n\n"
+        "📸 También puedes mandarme una foto de tu ticket.\n\n"
+        "Tarjetas: BBVA05  BBVA12  HEYB25  BMEX04  EFVO\n\n"
         "Comandos:\n"
-        "/corregir — corregir subcategoria o presupuesto de un gasto reciente\n"
-        "/prueba — simular un gasto sin registrar nada en Notion\n"
-        "/cancelar — cancelar cualquier accion en curso"
+        "/corregir — corregir subcategoria o presupuesto\n"
+        "/prueba — simular un gasto sin registrar\n"
+        "/cancelar — cancelar accion en curso"
     )
 
 # ── WEBHOOK HANDLER ───────────────────────────────────────────────────────────
@@ -959,69 +1132,46 @@ class WebhookHandler(BaseHTTPRequestHandler):
         import asyncio
         path = self.path.split("?")[0]
 
-        # ── /log  →  iOS Shortcut ─────────────────────────────────────────
         if path == "/log":
             logger.info(f"/log recibido desde {self.client_address}")
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 body   = self.rfile.read(length)
                 data   = json.loads(body.decode("utf-8"))
-
                 SC_SECRET = os.environ.get("SHORTCUT_SECRET", "")
                 if SC_SECRET and data.get("secret") != SC_SECRET:
-                    self.send_response(403)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(b'{"ok":false,"error":"unauthorized"}')
-                    return
-
+                    self.send_response(403); self.send_header("Content-Type","application/json"); self.end_headers()
+                    self.wfile.write(b'{"ok":false,"error":"unauthorized"}'); return
                 texto   = data.get("text", "").strip()
                 user_id = int(data.get("user_id", 8663298433))
                 logger.info(f"/log texto='{texto[:60]}' user_id={user_id}")
-
                 if not texto:
-                    self.send_response(400)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(b'{"ok":false,"error":"texto vacio"}')
-                    return
-
+                    self.send_response(400); self.send_header("Content-Type","application/json"); self.end_headers()
+                    self.wfile.write(b'{"ok":false,"error":"texto vacio"}'); return
                 app  = get_app()
                 loop = getattr(getattr(app, "update_processor", None), "_loop", None)
                 if loop:
-                    future  = asyncio.run_coroutine_threadsafe(
-                        registrar_via_shortcut(texto, user_id), loop)
+                    future  = asyncio.run_coroutine_threadsafe(registrar_via_shortcut(texto, user_id), loop)
                     ok, msg = future.result(timeout=15)
                 else:
-                    logger.error("/log: loop no disponible")
-                    ok, msg = False, "Loop no disponible"
-
+                    logger.error("/log: loop no disponible"); ok, msg = False, "Loop no disponible"
                 resp = json.dumps({"ok": ok, "msg": msg}, ensure_ascii=False).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(resp)))
-                self.end_headers()
-                self.wfile.write(resp)
+                self.send_response(200); self.send_header("Content-Type","application/json")
+                self.send_header("Content-Length", str(len(resp))); self.end_headers(); self.wfile.write(resp)
             except Exception as e:
                 logger.error(f"Error en /log: {e}")
                 resp = json.dumps({"ok": False, "error": str(e)}).encode()
-                self.send_response(500)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(resp)))
-                self.end_headers()
-                self.wfile.write(resp)
+                self.send_response(500); self.send_header("Content-Type","application/json")
+                self.send_header("Content-Length", str(len(resp))); self.end_headers(); self.wfile.write(resp)
             return
 
-        # ── /webhook  →  Telegram ─────────────────────────────────────────
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
             if WEBHOOK_SECRET:
                 token_header = self.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
                 if token_header != WEBHOOK_SECRET:
-                    self.send_response(403)
-                    self.end_headers()
-                    return
+                    self.send_response(403); self.end_headers(); return
             update_data = json.loads(body.decode("utf-8"))
             app = get_app()
             if app:
@@ -1030,12 +1180,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     app.process_update(update),
                     app.update_processor._loop if hasattr(app.update_processor, '_loop') else asyncio.get_event_loop()
                 )
-            self.send_response(200)
-            self.end_headers()
+            self.send_response(200); self.end_headers()
         except Exception as e:
             logger.error(f"Error en webhook POST: {e}")
-            self.send_response(200)
-            self.end_headers()
+            self.send_response(200); self.end_headers()
 
     def log_message(self, *a):
         pass
@@ -1059,9 +1207,15 @@ def main():
 
     conv_prueba = ConversationHandler(
         entry_points=[CommandHandler("prueba", cmd_prueba)],
-        states={
-            PRUEBA_GASTO: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_prueba)],
-        },
+        states={PRUEBA_GASTO: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_prueba)]},
+        fallbacks=[CommandHandler("cancelar", cancelar)],
+        allow_reentry=True,
+    )
+
+    # ── Foto: handler independiente, entra por PHOTO ──────────────────────
+    conv_foto = ConversationHandler(
+        entry_points=[MessageHandler(filters.PHOTO, handle_foto)],
+        states={FOTO_CONFIRMAR: [CallbackQueryHandler(callback_foto, pattern="^foto_")]},
         fallbacks=[CommandHandler("cancelar", cancelar)],
         allow_reentry=True,
     )
@@ -1091,6 +1245,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_prueba)
+    app.add_handler(conv_foto)       # ← foto antes que texto
     app.add_handler(conv_corregir)
     app.add_handler(conv_gasto)
 
@@ -1105,7 +1260,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_final8...")
+    logger.info("Bot corriendo v_final9...")
     server.serve_forever()
 
 if __name__ == "__main__":
