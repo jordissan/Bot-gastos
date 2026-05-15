@@ -71,36 +71,75 @@ PR = {
     "Otros":"1ea7eb0cbb9280cbbe43c1bd54396691",
 }
 
-# ── NOTION BALANCE (meses dinamicos) ─────────────────────────────────────────
+# ── NOTION BALANCE (meses dinamicos con autocreacion) ─────────────────────────
 NOTION_BALANCE_ID = os.environ.get("NOTION_BALANCE_ID", "")
 _meses_cache: dict = {}
 
 def buscar_mes_id(mes: str):
+    """Busca el ID del mes en la BD Balance.
+    Si no lo encuentra (por cualquier razon), lo crea automaticamente.
+    Nunca debe devolver None si NOTION_BALANCE_ID esta configurado."""
     if mes in _meses_cache:
         return _meses_cache[mes]
     if not NOTION_BALANCE_ID:
         logger.warning("NOTION_BALANCE_ID no configurado")
         return None
     try:
-        r = requests.post(
+        # Intento 1: buscar por nombre exacto
+        r = notion_request("POST",
             f"https://api.notion.com/v1/databases/{NOTION_BALANCE_ID}/query",
             headers=nh(),
             json={"filter": {"property": "Name", "title": {"equals": mes}}},
-            timeout=5,
-        )
-        if r.status_code == 200:
+            timeout=8)
+        if r and r.status_code == 200:
             results = r.json().get("results", [])
             if results:
                 mid = results[0]["id"]
                 _meses_cache[mes] = mid
+                logger.info(f"Mes {mes} encontrado: {mid}")
                 return mid
-        logger.warning(f"Mes {mes} no encontrado en Notion")
+
+        # Intento 2: listar todos y buscar manualmente (por si el filtro falla)
+        logger.warning(f"Mes {mes} no encontrado con filtro, buscando en lista completa...")
+        r2 = notion_request("POST",
+            f"https://api.notion.com/v1/databases/{NOTION_BALANCE_ID}/query",
+            headers=nh(),
+            json={"page_size": 50},
+            timeout=8)
+        if r2 and r2.status_code == 200:
+            for page in r2.json().get("results", []):
+                title_list = page.get("properties", {}).get("Name", {}).get("title", [])
+                nombre = title_list[0]["text"]["content"] if title_list else ""
+                if nombre == mes:
+                    mid = page["id"]
+                    _meses_cache[mes] = mid
+                    logger.info(f"Mes {mes} encontrado en lista completa: {mid}")
+                    return mid
+
+        # Intento 3: crear el mes si realmente no existe
+        logger.warning(f"Mes {mes} no existe en Balance, creando automaticamente...")
+        r3 = notion_request("POST",
+            "https://api.notion.com/v1/pages",
+            headers=nh(),
+            json={
+                "parent": {"database_id": NOTION_BALANCE_ID},
+                "properties": {
+                    "Name": {"title": [{"text": {"content": mes}}]}
+                }
+            },
+            timeout=8)
+        if r3 and r3.status_code == 200:
+            mid = r3.json().get("id")
+            _meses_cache[mes] = mid
+            logger.info(f"Mes {mes} creado exitosamente: {mid}")
+            return mid
+        else:
+            logger.error(f"Error creando mes {mes}: {r3.text if r3 else 'sin respuesta'}")
     except Exception as e:
-        logger.error(f"Error buscando mes {mes}: {e}")
+        logger.error(f"Error en buscar_mes_id({mes}): {e}")
     return None
 
 # ── CONCEPTOS UNIVOCOS — nunca guardar en Aprendizaje ────────────────────────
-# Son conceptos que SIEMPRE mapean a la misma categoria sin excepcion posible
 CONCEPTOS_UNIVOCOS = {
     "netflix","spotify","disney","hbo","apple tv","paramount","crunchyroll",
     "max","prime video","izzi","telmex","adobe","icloud","capcut","claude",
@@ -262,12 +301,9 @@ def buscar_aprendizaje(concepto):
     return None, None
 
 def guardar_aprendizaje(concepto, sub, pre):
-    """Guarda o actualiza aprendizaje. Omite conceptos univocos y actualiza fecha."""
-    # No guardar si es un concepto que siempre tiene la misma categoria
     if es_concepto_univoco(concepto):
         logger.info(f"Concepto univoco '{concepto}' — omitiendo aprendizaje")
         return
-
     hoy = datetime.date.today().isoformat()
     r = notion_request("POST",
         f"https://api.notion.com/v1/databases/{NOTION_APRENDIZAJE_ID}/query",
@@ -303,20 +339,15 @@ def guardar_aprendizaje(concepto, sub, pre):
         timeout=5)
 
 def limpiar_aprendizaje():
-    """Limpia entradas obsoletas de la base de aprendizaje.
-    Regla 1: Usos=1 y sin actividad en 90 dias -> borrar
-    Regla 2: Si hay mas de 150 entradas, borrar las de menor uso hasta llegar a 100"""
     try:
         hoy = datetime.date.today()
         limite_90 = (hoy - datetime.timedelta(days=90)).isoformat()
-        # Traer todas las entradas
         r = notion_request("POST",
             f"https://api.notion.com/v1/databases/{NOTION_APRENDIZAJE_ID}/query",
             headers=nh(), json={"page_size":200}, timeout=10)
         if not r or r.status_code != 200: return
         entradas = r.json().get("results", [])
         borradas = 0
-        # Regla 1: Usos=1 y fecha antigua
         for e in entradas:
             p = e["properties"]
             usos = p.get("Usos",{}).get("number",0) or 0
@@ -326,7 +357,6 @@ def limpiar_aprendizaje():
                 notion_request("DELETE", f"https://api.notion.com/v1/pages/{e['id']}",
                     headers=nh(), timeout=5)
                 borradas += 1
-        # Regla 2: limite de 150 entradas
         if len(entradas) - borradas > 150:
             sobrantes = sorted(entradas, key=lambda e: e["properties"].get("Usos",{}).get("number",0) or 0)
             por_borrar = (len(entradas) - borradas) - 100
@@ -342,9 +372,7 @@ def limpiar_aprendizaje():
 MAX_HISTORIAL = 5
 
 def guardar_historial_notion(gasto, usuario_id):
-    """Guarda el gasto en la base Historial Bot (mantiene solo los ultimos 5)."""
     try:
-        # Guardar nueva entrada
         notion_request("POST",
             "https://api.notion.com/v1/pages",
             headers=nh(),
@@ -360,7 +388,6 @@ def guardar_historial_notion(gasto, usuario_id):
                 "UsuarioID": {"number":usuario_id},
             }},
             timeout=5)
-        # Limpiar entradas viejas — mantener solo las ultimas MAX_HISTORIAL por usuario
         r = notion_request("POST",
             f"https://api.notion.com/v1/databases/{NOTION_HISTORIAL_ID}/query",
             headers=nh(),
@@ -382,7 +409,6 @@ def guardar_historial_notion(gasto, usuario_id):
         logger.error(f"Error guardando historial: {ex}")
 
 def cargar_historial_notion(usuario_id):
-    """Carga los ultimos MAX_HISTORIAL gastos del usuario desde Notion."""
     try:
         r = notion_request("POST",
             f"https://api.notion.com/v1/databases/{NOTION_HISTORIAL_ID}/query",
@@ -461,7 +487,6 @@ def inferir_categoria(concepto):
     return "Abarrotes","Despensa",False
 
 def inferir_categoria_con_origen(concepto):
-    """Como inferir_categoria pero devuelve (sub, pre, seguro, origen_emoji, origen_texto)."""
     c=normalizar(concepto)
     for palabras,sub,pre in REGLAS_CONCEPTO:
         for p in palabras:
@@ -544,7 +569,10 @@ def guardar_notion(gasto):
         "Pago":{"select":{"name":gasto["tarjeta"]}},
     }
     mid=buscar_mes_id(gasto["mes"])
-    if mid: props["Mes"]={"relation":[{"id":mid}]}
+    if mid:
+        props["Mes"]={"relation":[{"id":mid}]}
+    else:
+        logger.error(f"No se pudo obtener/crear el mes {gasto['mes']} — gasto guardado SIN mes")
     sid=SC.get(gasto["subcategoria"])
     if sid: props["Subcategoria"]={"relation":[{"id":sid}]}
     pid=PR.get(gasto["presupuesto"])
@@ -585,9 +613,7 @@ async def registrar_y_notificar(update,context,gasto):
         return
     gasto_completo = {**gasto,"notion_id":nid}
     uid = update.effective_user.id
-    # Historial persistente en Notion (no en RAM)
     threading.Thread(target=guardar_historial_notion, args=(gasto_completo, uid), daemon=True).start()
-    # Limpieza periodica de aprendizaje (1 de cada 50 gastos aprox, no bloquea)
     import random
     if random.randint(1,50)==1:
         threading.Thread(target=limpiar_aprendizaje, daemon=True).start()
@@ -599,7 +625,6 @@ async def registrar_y_notificar(update,context,gasto):
 
 # ── REGISTRAR VIA SHORTCUT (iOS) ─────────────────────────────────────────────
 async def registrar_via_shortcut(texto: str, user_id: int):
-    """Procesa y registra un gasto enviado desde el Shortcut de iOS sin update/context."""
     import random
     app = get_app()
     if not app:
@@ -831,7 +856,6 @@ async def handle_prueba(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
     texto=update.message.text.strip()
     try:
-        # Parsear sin guardar nada
         tokens=texto.strip().split()
         import zoneinfo; hoy=datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
         fecha,tokens2=parsear_fecha(tokens); texp,tokens2=parsear_tarjeta(tokens2); monto,tokens2=parsear_monto(tokens2)
@@ -911,6 +935,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         # ── /log  →  iOS Shortcut ─────────────────────────────────────────
         if path == "/log":
+            logger.info(f"/log recibido desde {self.client_address}")
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 body   = self.rfile.read(length)
@@ -926,6 +951,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
                 texto   = data.get("text", "").strip()
                 user_id = int(data.get("user_id", 8663298433))
+                logger.info(f"/log texto='{texto[:60]}' user_id={user_id}")
 
                 if not texto:
                     self.send_response(400)
@@ -941,6 +967,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                         registrar_via_shortcut(texto, user_id), loop)
                     ok, msg  = future.result(timeout=15)
                 else:
+                    logger.error("/log: loop no disponible")
                     ok, msg  = False, "Loop no disponible"
 
                 resp = json.dumps({"ok": ok, "msg": msg}, ensure_ascii=False).encode()
@@ -1052,7 +1079,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_final5...")
+    logger.info("Bot corriendo v_final6...")
     server.serve_forever()
 
 if __name__ == "__main__":
