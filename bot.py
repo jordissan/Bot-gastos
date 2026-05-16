@@ -16,6 +16,7 @@ GOOGLE_MAPS_API_KEY   = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 GOOGLE_VISION_API_KEY = os.environ.get("GOOGLE_VISION_API_KEY", "")
 WEBHOOK_SECRET        = os.environ.get("WEBHOOK_SECRET", "")
 RENDER_EXTERNAL_URL   = os.environ.get("RENDER_EXTERNAL_URL", "")
+NOTION_BALANCE_ID     = os.environ.get("NOTION_BALANCE_ID", "")
 
 USUARIOS_AUTORIZADOS = {8663298433, 8093171397}
 USUARIOS_NOMBRES     = {8663298433: "Jordi", 8093171397: "Nane"}
@@ -101,32 +102,61 @@ def notion_request(method, url, **kwargs):
             time.sleep(2)
     return None
 
-# ── NOTION BALANCE ────────────────────────────────────────────────────────────
-NOTION_BALANCE_ID = os.environ.get("NOTION_BALANCE_ID", "")
+# ── CACHE DE MESES ────────────────────────────────────────────────────────────
 _meses_cache: dict = {}
 
+def precargar_meses():
+    """Carga TODOS los meses de la BD Balance al cache al arrancar el bot.
+    Asi los gastos nunca necesitan hacer el request en tiempo real."""
+    if not NOTION_BALANCE_ID:
+        logger.warning("NOTION_BALANCE_ID no configurado — meses no precargados")
+        return
+    try:
+        r = requests.post(
+            f"https://api.notion.com/v1/databases/{NOTION_BALANCE_ID}/query",
+            headers=nh(),
+            json={"page_size": 50},
+            timeout=15)
+        if r.status_code == 200:
+            for page in r.json().get("results", []):
+                for prop_val in page.get("properties", {}).values():
+                    if prop_val.get("type") == "title":
+                        title_list = prop_val.get("title", [])
+                        nombre = title_list[0]["text"]["content"] if title_list else ""
+                        if nombre:
+                            _meses_cache[nombre] = page["id"]
+            logger.info(f"Cache de meses cargado: {list(_meses_cache.keys())}")
+        else:
+            logger.error(f"Error precargando meses: {r.status_code} {r.text[:100]}")
+    except Exception as e:
+        logger.error(f"Error precargando meses: {e}")
+
 def buscar_mes_id(mes: str):
+    """Busca el ID del mes. Usa cache; si no está, consulta Notion con timeout generoso."""
     if mes in _meses_cache:
         return _meses_cache[mes]
     if not NOTION_BALANCE_ID:
         logger.warning("NOTION_BALANCE_ID no configurado")
         return None
+    # Intento con timeout mayor por si el arranque falló
     try:
         r = notion_request("POST",
             f"https://api.notion.com/v1/databases/{NOTION_BALANCE_ID}/query",
-            headers=nh(), json={"page_size": 50}, timeout=8)
+            headers=nh(),
+            json={"page_size": 50},
+            timeout=15)
         if r and r.status_code == 200:
             for page in r.json().get("results", []):
                 for prop_val in page.get("properties", {}).values():
                     if prop_val.get("type") == "title":
                         title_list = prop_val.get("title", [])
                         nombre = title_list[0]["text"]["content"] if title_list else ""
-                        if nombre == mes:
-                            mid = page["id"]
-                            _meses_cache[mes] = mid
-                            logger.info(f"Mes {mes} encontrado: {mid}")
-                            return mid
-            logger.error(f"Mes {mes} no encontrado en BD Balance")
+                        if nombre:
+                            _meses_cache[nombre] = page["id"]  # actualiza cache completo
+            if mes in _meses_cache:
+                logger.info(f"Mes {mes} encontrado (cache actualizado): {_meses_cache[mes]}")
+                return _meses_cache[mes]
+            logger.error(f"Mes {mes} no encontrado en BD Balance — créalo en Notion")
         else:
             logger.error(f"Error consultando BD Balance: {r.status_code if r else 'sin respuesta'}")
     except Exception as e:
@@ -256,7 +286,6 @@ MESES_TEXTO = {"ene":1,"feb":2,"mar":3,"abr":4,"may":5,"jun":6,"jul":7,"ago":8,"
 
 # ── GOOGLE VISION OCR ─────────────────────────────────────────────────────────
 def ocr_ticket(image_bytes: bytes) -> str:
-    """Llama a Google Vision API y devuelve el texto completo del ticket."""
     if not GOOGLE_VISION_API_KEY:
         logger.warning("GOOGLE_VISION_API_KEY no configurado")
         return ""
@@ -281,13 +310,10 @@ def ocr_ticket(image_bytes: bytes) -> str:
     return ""
 
 def parsear_ticket(texto: str) -> dict:
-    """Extrae concepto, monto y fecha del texto OCR de un ticket.
-    Devuelve dict con claves: concepto (str), monto (float|None), fecha (date)."""
     import zoneinfo
     hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
     lineas = [l.strip() for l in texto.split("\n") if l.strip()]
 
-    # ── Monto: busca TOTAL primero, luego el número más grande del ticket ──
     monto = None
     patrones_total = [
         r'TOTAL\s*\$?\s*([\d,]+\.?\d*)',
@@ -302,39 +328,33 @@ def parsear_ticket(texto: str) -> dict:
             try:
                 monto = float(m.group(1).replace(",", ""))
                 break
-            except:
-                pass
-    # Fallback: número más grande que parezca un precio
+            except: pass
     if monto is None:
         candidatos = re.findall(r'\b(\d{1,5}\.\d{2})\b', texto)
         if candidatos:
             monto = max(float(c.replace(",", "")) for c in candidatos)
 
-    # ── Fecha ──────────────────────────────────────────────────────────────
     fecha = hoy
     patrones_fecha = [
-        r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})',   # dd/mm/aa o dd-mm-aaaa
-        r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})',       # aaaa/mm/dd
+        r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})',
+        r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})',
     ]
     for patron in patrones_fecha:
         m = re.search(patron, texto)
         if m:
             try:
                 g = m.groups()
-                if len(g[0]) == 4:          # aaaa/mm/dd
+                if len(g[0]) == 4:
                     y, mo, d = int(g[0]), int(g[1]), int(g[2])
-                else:                        # dd/mm/aa(aa)
+                else:
                     d, mo, y = int(g[0]), int(g[1]), int(g[2])
                     if y < 100: y += 2000
                 fecha = datetime.date(y, mo, d)
                 break
-            except:
-                pass
+            except: pass
 
-    # ── Concepto: primera línea significativa (letras, no solo números) ───
     concepto = "Ticket"
     for linea in lineas[:8]:
-        # Saltar líneas que son solo números, fechas, RFC, etc.
         if len(linea) < 3: continue
         if re.match(r'^[\d\s\$\.\,\-\*\/\:]+$', linea): continue
         if re.match(r'^RFC', linea, re.IGNORECASE): continue
@@ -704,23 +724,19 @@ async def registrar_via_shortcut(texto: str, user_id: int):
     except Exception as e:
         await app.bot.send_message(chat_id=user_id, text=f"❌ Error al procesar: {e}")
         return False, str(e)
-
     ok, nid, err = guardar_notion(gasto)
     if not ok:
         logger.error(f"Error Notion via shortcut: {err}")
         await app.bot.send_message(chat_id=user_id, text="❌ Error al guardar en Notion. Intenta de nuevo.")
         return False, f"Error Notion: {err}"
-
     gasto_completo = {**gasto, "notion_id": nid}
     threading.Thread(target=guardar_historial_notion, args=(gasto_completo, user_id), daemon=True).start()
     if random.randint(1, 50) == 1:
         threading.Thread(target=limpiar_aprendizaje, daemon=True).start()
-
     msg = msg_gasto(gasto, notion_id=nid)
     if not gasto.get("seguro"):
         msg += "\n\n⚠️ Categoría inferida — usa /corregir si no es correcta."
     await app.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
-
     notif = USUARIOS_NOTIFICAR.get(user_id)
     nombre = USUARIOS_NOMBRES.get(user_id, "Alguien")
     if notif:
@@ -735,54 +751,39 @@ async def registrar_via_shortcut(texto: str, user_id: int):
 
 # ── CONV FOTO (Google Vision) ─────────────────────────────────────────────────
 async def handle_foto(update, context):
-    """Recibe foto de ticket, hace OCR y muestra preview con botones Confirmar/Cancelar."""
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return ConversationHandler.END
-
     if not GOOGLE_VISION_API_KEY:
         await update.message.reply_text("❌ Google Vision no está configurado. Agrega GOOGLE_VISION_API_KEY en Render.")
         return ConversationHandler.END
-
     msg_espera = await update.message.reply_text("📸 Analizando ticket...")
-
-    # Descargar foto (mayor resolución disponible)
     photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
     image_bytes = await file.download_as_bytearray()
-
-    # OCR
     texto_ocr = ocr_ticket(bytes(image_bytes))
     if not texto_ocr:
         await msg_espera.edit_text("❌ No pude leer el ticket. Intenta con mejor iluminación o más cerca.")
         return ConversationHandler.END
-
     logger.info(f"OCR resultado:\n{texto_ocr[:300]}")
-
-    # Parsear
     datos = parsear_ticket(texto_ocr)
     if not datos["monto"]:
         await msg_espera.edit_text("❌ No encontré el monto total en el ticket. Regístralo manualmente.")
         return ConversationHandler.END
-
-    # Construir gasto completo
     fecha   = datos["fecha"]
     tarjeta = calcular_tarjeta(fecha)
     mes     = calcular_mes(fecha, tarjeta)
     sub, pre, seguro = inferir_categoria(datos["concepto"])
-
     gasto = {
-        "concepto":    datos["concepto"],
-        "monto":       datos["monto"],
-        "fecha":       fecha.strftime("%Y-%m-%d"),
-        "tarjeta":     tarjeta,
-        "mes":         mes,
+        "concepto":     datos["concepto"],
+        "monto":        datos["monto"],
+        "fecha":        fecha.strftime("%Y-%m-%d"),
+        "tarjeta":      tarjeta,
+        "mes":          mes,
         "subcategoria": sub,
         "presupuesto":  pre,
         "seguro":       seguro,
     }
     context.user_data["gasto_foto"] = gasto
-
-    # Preview con botones
     aviso = "\n⚠️ Categoría inferida." if not seguro else ""
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Confirmar", callback_data="foto_confirmar"),
@@ -801,38 +802,28 @@ async def handle_foto(update, context):
     return FOTO_CONFIRMAR
 
 async def callback_foto(update, context):
-    """Maneja Confirmar / Cancelar del gasto de foto."""
     query = update.callback_query
     await query.answer()
-
     if query.data == "foto_cancelar":
         context.user_data.clear()
         await query.message.edit_text("❌ Registro cancelado.")
         return ConversationHandler.END
-
-    # Confirmar
     gasto = context.user_data.pop("gasto_foto", None)
     if not gasto:
         await query.message.edit_text("❌ Error: no se encontró el gasto.")
         return ConversationHandler.END
-
     ok, nid, err = guardar_notion(gasto)
     if not ok:
         logger.error(f"Error guardando gasto foto: {err}")
         await query.message.edit_text("❌ Error al guardar en Notion.")
         return ConversationHandler.END
-
     gasto_completo = {**gasto, "notion_id": nid}
     uid = query.from_user.id
     threading.Thread(target=guardar_historial_notion, args=(gasto_completo, uid), daemon=True).start()
-
-    # Editar el preview con confirmacion + link
     await query.message.edit_text(
         msg_gasto(gasto, notion_id=nid),
         parse_mode="Markdown"
     )
-
-    # Notificar al otro
     notif  = USUARIOS_NOTIFICAR.get(uid)
     nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
     if notif:
@@ -1135,9 +1126,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if path == "/log":
             logger.info(f"/log recibido desde {self.client_address}")
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                body   = self.rfile.read(length)
-                data   = json.loads(body.decode("utf-8"))
+                length  = int(self.headers.get("Content-Length", 0))
+                body    = self.rfile.read(length)
+                data    = json.loads(body.decode("utf-8"))
                 SC_SECRET = os.environ.get("SHORTCUT_SECRET", "")
                 if SC_SECRET and data.get("secret") != SC_SECRET:
                     self.send_response(403); self.send_header("Content-Type","application/json"); self.end_headers()
@@ -1167,7 +1158,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         try:
             length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length)
+            body   = self.rfile.read(length)
             if WEBHOOK_SECRET:
                 token_header = self.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
                 if token_header != WEBHOOK_SECRET:
@@ -1202,6 +1193,10 @@ async def setup_webhook(app):
 
 def main():
     global _ptb_app
+
+    # ── Precargar meses al arranque (evita timeouts en tiempo real) ───────
+    precargar_meses()
+
     app = Application.builder().token(TELEGRAM_TOKEN).updater(None).job_queue(None).build()
     _ptb_app = app
 
@@ -1212,7 +1207,6 @@ def main():
         allow_reentry=True,
     )
 
-    # ── Foto: handler independiente, entra por PHOTO ──────────────────────
     conv_foto = ConversationHandler(
         entry_points=[MessageHandler(filters.PHOTO, handle_foto)],
         states={FOTO_CONFIRMAR: [CallbackQueryHandler(callback_foto, pattern="^foto_")]},
@@ -1245,7 +1239,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_prueba)
-    app.add_handler(conv_foto)       # ← foto antes que texto
+    app.add_handler(conv_foto)
     app.add_handler(conv_corregir)
     app.add_handler(conv_gasto)
 
@@ -1260,7 +1254,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_final9...")
+    logger.info("Bot corriendo v_final10...")
     server.serve_forever()
 
 if __name__ == "__main__":
