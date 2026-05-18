@@ -178,12 +178,6 @@ def mes_activo_str() -> str:
     return f"{MESES_ESP[m]}{str(y)[-2:]}"
 
 # ── RESUMEN ───────────────────────────────────────────────────────────────────
-def barra(monto: float, maximo: float, ancho: int = 10) -> str:
-    if maximo == 0:
-        return "░" * ancho
-    llenos = round((monto / maximo) * ancho)
-    return "█" * llenos + "░" * (ancho - llenos)
-
 async def cmd_resumen(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return
@@ -231,12 +225,10 @@ async def cmd_resumen(update, context):
         monto = props.get("Monto", {}).get("number", 0) or 0
         rel_pre = props.get("Presupuesto", {}).get("relation", [])
         if rel_pre:
-            # ← FIX: quitar guiones para que coincida con los IDs del dict PR
             pr_id = rel_pre[0].get("id", "").replace("-", "")
             pr_nombre = next((k for k, v in PR.items() if v == pr_id), None)
         else:
             pr_nombre = None
-        # Solo agrupar si tiene presupuesto asignado
         if pr_nombre:
             totales[pr_nombre] = totales.get(pr_nombre, 0) + monto
 
@@ -247,18 +239,24 @@ async def cmd_resumen(update, context):
     # Ordenar de mayor a menor
     ordenados = sorted(totales.items(), key=lambda x: x[1], reverse=True)
     total_general = sum(t for _, t in ordenados)
-    maximo = ordenados[0][1] if ordenados else 1
 
-    # Construir mensaje
-    lineas = [f"📊 *Resumen {mes}*\n"]
+    # Construir tabla monoespaciada con emojis y padding
+    max_nom = max(len(n) for n, _ in ordenados)
+    tabla = []
     for nombre, monto in ordenados:
-        emoji = PR_EMOJI.get(nombre, "📦")
-        bar   = barra(monto, maximo)
-        lineas.append(f"{emoji} {nombre}\n`${monto:,.0f}`  {bar}")
+        emoji   = PR_EMOJI.get(nombre, "📦")
+        pct     = round((monto / total_general) * 100) if total_general else 0
+        nom_pad = nombre.ljust(max_nom)
+        monto_s = f"${monto:,.0f}".rjust(9)
+        pct_s   = f"{pct}%".rjust(4)
+        tabla.append(f"{emoji} {nom_pad}  {monto_s}  {pct_s}")
 
-    lineas.append(f"\n💵 *Total  ${total_general:,.0f}*")
-
-    await update.message.reply_text("\n".join(lineas), parse_mode="Markdown")
+    msg = (
+        f"📊 *Resumen {mes}*\n\n"
+        f"```\n{chr(10).join(tabla)}\n```\n\n"
+        f"💵 *Total  ${total_general:,.0f}*"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 # ── CONCEPTOS UNIVOCOS ────────────────────────────────────────────────────────
 CONCEPTOS_UNIVOCOS = {
@@ -790,18 +788,15 @@ async def registrar_y_notificar(update, context, gasto):
         threading.Thread(target=limpiar_aprendizaje, daemon=True).start()
     await update.message.reply_text(
         msg_gasto(gasto, notion_id=nid),
-        reply_markup=ReplyKeyboardRemove(),
-        parse_mode="Markdown"
+        reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown"
     )
     notif = USUARIOS_NOTIFICAR.get(uid)
     nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
     if notif:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Corregir categoría", callback_data=f"cor:{nid}:{gasto['concepto']}")]])
         await context.bot.send_message(
-            chat_id=notif,
-            text=msg_gasto(gasto, nombre=nombre, notion_id=nid),
-            reply_markup=kb,
-            parse_mode="Markdown"
+            chat_id=notif, text=msg_gasto(gasto, nombre=nombre, notion_id=nid),
+            reply_markup=kb, parse_mode="Markdown"
         )
 
 # ── REGISTRAR VIA SHORTCUT (iOS) ─────────────────────────────────────────────
@@ -836,10 +831,8 @@ async def registrar_via_shortcut(texto: str, user_id: int):
     if notif:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Corregir categoría", callback_data=f"cor:{nid}:{gasto['concepto']}")]])
         await app.bot.send_message(
-            chat_id=notif,
-            text=msg_gasto(gasto, nombre=nombre, notion_id=nid),
-            reply_markup=kb,
-            parse_mode="Markdown"
+            chat_id=notif, text=msg_gasto(gasto, nombre=nombre, notion_id=nid),
+            reply_markup=kb, parse_mode="Markdown"
         )
     return True, msg
 
@@ -1315,7 +1308,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_final12...")
+    logger.info("Bot corriendo v_final14...")
     server.serve_forever()
 
 if __name__ == "__main__":
