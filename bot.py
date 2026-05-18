@@ -74,7 +74,6 @@ PR = {
     "Otros":"1ea7eb0cbb9280cbbe43c1bd54396691",
 }
 
-# Emojis por presupuesto para el resumen
 PR_EMOJI = {
     "Despensa":"🛒","Diversión":"🎉","Servicios":"⚡","Automovil":"🚗",
     "Restaurantes":"🍽️","Salud":"💊","Deuda":"🏦","MSI":"💳",
@@ -120,9 +119,7 @@ def precargar_meses():
     try:
         r = requests.post(
             f"https://api.notion.com/v1/databases/{NOTION_BALANCE_ID}/query",
-            headers=nh(),
-            json={"page_size": 50},
-            timeout=15)
+            headers=nh(), json={"page_size": 50}, timeout=15)
         if r.status_code == 200:
             for page in r.json().get("results", []):
                 for prop_val in page.get("properties", {}).values():
@@ -146,9 +143,7 @@ def buscar_mes_id(mes: str):
     try:
         r = notion_request("POST",
             f"https://api.notion.com/v1/databases/{NOTION_BALANCE_ID}/query",
-            headers=nh(),
-            json={"page_size": 50},
-            timeout=15)
+            headers=nh(), json={"page_size": 50}, timeout=15)
         if r and r.status_code == 200:
             for page in r.json().get("results", []):
                 for prop_val in page.get("properties", {}).values():
@@ -167,17 +162,13 @@ def buscar_mes_id(mes: str):
         logger.error(f"Error en buscar_mes_id({mes}): {e}")
     return None
 
-# ── MES ACTIVO (lógica del ciclo del día 5) ───────────────────────────────────
+# ── MES ACTIVO ────────────────────────────────────────────────────────────────
 MESES_ESP = {1:"ENE",2:"FEB",3:"MAR",4:"ABR",5:"MAY",6:"JUN",7:"JUL",8:"AGO",9:"SEP",10:"OCT",11:"NOV",12:"DIC"}
 
 def mes_activo_str() -> str:
-    """Calcula el mes de ciclo activo basado en la lógica del día 5.
-    Si hoy >= 5 → el ciclo activo es el mes siguiente (ej. 17 may → JUN26).
-    Si hoy < 5  → el ciclo activo es el mes actual   (ej.  3 may → MAY26)."""
     import zoneinfo
     hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
     if hoy.day >= 5:
-        # Avanzar un mes
         if hoy.month == 12:
             y, m = hoy.year + 1, 1
         else:
@@ -197,17 +188,12 @@ async def cmd_resumen(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return
 
-    # Determinar mes a consultar
     args = context.args
-    if args:
-        mes = args[0].upper()
-    else:
-        mes = mes_activo_str()
+    mes = args[0].upper() if args else mes_activo_str()
 
-    # Obtener ID del mes
     mid = buscar_mes_id(mes)
     if not mid:
-        await update.message.reply_text(f"❌ No encontré el mes {mes} en Notion. Verifica que exista en la BD Balance.")
+        await update.message.reply_text(f"❌ No encontré el mes {mes} en Notion.")
         return
 
     await update.message.reply_text(f"⏳ Calculando resumen de {mes}...")
@@ -217,10 +203,7 @@ async def cmd_resumen(update, context):
     cursor = None
     while True:
         body = {
-            "filter": {
-                "property": "Mes",
-                "relation": {"contains": mid}
-            },
+            "filter": {"property": "Mes", "relation": {"contains": mid}},
             "page_size": 100,
         }
         if cursor:
@@ -241,19 +224,25 @@ async def cmd_resumen(update, context):
         await update.message.reply_text(f"📭 No hay gastos registrados en {mes}.")
         return
 
-    # Agrupar por presupuesto
+    # Agrupar por presupuesto — normalizar ID quitando guiones
     totales = {}
     for g in gastos:
         props = g.get("properties", {})
         monto = props.get("Monto", {}).get("number", 0) or 0
         rel_pre = props.get("Presupuesto", {}).get("relation", [])
         if rel_pre:
-            # Buscar nombre del presupuesto por ID
-            pr_id = rel_pre[0].get("id", "")
-            pr_nombre = next((k for k, v in PR.items() if v == pr_id), "Otros")
+            # ← FIX: quitar guiones para que coincida con los IDs del dict PR
+            pr_id = rel_pre[0].get("id", "").replace("-", "")
+            pr_nombre = next((k for k, v in PR.items() if v == pr_id), None)
         else:
-            pr_nombre = "Otros"
-        totales[pr_nombre] = totales.get(pr_nombre, 0) + monto
+            pr_nombre = None
+        # Solo agrupar si tiene presupuesto asignado
+        if pr_nombre:
+            totales[pr_nombre] = totales.get(pr_nombre, 0) + monto
+
+    if not totales:
+        await update.message.reply_text(f"📭 No hay gastos con presupuesto asignado en {mes}.")
+        return
 
     # Ordenar de mayor a menor
     ordenados = sorted(totales.items(), key=lambda x: x[1], reverse=True)
@@ -269,10 +258,7 @@ async def cmd_resumen(update, context):
 
     lineas.append(f"\n💵 *Total  ${total_general:,.0f}*")
 
-    await update.message.reply_text(
-        "\n".join(lineas),
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text("\n".join(lineas), parse_mode="Markdown")
 
 # ── CONCEPTOS UNIVOCOS ────────────────────────────────────────────────────────
 CONCEPTOS_UNIVOCOS = {
@@ -857,7 +843,7 @@ async def registrar_via_shortcut(texto: str, user_id: int):
         )
     return True, msg
 
-# ── CONV FOTO (Google Vision) ─────────────────────────────────────────────────
+# ── CONV FOTO ─────────────────────────────────────────────────────────────────
 async def handle_foto(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return ConversationHandler.END
@@ -881,14 +867,9 @@ async def handle_foto(update, context):
     mes     = calcular_mes(fecha, tarjeta)
     sub, pre, seguro = inferir_categoria(datos["concepto"])
     gasto = {
-        "concepto":     datos["concepto"],
-        "monto":        datos["monto"],
-        "fecha":        fecha.strftime("%Y-%m-%d"),
-        "tarjeta":      tarjeta,
-        "mes":          mes,
-        "subcategoria": sub,
-        "presupuesto":  pre,
-        "seguro":       seguro,
+        "concepto": datos["concepto"], "monto": datos["monto"],
+        "fecha": fecha.strftime("%Y-%m-%d"), "tarjeta": tarjeta,
+        "mes": mes, "subcategoria": sub, "presupuesto": pre, "seguro": seguro,
     }
     context.user_data["gasto_foto"] = gasto
     aviso = "\n⚠️ Categoría inferida." if not seguro else ""
@@ -898,14 +879,8 @@ async def handle_foto(update, context):
     ]])
     await msg_espera.edit_text(
         f"📋 Resumen del ticket\n\n"
-        f"📌 {gasto['concepto']}\n"
-        f"💵 ${gasto['monto']:,.2f}\n"
-        f"🗓️ {fmt(gasto['fecha'])}\n"
-        f"💳 {gasto['tarjeta']}\n"
-        f"🧾 {gasto['mes']}\n"
-        f"🏷️ {gasto['subcategoria']}\n"
-        f"🗂️ {gasto['presupuesto']}"
-        f"{aviso}",
+        f"📌 {gasto['concepto']}\n💵 ${gasto['monto']:,.2f}\n🗓️ {fmt(gasto['fecha'])}\n"
+        f"💳 {gasto['tarjeta']}\n🧾 {gasto['mes']}\n🏷️ {gasto['subcategoria']}\n🗂️ {gasto['presupuesto']}{aviso}",
         reply_markup=kb
     )
     return FOTO_CONFIRMAR
@@ -934,14 +909,12 @@ async def callback_foto(update, context):
     if notif:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Corregir categoría", callback_data=f"cor:{nid}:{gasto['concepto']}")]])
         await context.bot.send_message(
-            chat_id=notif,
-            text=msg_gasto(gasto, nombre=nombre, notion_id=nid),
-            reply_markup=kb,
-            parse_mode="Markdown"
+            chat_id=notif, text=msg_gasto(gasto, nombre=nombre, notion_id=nid),
+            reply_markup=kb, parse_mode="Markdown"
         )
     return ConversationHandler.END
 
-# ── CONV GASTO (texto) ───────────────────────────────────────────────────────
+# ── CONV GASTO ───────────────────────────────────────────────────────────────
 async def handle_gasto(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
     texto=update.message.text.strip()
@@ -1111,16 +1084,14 @@ async def aplicar_correccion(update, context, sub=None, pre=None):
         link = f"\n[🔗 Ver en Notion]({notion_deep_link(nid)})" if nid else ""
         await update.message.reply_text(
             f"✅ Corregido\n\n{resumen}{link}",
-            reply_markup=ReplyKeyboardRemove(),
-            parse_mode="Markdown"
+            reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown"
         )
         uid    = update.effective_user.id
         nombre = USUARIOS_NOMBRES.get(uid,"Alguien")
         notif  = USUARIOS_NOTIFICAR.get(uid)
         if notif:
             await context.bot.send_message(
-                chat_id=notif,
-                text=f"✏️ {nombre} corrigió un gasto\n\n{resumen}{link}",
+                chat_id=notif, text=f"✏️ {nombre} corrigió un gasto\n\n{resumen}{link}",
                 parse_mode="Markdown"
             )
     else:
@@ -1161,19 +1132,13 @@ async def handle_prueba(update,context):
         sub,pre,seguro,origen_emoji,origen_texto=inferir_categoria_con_origen(concepto)
         from datetime import datetime as dt
         fecha_fmt=dt.strptime(fecha.strftime("%Y-%m-%d"),"%Y-%m-%d").strftime("%d %b %Y").lower()
-        respuesta=(
+        await update.message.reply_text(
             f"🧪 Resultado de prueba\n\n"
-            f"📌 {concepto.title()}\n"
-            f"💵 ${monto:,.2f}\n"
-            f"🗓️ {fecha_fmt}\n"
-            f"💳 {tarjeta}\n"
-            f"🧾 {mes}\n"
-            f"🏷️ {sub}\n"
-            f"🗂️ {pre}\n\n"
+            f"📌 {concepto.title()}\n💵 ${monto:,.2f}\n🗓️ {fecha_fmt}\n"
+            f"💳 {tarjeta}\n🧾 {mes}\n🏷️ {sub}\n🗂️ {pre}\n\n"
             f"🔍 Origen: {origen_emoji} {origen_texto}\n\n"
             f"Nada fue registrado en Notion."
         )
-        await update.message.reply_text(respuesta)
     except ValueError as e:
         await update.message.reply_text(f"❓ {e}\n\nEjemplo: Starbucks 150\n\nYa saliste del modo prueba.")
     except Exception as e:
@@ -1216,17 +1181,12 @@ def get_app():
 
 class WebhookHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
-        self.send_header("Content-Length", "2")
-        self.end_headers()
-        self.wfile.write(b"OK")
-        self.wfile.flush()
+        self.send_response(200); self.send_header("Content-Type","text/plain")
+        self.send_header("Content-Length","2"); self.end_headers()
+        self.wfile.write(b"OK"); self.wfile.flush()
 
     def do_HEAD(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
-        self.end_headers()
+        self.send_response(200); self.send_header("Content-Type","text/plain"); self.end_headers()
 
     def do_POST(self):
         import asyncio
@@ -1302,26 +1262,20 @@ async def setup_webhook(app):
 
 def main():
     global _ptb_app
-
     precargar_meses()
-
     app = Application.builder().token(TELEGRAM_TOKEN).updater(None).job_queue(None).build()
     _ptb_app = app
 
     conv_prueba = ConversationHandler(
         entry_points=[CommandHandler("prueba", cmd_prueba)],
         states={PRUEBA_GASTO: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_prueba)]},
-        fallbacks=[CommandHandler("cancelar", cancelar)],
-        allow_reentry=True,
+        fallbacks=[CommandHandler("cancelar", cancelar)], allow_reentry=True,
     )
-
     conv_foto = ConversationHandler(
         entry_points=[MessageHandler(filters.PHOTO, handle_foto)],
         states={FOTO_CONFIRMAR: [CallbackQueryHandler(callback_foto, pattern="^foto_")]},
-        fallbacks=[CommandHandler("cancelar", cancelar)],
-        allow_reentry=True,
+        fallbacks=[CommandHandler("cancelar", cancelar)], allow_reentry=True,
     )
-
     conv_gasto = ConversationHandler(
         entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gasto)],
         states={
@@ -1331,7 +1285,6 @@ def main():
         fallbacks=[CommandHandler("cancelar", cancelar), CommandHandler("start", start)],
         allow_reentry=True,
     )
-
     conv_corregir = ConversationHandler(
         entry_points=[CommandHandler("corregir", cmd_corregir), CallbackQueryHandler(callback_corregir, pattern="^cor:")],
         states={
@@ -1341,8 +1294,7 @@ def main():
             CORREGIR_SUBCAT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_subcat)],
             CORREGIR_PRESU:   [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_presu)],
         },
-        fallbacks=[CommandHandler("cancelar", cancelar)],
-        allow_reentry=True,
+        fallbacks=[CommandHandler("cancelar", cancelar)], allow_reentry=True,
     )
 
     app.add_handler(CommandHandler("start", start))
@@ -1363,7 +1315,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_final11...")
+    logger.info("Bot corriendo v_final12...")
     server.serve_forever()
 
 if __name__ == "__main__":
