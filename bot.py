@@ -74,6 +74,15 @@ PR = {
     "Otros":"1ea7eb0cbb9280cbbe43c1bd54396691",
 }
 
+# Emojis por presupuesto para el resumen
+PR_EMOJI = {
+    "Despensa":"🛒","Diversión":"🎉","Servicios":"⚡","Automovil":"🚗",
+    "Restaurantes":"🍽️","Salud":"💊","Deuda":"🏦","MSI":"💳",
+    "Renta":"🏠","Ezra":"👶","Cuidado personal":"💆","Vacaciones":"🏖️",
+    "Impuestos":"📊","Entretenimiento":"🎭","Generosidad":"🤝","Iglesia":"⛪",
+    "Personal":"👤","Departamento":"🏡","Otros":"📦",
+}
+
 # ── HELPERS ──────────────────────────────────────────────────────────────────
 def normalizar(t):
     t=t.lower().strip(); t=unicodedata.normalize("NFD",t)
@@ -83,7 +92,6 @@ def similitud(a,b): return SequenceMatcher(None,normalizar(a),normalizar(b)).rat
 def nh(): return {"Authorization":f"Bearer {NOTION_TOKEN}","Content-Type":"application/json","Notion-Version":"2022-06-28"}
 
 def notion_deep_link(page_id: str) -> str:
-    """URL de Notion. En iOS abre la app nativa via universal links."""
     pid = page_id.replace("-", "")
     return f"https://www.notion.so/{pid}"
 
@@ -106,8 +114,6 @@ def notion_request(method, url, **kwargs):
 _meses_cache: dict = {}
 
 def precargar_meses():
-    """Carga TODOS los meses de la BD Balance al cache al arrancar el bot.
-    Asi los gastos nunca necesitan hacer el request en tiempo real."""
     if not NOTION_BALANCE_ID:
         logger.warning("NOTION_BALANCE_ID no configurado — meses no precargados")
         return
@@ -132,13 +138,11 @@ def precargar_meses():
         logger.error(f"Error precargando meses: {e}")
 
 def buscar_mes_id(mes: str):
-    """Busca el ID del mes. Usa cache; si no está, consulta Notion con timeout generoso."""
     if mes in _meses_cache:
         return _meses_cache[mes]
     if not NOTION_BALANCE_ID:
         logger.warning("NOTION_BALANCE_ID no configurado")
         return None
-    # Intento con timeout mayor por si el arranque falló
     try:
         r = notion_request("POST",
             f"https://api.notion.com/v1/databases/{NOTION_BALANCE_ID}/query",
@@ -152,16 +156,123 @@ def buscar_mes_id(mes: str):
                         title_list = prop_val.get("title", [])
                         nombre = title_list[0]["text"]["content"] if title_list else ""
                         if nombre:
-                            _meses_cache[nombre] = page["id"]  # actualiza cache completo
+                            _meses_cache[nombre] = page["id"]
             if mes in _meses_cache:
-                logger.info(f"Mes {mes} encontrado (cache actualizado): {_meses_cache[mes]}")
+                logger.info(f"Mes {mes} encontrado: {_meses_cache[mes]}")
                 return _meses_cache[mes]
-            logger.error(f"Mes {mes} no encontrado en BD Balance — créalo en Notion")
+            logger.error(f"Mes {mes} no encontrado en BD Balance")
         else:
             logger.error(f"Error consultando BD Balance: {r.status_code if r else 'sin respuesta'}")
     except Exception as e:
         logger.error(f"Error en buscar_mes_id({mes}): {e}")
     return None
+
+# ── MES ACTIVO (lógica del ciclo del día 5) ───────────────────────────────────
+MESES_ESP = {1:"ENE",2:"FEB",3:"MAR",4:"ABR",5:"MAY",6:"JUN",7:"JUL",8:"AGO",9:"SEP",10:"OCT",11:"NOV",12:"DIC"}
+
+def mes_activo_str() -> str:
+    """Calcula el mes de ciclo activo basado en la lógica del día 5.
+    Si hoy >= 5 → el ciclo activo es el mes siguiente (ej. 17 may → JUN26).
+    Si hoy < 5  → el ciclo activo es el mes actual   (ej.  3 may → MAY26)."""
+    import zoneinfo
+    hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+    if hoy.day >= 5:
+        # Avanzar un mes
+        if hoy.month == 12:
+            y, m = hoy.year + 1, 1
+        else:
+            y, m = hoy.year, hoy.month + 1
+    else:
+        y, m = hoy.year, hoy.month
+    return f"{MESES_ESP[m]}{str(y)[-2:]}"
+
+# ── RESUMEN ───────────────────────────────────────────────────────────────────
+def barra(monto: float, maximo: float, ancho: int = 10) -> str:
+    if maximo == 0:
+        return "░" * ancho
+    llenos = round((monto / maximo) * ancho)
+    return "█" * llenos + "░" * (ancho - llenos)
+
+async def cmd_resumen(update, context):
+    if update.effective_user.id not in USUARIOS_AUTORIZADOS:
+        return
+
+    # Determinar mes a consultar
+    args = context.args
+    if args:
+        mes = args[0].upper()
+    else:
+        mes = mes_activo_str()
+
+    # Obtener ID del mes
+    mid = buscar_mes_id(mes)
+    if not mid:
+        await update.message.reply_text(f"❌ No encontré el mes {mes} en Notion. Verifica que exista en la BD Balance.")
+        return
+
+    await update.message.reply_text(f"⏳ Calculando resumen de {mes}...")
+
+    # Consultar todos los gastos del mes (paginado)
+    gastos = []
+    cursor = None
+    while True:
+        body = {
+            "filter": {
+                "property": "Mes",
+                "relation": {"contains": mid}
+            },
+            "page_size": 100,
+        }
+        if cursor:
+            body["start_cursor"] = cursor
+        r = notion_request("POST",
+            f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query",
+            headers=nh(), json=body, timeout=15)
+        if not r or r.status_code != 200:
+            await update.message.reply_text("❌ Error al consultar Notion.")
+            return
+        data = r.json()
+        gastos.extend(data.get("results", []))
+        if not data.get("has_more"):
+            break
+        cursor = data.get("next_cursor")
+
+    if not gastos:
+        await update.message.reply_text(f"📭 No hay gastos registrados en {mes}.")
+        return
+
+    # Agrupar por presupuesto
+    totales = {}
+    for g in gastos:
+        props = g.get("properties", {})
+        monto = props.get("Monto", {}).get("number", 0) or 0
+        rel_pre = props.get("Presupuesto", {}).get("relation", [])
+        if rel_pre:
+            # Buscar nombre del presupuesto por ID
+            pr_id = rel_pre[0].get("id", "")
+            pr_nombre = next((k for k, v in PR.items() if v == pr_id), "Otros")
+        else:
+            pr_nombre = "Otros"
+        totales[pr_nombre] = totales.get(pr_nombre, 0) + monto
+
+    # Ordenar de mayor a menor
+    ordenados = sorted(totales.items(), key=lambda x: x[1], reverse=True)
+    total_general = sum(t for _, t in ordenados)
+    maximo = ordenados[0][1] if ordenados else 1
+
+    # Construir mensaje
+    lineas = [f"📊 *Resumen {mes}*\n"]
+    for nombre, monto in ordenados:
+        emoji = PR_EMOJI.get(nombre, "📦")
+        bar   = barra(monto, maximo)
+        lineas.append(f"{emoji} {nombre}\n`${monto:,.0f}`  {bar}")
+
+    lineas.append(f"\n💵 *Total  ${total_general:,.0f}*")
+
+    await update.message.reply_text(
+        "\n".join(lineas),
+        parse_mode="Markdown"
+    )
 
 # ── CONCEPTOS UNIVOCOS ────────────────────────────────────────────────────────
 CONCEPTOS_UNIVOCOS = {
@@ -279,7 +390,6 @@ REGLAS_CONCEPTO = [
     (["uber ","didi ","cabify"],"Gasolina","Automovil"),
 ]
 
-MESES_ESP   = {1:"ENE",2:"FEB",3:"MAR",4:"ABR",5:"MAY",6:"JUN",7:"JUL",8:"AGO",9:"SEP",10:"OCT",11:"NOV",12:"DIC"}
 MESES_TEXTO = {"ene":1,"feb":2,"mar":3,"abr":4,"may":5,"jun":6,"jul":7,"ago":8,"sep":9,"oct":10,"nov":11,"dic":12,
                "enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,"julio":7,"agosto":8,
                "septiembre":9,"octubre":10,"noviembre":11,"diciembre":12}
@@ -313,7 +423,6 @@ def parsear_ticket(texto: str) -> dict:
     import zoneinfo
     hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
     lineas = [l.strip() for l in texto.split("\n") if l.strip()]
-
     monto = None
     patrones_total = [
         r'TOTAL\s*\$?\s*([\d,]+\.?\d*)',
@@ -333,7 +442,6 @@ def parsear_ticket(texto: str) -> dict:
         candidatos = re.findall(r'\b(\d{1,5}\.\d{2})\b', texto)
         if candidatos:
             monto = max(float(c.replace(",", "")) for c in candidatos)
-
     fecha = hoy
     patrones_fecha = [
         r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})',
@@ -352,7 +460,6 @@ def parsear_ticket(texto: str) -> dict:
                 fecha = datetime.date(y, mo, d)
                 break
             except: pass
-
     concepto = "Ticket"
     for linea in lineas[:8]:
         if len(linea) < 3: continue
@@ -360,7 +467,6 @@ def parsear_ticket(texto: str) -> dict:
         if re.match(r'^RFC', linea, re.IGNORECASE): continue
         concepto = linea.title()
         break
-
     return {"concepto": concepto, "monto": monto, "fecha": fecha}
 
 # ── APRENDIZAJE ──────────────────────────────────────────────────────────────
@@ -674,11 +780,13 @@ def msg_gasto(g, nombre=None, notion_id=None):
         f"📌 {g['concepto']}\n"
         f"💵 ${g['monto']:,.2f}\n"
         f"🗓️ {fmt(g['fecha'])}\n"
-        f"💳 {g['tarjeta']}  •  Mes: {g['mes']}\n"
-        f"🏷️ {g['subcategoria']}  •  {g['presupuesto']}"
+        f"💳 {g['tarjeta']}\n"
+        f"🧾 {g['mes']}\n"
+        f"🏷️ {g['subcategoria']}\n"
+        f"🗂️ {g['presupuesto']}"
     )
     if notion_id:
-        msg += f"\n[📎 Ver en Notion]({notion_deep_link(notion_id)})"
+        msg += f"\n[🔗 Ver en Notion]({notion_deep_link(notion_id)})"
     return msg
 
 # ── REGISTRAR Y NOTIFICAR ────────────────────────────────────────────────────
@@ -754,7 +862,7 @@ async def handle_foto(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return ConversationHandler.END
     if not GOOGLE_VISION_API_KEY:
-        await update.message.reply_text("❌ Google Vision no está configurado. Agrega GOOGLE_VISION_API_KEY en Render.")
+        await update.message.reply_text("❌ Google Vision no está configurado.")
         return ConversationHandler.END
     msg_espera = await update.message.reply_text("📸 Analizando ticket...")
     photo = update.message.photo[-1]
@@ -764,10 +872,9 @@ async def handle_foto(update, context):
     if not texto_ocr:
         await msg_espera.edit_text("❌ No pude leer el ticket. Intenta con mejor iluminación o más cerca.")
         return ConversationHandler.END
-    logger.info(f"OCR resultado:\n{texto_ocr[:300]}")
     datos = parsear_ticket(texto_ocr)
     if not datos["monto"]:
-        await msg_espera.edit_text("❌ No encontré el monto total en el ticket. Regístralo manualmente.")
+        await msg_espera.edit_text("❌ No encontré el monto total. Regístralo manualmente.")
         return ConversationHandler.END
     fecha   = datos["fecha"]
     tarjeta = calcular_tarjeta(fecha)
@@ -794,8 +901,10 @@ async def handle_foto(update, context):
         f"📌 {gasto['concepto']}\n"
         f"💵 ${gasto['monto']:,.2f}\n"
         f"🗓️ {fmt(gasto['fecha'])}\n"
-        f"💳 {gasto['tarjeta']}  •  Mes: {gasto['mes']}\n"
-        f"🏷️ {gasto['subcategoria']}  •  {gasto['presupuesto']}"
+        f"💳 {gasto['tarjeta']}\n"
+        f"🧾 {gasto['mes']}\n"
+        f"🏷️ {gasto['subcategoria']}\n"
+        f"🗂️ {gasto['presupuesto']}"
         f"{aviso}",
         reply_markup=kb
     )
@@ -814,16 +923,12 @@ async def callback_foto(update, context):
         return ConversationHandler.END
     ok, nid, err = guardar_notion(gasto)
     if not ok:
-        logger.error(f"Error guardando gasto foto: {err}")
         await query.message.edit_text("❌ Error al guardar en Notion.")
         return ConversationHandler.END
     gasto_completo = {**gasto, "notion_id": nid}
     uid = query.from_user.id
     threading.Thread(target=guardar_historial_notion, args=(gasto_completo, uid), daemon=True).start()
-    await query.message.edit_text(
-        msg_gasto(gasto, notion_id=nid),
-        parse_mode="Markdown"
-    )
+    await query.message.edit_text(msg_gasto(gasto, notion_id=nid), parse_mode="Markdown")
     notif  = USUARIOS_NOTIFICAR.get(uid)
     nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
     if notif:
@@ -1001,9 +1106,9 @@ async def aplicar_correccion(update, context, sub=None, pre=None):
         )
         resumen = f"📌 {gasto['concepto']}\n"
         if nueva_sub: resumen += f"🏷️ {nueva_sub}\n"
-        if nuevo_pre: resumen += f"💰 {nuevo_pre}\n"
+        if nuevo_pre: resumen += f"🗂️ {nuevo_pre}\n"
         nid  = gasto.get("notion_id","")
-        link = f"\n[📎 Ver en Notion]({notion_deep_link(nid)})" if nid else ""
+        link = f"\n[🔗 Ver en Notion]({notion_deep_link(nid)})" if nid else ""
         await update.message.reply_text(
             f"✅ Corregido\n\n{resumen}{link}",
             reply_markup=ReplyKeyboardRemove(),
@@ -1061,10 +1166,12 @@ async def handle_prueba(update,context):
             f"📌 {concepto.title()}\n"
             f"💵 ${monto:,.2f}\n"
             f"🗓️ {fecha_fmt}\n"
-            f"💳 {tarjeta}  •  Mes: {mes}\n"
-            f"🏷️ {sub}  •  {pre}\n\n"
+            f"💳 {tarjeta}\n"
+            f"🧾 {mes}\n"
+            f"🏷️ {sub}\n"
+            f"🗂️ {pre}\n\n"
             f"🔍 Origen: {origen_emoji} {origen_texto}\n\n"
-            f"Nada fue registrado en Notion. Ya saliste del modo prueba."
+            f"Nada fue registrado en Notion."
         )
         await update.message.reply_text(respuesta)
     except ValueError as e:
@@ -1093,6 +1200,8 @@ async def start(update,context):
         "📸 También puedes mandarme una foto de tu ticket.\n\n"
         "Tarjetas: BBVA05  BBVA12  HEYB25  BMEX04  EFVO\n\n"
         "Comandos:\n"
+        "/resumen — resumen del mes activo\n"
+        "/resumen MAY26 — resumen de un mes específico\n"
         "/corregir — corregir subcategoria o presupuesto\n"
         "/prueba — simular un gasto sin registrar\n"
         "/cancelar — cancelar accion en curso"
@@ -1194,7 +1303,6 @@ async def setup_webhook(app):
 def main():
     global _ptb_app
 
-    # ── Precargar meses al arranque (evita timeouts en tiempo real) ───────
     precargar_meses()
 
     app = Application.builder().token(TELEGRAM_TOKEN).updater(None).job_queue(None).build()
@@ -1238,6 +1346,7 @@ def main():
     )
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("resumen", cmd_resumen))
     app.add_handler(conv_prueba)
     app.add_handler(conv_foto)
     app.add_handler(conv_corregir)
@@ -1254,7 +1363,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_final10...")
+    logger.info("Bot corriendo v_final11...")
     server.serve_forever()
 
 if __name__ == "__main__":
