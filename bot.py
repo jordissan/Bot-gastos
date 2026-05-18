@@ -82,6 +82,9 @@ PR_EMOJI = {
     "Personal":"👤","Departamento":"🏡","Otros":"📦",
 }
 
+# Emojis que ocupan 1 celda en monoespaciado (en vez de 2) — necesitan espacio extra
+EMOJI_ESTRECHO = {"⚡", "⛪", "💊"}
+
 # ── HELPERS ──────────────────────────────────────────────────────────────────
 def normalizar(t):
     t=t.lower().strip(); t=unicodedata.normalize("NFD",t)
@@ -240,16 +243,18 @@ async def cmd_resumen(update, context):
     ordenados = sorted(totales.items(), key=lambda x: x[1], reverse=True)
     total_general = sum(t for _, t in ordenados)
 
-    # Construir tabla monoespaciada con emojis y padding
+    # Construir tabla monoespaciada con padding
+    # Los emojis estrechos reciben un espacio extra para compensar su ancho de 1 celda
     max_nom = max(len(n) for n, _ in ordenados)
     tabla = []
     for nombre, monto in ordenados:
         emoji   = PR_EMOJI.get(nombre, "📦")
+        e_str   = emoji + " " if emoji in EMOJI_ESTRECHO else emoji
         pct     = round((monto / total_general) * 100) if total_general else 0
         nom_pad = nombre.ljust(max_nom)
         monto_s = f"${monto:,.0f}".rjust(9)
         pct_s   = f"{pct}%".rjust(4)
-        tabla.append(f"{emoji} {nom_pad}  {monto_s}  {pct_s}")
+        tabla.append(f"{e_str} {nom_pad}  {monto_s}  {pct_s}")
 
     msg = (
         f"📊 *Resumen {mes}*\n\n"
@@ -1308,7 +1313,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_final14...")
+    logger.info("Bot corriendo v_final15...")
     server.serve_forever()
 
 if __name__ == "__main__":
