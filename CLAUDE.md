@@ -206,11 +206,11 @@ ELIMINAR_CONFIRM = 50
 
 ## Comandos BotFather
 ```
-resumen - 📊 Resumen del mes activo
-corregir - ✏️ Corregir categoría de un gasto reciente
-estadisticas - 📊 Comparar este mes vs el anterior
-eliminar - 🗑️ Eliminar el último gasto
-cancelar - ❌ Cancelar acción en curso
-start - 👋 Ver instrucciones
-prueba - 🧪 Simular un gasto sin registrar
+start        - 👋 Ver instrucciones
+resumen      - 📊 Resumen del mes activo
+estadisticas - 📈 Comparar este mes vs el anterior
+corregir     - ✏️ Corregir un gasto reciente
+eliminar     - 🗑️ Eliminar el último gasto
+prueba       - 🧪 Simular un gasto sin registrar
+cancelar     - ❌ Cancelar acción en curso
 ```

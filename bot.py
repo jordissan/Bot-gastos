@@ -1031,16 +1031,28 @@ async def confirmar_subcat(update, context):
     return ConversationHandler.END
 
 # ── CONV CORREGIR ────────────────────────────────────────────────────────────
+_NUM_EMOJI = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣"]
+
+def _lista_corregir(ultimos):
+    txt = "✏️ Elige el gasto a corregir:\n\n"
+    for i, g in enumerate(ultimos):
+        num = _NUM_EMOJI[i] if i < len(_NUM_EMOJI) else f"{i+1}."
+        fecha_c = " ".join(fmt(g["fecha"]).split()[:2]) if g.get("fecha") else ""
+        txt += f"{num}  {g['concepto']}  —  ${g['monto']:,.2f}\n"
+        txt += f"     🏷️ {g['subcategoria']}  ·  {g['presupuesto']}"
+        if fecha_c:
+            txt += f"  ·  🗓️ {fecha_c}"
+        txt += "\n\n"
+    return txt
+
 async def cmd_corregir(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
     uid = update.effective_user.id
     ultimos = cargar_historial_notion(uid)
     if not ultimos:
         await update.message.reply_text("No hay gastos recientes para corregir."); return ConversationHandler.END
-    texto="✏️ Elige el gasto a corregir:\n\n"
-    for i,g in enumerate(ultimos): texto+=f"{i+1}. {g['concepto']}  ${g['monto']:,.2f}\n    🏷️ {g['subcategoria']}  •  {g['presupuesto']}\n\n"
     context.user_data["historial_corregir"]=ultimos
-    await update.message.reply_text(texto,reply_markup=ReplyKeyboardMarkup(menu_elegir(ultimos),one_time_keyboard=True,resize_keyboard=True))
+    await update.message.reply_text(_lista_corregir(ultimos),reply_markup=ReplyKeyboardMarkup(menu_elegir(ultimos),one_time_keyboard=True,resize_keyboard=True))
     return CORREGIR_ELEGIR
 
 async def corregir_elegir(update,context):
@@ -1064,9 +1076,7 @@ async def corregir_que(update,context):
         return await _cancelar_conv(update, context)
     if txt==BTN_REGRESAR:
         ultimos=context.user_data.get("historial_corregir",[])
-        texto="✏️ Elige el gasto a corregir:\n\n"
-        for i,g in enumerate(ultimos): texto+=f"{i+1}. {g['concepto']}  ${g['monto']:,.2f}\n    🏷️ {g['subcategoria']}  •  {g['presupuesto']}\n\n"
-        await update.message.reply_text(texto,reply_markup=ReplyKeyboardMarkup(menu_elegir(ultimos),one_time_keyboard=True,resize_keyboard=True))
+        await update.message.reply_text(_lista_corregir(ultimos),reply_markup=ReplyKeyboardMarkup(menu_elegir(ultimos),one_time_keyboard=True,resize_keyboard=True))
         return CORREGIR_ELEGIR
     context.user_data["que_corregir"]=txt
     if "Monto" in txt or "💵" in txt:
