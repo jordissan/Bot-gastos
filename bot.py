@@ -1351,11 +1351,10 @@ async def cmd_estadisticas(update, context):
         a, b = totales_ant.get(cat, 0), totales_act.get(cat, 0)
         diff = b - a
         emoji = PR_EMOJI.get(cat, "📦")
-        e_str = emoji + " " if emoji in EMOJI_ESTRECHO else emoji
         arrow = "▲" if diff > 0 else ("▼" if diff < 0 else "=")
-        monto_s = f"${b:>6,.0f}"
+        monto_s = f"${b:,.0f}".rjust(7)
         diff_s  = f"{abs(diff):>6,.0f}"
-        tabla.append(f"{e_str} {cat.ljust(max_nom)}  {monto_s}  {arrow}{diff_s}")
+        tabla.append(f"{emoji} {cat.ljust(max_nom)}  {monto_s}  {arrow}{diff_s}")
 
     diff_total = total_act - total_ant
     flecha = "▲" if diff_total > 0 else "▼"
