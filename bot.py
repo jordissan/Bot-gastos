@@ -88,6 +88,11 @@ PR_EMOJI = {
 # Emojis que ocupan 1 celda en monoespaciado (en vez de 2) — necesitan espacio extra
 EMOJI_ESTRECHO = {"⚡", "⛪", "💊"}
 
+NOTION_API_BASE    = "https://api.notion.com/v1"
+NOTION_T_SHORT     = 5
+NOTION_T_DEFAULT   = 8
+NOTION_T_LONG      = 15
+
 # ── HELPERS ──────────────────────────────────────────────────────────────────
 def normalizar(t):
     t=t.lower().strip(); t=unicodedata.normalize("NFD",t)
@@ -95,6 +100,10 @@ def normalizar(t):
 
 def similitud(a,b): return SequenceMatcher(None,normalizar(a),normalizar(b)).ratio()
 def nh(): return {"Authorization":f"Bearer {NOTION_TOKEN}","Content-Type":"application/json","Notion-Version":"2022-06-28"}
+
+def notion_rich_text(props: dict, campo: str) -> str:
+    rt = props.get(campo, {}).get("rich_text", [])
+    return rt[0]["text"]["content"] if rt else ""
 
 def notion_deep_link(page_id: str) -> str:
     pid = page_id.replace("-", "")
@@ -115,6 +124,25 @@ def notion_request(method, url, **kwargs):
             time.sleep(2)
     return None
 
+def query_notion_db(database_id: str, filter_dict: dict = None) -> list:
+    results, cursor = [], None
+    body = {"page_size": 100}
+    if filter_dict:
+        body["filter"] = filter_dict
+    while True:
+        if cursor:
+            body["start_cursor"] = cursor
+        r = notion_request("POST", f"{NOTION_API_BASE}/databases/{database_id}/query",
+                           headers=nh(), json=body, timeout=NOTION_T_LONG)
+        if not r or r.status_code != 200:
+            break
+        data = r.json()
+        results.extend(data.get("results", []))
+        if not data.get("has_more"):
+            break
+        cursor = data.get("next_cursor")
+    return results
+
 # ── CACHE DE MESES ────────────────────────────────────────────────────────────
 _meses_cache: dict = {}
 
@@ -124,8 +152,8 @@ def precargar_meses():
         return
     try:
         r = requests.post(
-            f"https://api.notion.com/v1/databases/{NOTION_BALANCE_ID}/query",
-            headers=nh(), json={"page_size": 50}, timeout=15)
+            f"{NOTION_API_BASE}/databases/{NOTION_BALANCE_ID}/query",
+            headers=nh(), json={"page_size": 50}, timeout=NOTION_T_LONG)
         if r.status_code == 200:
             for page in r.json().get("results", []):
                 for prop_val in page.get("properties", {}).values():
@@ -148,8 +176,8 @@ def buscar_mes_id(mes: str):
         return None
     try:
         r = notion_request("POST",
-            f"https://api.notion.com/v1/databases/{NOTION_BALANCE_ID}/query",
-            headers=nh(), json={"page_size": 50}, timeout=15)
+            f"{NOTION_API_BASE}/databases/{NOTION_BALANCE_ID}/query",
+            headers=nh(), json={"page_size": 50}, timeout=NOTION_T_LONG)
         if r and r.status_code == 200:
             for page in r.json().get("results", []):
                 for prop_val in page.get("properties", {}).values():
@@ -182,6 +210,12 @@ def mes_activo_str() -> str:
         y, m = hoy.year, hoy.month
     return f"{MESES_ESP[m]}{str(y)[-2:]}"
 
+def fila_tabla(nombre: str, monto: float, nom_pad: int, extra: str = "") -> str:
+    emoji = PR_EMOJI.get(nombre, "📦")
+    e_str = emoji + " " if emoji in EMOJI_ESTRECHO else emoji
+    monto_s = f"${monto:,.0f}".rjust(9)
+    return f"{e_str} {nombre.ljust(nom_pad)}  {monto_s}{extra}"
+
 # ── RESUMEN ───────────────────────────────────────────────────────────────────
 async def cmd_resumen(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
@@ -197,28 +231,8 @@ async def cmd_resumen(update, context):
 
     await update.message.reply_text(f"⏳ Calculando resumen de {mes}...")
 
-    # Consultar todos los gastos del mes (paginado)
-    gastos = []
-    cursor = None
-    while True:
-        body = {
-            "filter": {"property": "Mes", "relation": {"contains": mid}},
-            "page_size": 100,
-        }
-        if cursor:
-            body["start_cursor"] = cursor
-        r = notion_request("POST",
-            f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query",
-            headers=nh(), json=body, timeout=15)
-        if not r or r.status_code != 200:
-            await update.message.reply_text("❌ Error al consultar Notion.")
-            return
-        data = r.json()
-        gastos.extend(data.get("results", []))
-        if not data.get("has_more"):
-            break
-        cursor = data.get("next_cursor")
-
+    gastos = query_notion_db(NOTION_DATABASE_ID,
+                             {"property": "Mes", "relation": {"contains": mid}})
     if not gastos:
         await update.message.reply_text(f"📭 No hay gastos registrados en {mes}.")
         return
@@ -250,13 +264,8 @@ async def cmd_resumen(update, context):
     max_nom = max(len(n) for n, _ in ordenados)
     tabla = []
     for nombre, monto in ordenados:
-        emoji   = PR_EMOJI.get(nombre, "📦")
-        e_str   = emoji + " " if emoji in EMOJI_ESTRECHO else emoji
-        pct     = round((monto / total_general) * 100) if total_general else 0
-        nom_pad = nombre.ljust(max_nom)
-        monto_s = f"${monto:,.0f}".rjust(9)
-        pct_s   = f"{pct}%".rjust(4)
-        tabla.append(f"{e_str} {nom_pad}  {monto_s}  {pct_s}")
+        pct   = round((monto / total_general) * 100) if total_general else 0
+        tabla.append(fila_tabla(nombre, monto, max_nom, f"  {pct}%".rjust(5)))
 
     msg = (
         f"📊 *Resumen {mes}*\n\n"
@@ -401,7 +410,7 @@ def ocr_ticket(image_bytes: bytes) -> str:
         }
         r = requests.post(
             f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}",
-            json=payload, timeout=10)
+            json=payload, timeout=NOTION_T_DEFAULT)
         if r.status_code == 200:
             anotaciones = r.json().get("responses", [{}])[0].get("textAnnotations", [])
             if anotaciones:
@@ -462,12 +471,23 @@ def parsear_ticket(texto: str) -> dict:
     return {"concepto": concepto, "monto": monto, "fecha": fecha}
 
 # ── APRENDIZAJE ──────────────────────────────────────────────────────────────
+def _buscar_entrada_aprendizaje(concepto: str):
+    r = notion_request("POST", f"{NOTION_API_BASE}/databases/{NOTION_APRENDIZAJE_ID}/query",
+                       headers=nh(),
+                       json={"filter": {"property": "Concepto", "title": {"equals": concepto.lower()}}},
+                       timeout=NOTION_T_SHORT)
+    if r and r.status_code == 200:
+        res = r.json().get("results", [])
+        if res:
+            return res[0]["id"], res[0]["properties"].get("Usos", {}).get("number", 0) or 0
+    return None, 0
+
 def buscar_aprendizaje(concepto):
     r = notion_request("POST",
-        f"https://api.notion.com/v1/databases/{NOTION_APRENDIZAJE_ID}/query",
+        f"{NOTION_API_BASE}/databases/{NOTION_APRENDIZAJE_ID}/query",
         headers=nh(),
         json={"filter":{"property":"Concepto","title":{"equals":concepto.lower()}}},
-        timeout=5)
+        timeout=NOTION_T_SHORT)
     if r and r.status_code == 200:
         res = r.json().get("results", [])
         if res:
@@ -481,42 +501,34 @@ def guardar_aprendizaje(concepto, sub, pre):
     if es_concepto_univoco(concepto):
         return
     hoy = datetime.date.today().isoformat()
-    r = notion_request("POST",
-        f"https://api.notion.com/v1/databases/{NOTION_APRENDIZAJE_ID}/query",
+    pid, usos = _buscar_entrada_aprendizaje(concepto)
+    if pid:
+        notion_request("PATCH", f"{NOTION_API_BASE}/pages/{pid}",
+            headers=nh(),
+            json={"properties": {
+                "Subcategoria": {"rich_text": [{"text": {"content": sub}}]},
+                "Presupuesto":  {"rich_text": [{"text": {"content": pre}}]},
+                "Usos":         {"number": usos + 1},
+                "Fecha":        {"date": {"start": hoy}},
+            }}, timeout=NOTION_T_SHORT)
+        return
+    notion_request("POST", f"{NOTION_API_BASE}/pages",
         headers=nh(),
-        json={"filter":{"property":"Concepto","title":{"equals":concepto.lower()}}},
-        timeout=5)
-    if r and r.status_code == 200:
-        res = r.json().get("results", [])
-        if res:
-            pid = res[0]["id"]
-            u = res[0]["properties"].get("Usos",{}).get("number",0) or 0
-            notion_request("PATCH", f"https://api.notion.com/v1/pages/{pid}",
-                headers=nh(),
-                json={"properties":{
-                    "Subcategoria":{"rich_text":[{"text":{"content":sub}}]},
-                    "Presupuesto":{"rich_text":[{"text":{"content":pre}}]},
-                    "Usos":{"number":u+1},
-                    "Fecha":{"date":{"start":hoy}},
-                }}, timeout=5)
-            return
-    notion_request("POST", "https://api.notion.com/v1/pages",
-        headers=nh(),
-        json={"parent":{"database_id":NOTION_APRENDIZAJE_ID},"properties":{
-            "Concepto":{"title":[{"text":{"content":concepto.lower()}}]},
-            "Subcategoria":{"rich_text":[{"text":{"content":sub}}]},
-            "Presupuesto":{"rich_text":[{"text":{"content":pre}}]},
-            "Usos":{"number":1},
-            "Fecha":{"date":{"start":hoy}},
-        }}, timeout=5)
+        json={"parent": {"database_id": NOTION_APRENDIZAJE_ID}, "properties": {
+            "Concepto":    {"title":     [{"text": {"content": concepto.lower()}}]},
+            "Subcategoria":{"rich_text": [{"text": {"content": sub}}]},
+            "Presupuesto": {"rich_text": [{"text": {"content": pre}}]},
+            "Usos":        {"number": 1},
+            "Fecha":       {"date":   {"start": hoy}},
+        }}, timeout=NOTION_T_SHORT)
 
 def limpiar_aprendizaje():
     try:
         hoy = datetime.date.today()
         limite_90 = (hoy - datetime.timedelta(days=90)).isoformat()
         r = notion_request("POST",
-            f"https://api.notion.com/v1/databases/{NOTION_APRENDIZAJE_ID}/query",
-            headers=nh(), json={"page_size":200}, timeout=10)
+            f"{NOTION_API_BASE}/databases/{NOTION_APRENDIZAJE_ID}/query",
+            headers=nh(), json={"page_size":200}, timeout=NOTION_T_DEFAULT)
         if not r or r.status_code != 200: return
         entradas = r.json().get("results", [])
         borradas = 0
@@ -526,15 +538,15 @@ def limpiar_aprendizaje():
             fecha_raw = p.get("Fecha",{}).get("date")
             fecha_str = fecha_raw["start"] if fecha_raw else None
             if usos == 1 and fecha_str and fecha_str < limite_90:
-                notion_request("DELETE", f"https://api.notion.com/v1/pages/{e['id']}",
-                    headers=nh(), timeout=5)
+                notion_request("DELETE", f"{NOTION_API_BASE}/pages/{e['id']}",
+                    headers=nh(), timeout=NOTION_T_SHORT)
                 borradas += 1
         if len(entradas) - borradas > 150:
             sobrantes = sorted(entradas, key=lambda e: e["properties"].get("Usos",{}).get("number",0) or 0)
             por_borrar = (len(entradas) - borradas) - 100
             for e in sobrantes[:por_borrar]:
-                notion_request("DELETE", f"https://api.notion.com/v1/pages/{e['id']}",
-                    headers=nh(), timeout=5)
+                notion_request("DELETE", f"{NOTION_API_BASE}/pages/{e['id']}",
+                    headers=nh(), timeout=NOTION_T_SHORT)
                 borradas += 1
         if borradas: logger.info(f"Limpieza aprendizaje: {borradas} entradas eliminadas")
     except Exception as ex:
@@ -545,7 +557,7 @@ MAX_HISTORIAL = 5
 
 def guardar_historial_notion(gasto, usuario_id):
     try:
-        notion_request("POST", "https://api.notion.com/v1/pages",
+        notion_request("POST", f"{NOTION_API_BASE}/pages",
             headers=nh(),
             json={"parent":{"database_id":NOTION_HISTORIAL_ID},"properties":{
                 "Concepto":    {"title":[{"text":{"content":gasto["concepto"]}}]},
@@ -557,47 +569,46 @@ def guardar_historial_notion(gasto, usuario_id):
                 "Presupuesto": {"rich_text":[{"text":{"content":gasto["presupuesto"]}}]},
                 "NotionID":    {"rich_text":[{"text":{"content":gasto.get("notion_id","")}}]},
                 "UsuarioID":   {"number":usuario_id},
-            }}, timeout=5)
+            }}, timeout=NOTION_T_SHORT)
         r = notion_request("POST",
-            f"https://api.notion.com/v1/databases/{NOTION_HISTORIAL_ID}/query",
+            f"{NOTION_API_BASE}/databases/{NOTION_HISTORIAL_ID}/query",
             headers=nh(),
             json={
                 "filter":{"property":"UsuarioID","number":{"equals":usuario_id}},
                 "sorts":[{"timestamp":"created_time","direction":"descending"}],
                 "page_size": 20,
-            }, timeout=5)
+            }, timeout=NOTION_T_SHORT)
         if r and r.status_code == 200:
             entradas = r.json().get("results",[])
             for vieja in entradas[MAX_HISTORIAL:]:
-                notion_request("PATCH", f"https://api.notion.com/v1/pages/{vieja['id']}",
-                    headers=nh(), json={"archived": True}, timeout=5)
+                notion_request("PATCH", f"{NOTION_API_BASE}/pages/{vieja['id']}",
+                    headers=nh(), json={"archived": True}, timeout=NOTION_T_SHORT)
     except Exception as ex:
         logger.error(f"Error guardando historial: {ex}")
 
 def cargar_historial_notion(usuario_id):
     try:
         r = notion_request("POST",
-            f"https://api.notion.com/v1/databases/{NOTION_HISTORIAL_ID}/query",
+            f"{NOTION_API_BASE}/databases/{NOTION_HISTORIAL_ID}/query",
             headers=nh(),
             json={
                 "filter":{"property":"UsuarioID","number":{"equals":usuario_id}},
                 "sorts":[{"timestamp":"created_time","direction":"descending"}],
                 "page_size": MAX_HISTORIAL,
-            }, timeout=5)
+            }, timeout=NOTION_T_SHORT)
         if r and r.status_code == 200:
             resultado = []
             for e in r.json().get("results",[]):
                 p = e["properties"]
-                def txt(campo): return (p.get(campo,{}).get("rich_text",[{}])[0].get("text",{}).get("content","") if p.get(campo,{}).get("rich_text") else "")
                 resultado.append({
                     "concepto":    (p.get("Concepto",{}).get("title",[{}])[0].get("text",{}).get("content","") if p.get("Concepto",{}).get("title") else ""),
                     "monto":       p.get("Monto",{}).get("number",0) or 0,
                     "fecha":       (p.get("Fecha",{}).get("date",{}) or {}).get("start",""),
-                    "tarjeta":     txt("Tarjeta"),
-                    "mes":         txt("Mes"),
-                    "subcategoria":txt("Subcategoria"),
-                    "presupuesto": txt("Presupuesto"),
-                    "notion_id":   txt("NotionID"),
+                    "tarjeta":     notion_rich_text(p, "Tarjeta"),
+                    "mes":         notion_rich_text(p, "Mes"),
+                    "subcategoria":notion_rich_text(p, "Subcategoria"),
+                    "presupuesto": notion_rich_text(p, "Presupuesto"),
+                    "notion_id":   notion_rich_text(p, "NotionID"),
                 })
             return resultado
     except Exception as ex:
@@ -742,8 +753,8 @@ def guardar_notion(gasto):
     if sid: props["Subcategoria"]={"relation":[{"id":sid}]}
     pid=PR.get(gasto["presupuesto"])
     if pid: props["Presupuesto"]={"relation":[{"id":pid}]}
-    r=notion_request("POST","https://api.notion.com/v1/pages",headers=nh(),
-        json={"parent":{"database_id":NOTION_DATABASE_ID},"properties":props},timeout=8)
+    r=notion_request("POST",f"{NOTION_API_BASE}/pages",headers=nh(),
+        json={"parent":{"database_id":NOTION_DATABASE_ID},"properties":props},timeout=NOTION_T_DEFAULT)
     if r and r.status_code==200:
         return True, r.json().get("id",""), ""
     return False, "", (r.text if r else "Sin respuesta")
@@ -756,8 +767,8 @@ def actualizar_notion(page_id,sub=None,pre=None):
     if pre:
         pid=PR.get(pre)
         if pid: props["Presupuesto"]={"relation":[{"id":pid}]}
-    r=notion_request("PATCH",f"https://api.notion.com/v1/pages/{page_id}",
-        headers=nh(),json={"properties":props},timeout=8)
+    r=notion_request("PATCH",f"{NOTION_API_BASE}/pages/{page_id}",
+        headers=nh(),json={"properties":props},timeout=NOTION_T_DEFAULT)
     return r is not None and r.status_code==200
 
 # ── MENSAJES ─────────────────────────────────────────────────────────────────
@@ -842,6 +853,11 @@ async def registrar_via_shortcut(texto: str, user_id: int):
             reply_markup=kb, parse_mode="Markdown"
         )
     return True, msg
+
+async def _cancelar_conv(update, context):
+    context.user_data.clear()
+    await update.message.reply_text("❌ Cancelado.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
 
 # ── CONV FOTO ─────────────────────────────────────────────────────────────────
 async def handle_foto(update, context):
@@ -939,13 +955,13 @@ async def handle_gasto(update,context):
     try:
         gasto=parsear_mensaje(texto)
         if gasto["monto"]>=MONTO_INUSUAL:
-            context.user_data["gasto_p"]=gasto
+            context.user_data["gasto_pendiente"]=gasto
             await update.message.reply_text(
                 f"⚠️ El monto ${gasto['monto']:,.2f} es inusual.\n¿Confirmas '{gasto['concepto']}'?",
                 reply_markup=ReplyKeyboardMarkup([["✅ SI","❌ NO"]],one_time_keyboard=True,resize_keyboard=True))
             return CONFIRMAR_MONTO
         if not gasto["seguro"]:
-            context.user_data["gasto_p"]=gasto
+            context.user_data["gasto_pendiente"]=gasto
             await update.message.reply_text(
                 f"❓ No reconoci '{gasto['concepto']}'.\n¿En qué categoría va?",
                 reply_markup=ReplyKeyboardMarkup(menu_grupos(),one_time_keyboard=True,resize_keyboard=True))
@@ -956,24 +972,23 @@ async def handle_gasto(update,context):
     return ConversationHandler.END
 
 async def confirmar_monto(update,context):
-    gasto=context.user_data.pop("gasto_p",None)
+    gasto=context.user_data.pop("gasto_pendiente",None)
     if "SI" in update.message.text.strip().upper() and gasto: await registrar_y_notificar(update,context,gasto)
     else: await update.message.reply_text("❌ Gasto cancelado.",reply_markup=ReplyKeyboardRemove())
+    context.user_data.clear()
     return ConversationHandler.END
 
 async def confirmar_cat(update, context):
     txt = update.message.text.strip()
     if txt == BTN_CANCELAR:
-        context.user_data.clear()
-        await update.message.reply_text("❌ Cancelado.", reply_markup=ReplyKeyboardRemove())
-        return ConversationHandler.END
-    gasto = context.user_data.get("gasto_p")
+        return await _cancelar_conv(update, context)
+    gasto = context.user_data.get("gasto_pendiente")
     if not gasto:
         await update.message.reply_text("Error.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     grp = grupo_key(txt)
     subcats = GRUPOS_CAT.get(grp, [grp])
-    context.user_data["grupo_cat"] = grp
+    context.user_data["grupo_pendiente"] = grp
     if len(subcats) > 1:
         menu = [[s] for s in subcats] + [[BTN_CANCELAR]]
         await update.message.reply_text(
@@ -981,7 +996,7 @@ async def confirmar_cat(update, context):
             reply_markup=ReplyKeyboardMarkup(menu, one_time_keyboard=True, resize_keyboard=True)
         )
         return CONFIRMAR_SUBCAT
-    gasto = context.user_data.pop("gasto_p")
+    gasto = context.user_data.pop("gasto_pendiente")
     gasto["subcategoria"] = subcats[0]
     gasto["presupuesto"] = limpiar_emoji(grp)
     guardar_aprendizaje(gasto["concepto"].lower(), gasto["subcategoria"], gasto["presupuesto"])
@@ -991,11 +1006,9 @@ async def confirmar_cat(update, context):
 async def confirmar_subcat(update, context):
     txt = update.message.text.strip()
     if txt == BTN_CANCELAR:
-        context.user_data.clear()
-        await update.message.reply_text("❌ Cancelado.", reply_markup=ReplyKeyboardRemove())
-        return ConversationHandler.END
-    gasto = context.user_data.pop("gasto_p", None)
-    grp   = context.user_data.pop("grupo_cat", txt)
+        return await _cancelar_conv(update, context)
+    gasto = context.user_data.pop("gasto_pendiente", None)
+    grp   = context.user_data.pop("grupo_pendiente", txt)
     if not gasto:
         await update.message.reply_text("Error.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
@@ -1003,6 +1016,7 @@ async def confirmar_subcat(update, context):
     gasto["presupuesto"]  = limpiar_emoji(grp)
     guardar_aprendizaje(gasto["concepto"].lower(), txt, limpiar_emoji(grp))
     await registrar_y_notificar(update, context, gasto)
+    context.user_data.clear()
     return ConversationHandler.END
 
 # ── CONV CORREGIR ────────────────────────────────────────────────────────────
@@ -1021,7 +1035,7 @@ async def cmd_corregir(update,context):
 async def corregir_elegir(update,context):
     txt=update.message.text.strip()
     if txt==BTN_CANCELAR:
-        context.user_data.clear(); await update.message.reply_text("❌ Cancelado.",reply_markup=ReplyKeyboardRemove()); return ConversationHandler.END
+        return await _cancelar_conv(update, context)
     try:
         idx=int(txt)-1
         gasto=context.user_data["historial_corregir"][idx]
@@ -1036,7 +1050,7 @@ async def corregir_elegir(update,context):
 async def corregir_que(update,context):
     txt=update.message.text.strip()
     if txt==BTN_CANCELAR:
-        context.user_data.clear(); await update.message.reply_text("❌ Cancelado.",reply_markup=ReplyKeyboardRemove()); return ConversationHandler.END
+        return await _cancelar_conv(update, context)
     if txt==BTN_REGRESAR:
         ultimos=context.user_data.get("historial_corregir",[])
         texto="✏️ Elige el gasto a corregir:\n\n"
@@ -1059,7 +1073,7 @@ async def corregir_que(update,context):
 async def corregir_cat_grp(update,context):
     txt=update.message.text.strip()
     if txt==BTN_CANCELAR:
-        context.user_data.clear(); await update.message.reply_text("❌ Cancelado.",reply_markup=ReplyKeyboardRemove()); return ConversationHandler.END
+        return await _cancelar_conv(update, context)
     if txt==BTN_REGRESAR:
         gasto=context.user_data.get("gasto_corregir",{})
         await update.message.reply_text(f"📌 {gasto.get('concepto','')}\n\n¿Qué quieres corregir?",
@@ -1082,7 +1096,7 @@ async def corregir_cat_grp(update,context):
 async def corregir_subcat(update,context):
     txt=update.message.text.strip()
     if txt==BTN_CANCELAR:
-        context.user_data.clear(); await update.message.reply_text("❌ Cancelado.",reply_markup=ReplyKeyboardRemove()); return ConversationHandler.END
+        return await _cancelar_conv(update, context)
     if txt==BTN_REGRESAR:
         await update.message.reply_text("🏷️ Paso 1: Elige la categoría principal:",
             reply_markup=ReplyKeyboardMarkup(menu_grupos(),one_time_keyboard=True,resize_keyboard=True))
@@ -1098,7 +1112,7 @@ async def corregir_subcat(update,context):
 async def corregir_presu(update,context):
     txt=update.message.text.strip()
     if txt==BTN_CANCELAR:
-        context.user_data.clear(); await update.message.reply_text("❌ Cancelado.",reply_markup=ReplyKeyboardRemove()); return ConversationHandler.END
+        return await _cancelar_conv(update, context)
     if txt==BTN_REGRESAR:
         que=context.user_data.get("que_corregir","")
         if "Ambas" in que:
@@ -1121,9 +1135,7 @@ async def corregir_presu(update,context):
 async def corregir_monto(update, context):
     txt = update.message.text.strip()
     if txt == BTN_CANCELAR:
-        context.user_data.clear()
-        await update.message.reply_text("❌ Cancelado.", reply_markup=ReplyKeyboardRemove())
-        return ConversationHandler.END
+        return await _cancelar_conv(update, context)
     try:
         monto = float(txt.replace("$", "").replace(",", ""))
         if monto <= 0:
@@ -1135,8 +1147,8 @@ async def corregir_monto(update, context):
     if not gasto:
         await update.message.reply_text("Error.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
-    r = notion_request("PATCH", f"https://api.notion.com/v1/pages/{gasto['notion_id']}",
-        headers=nh(), json={"properties": {"Monto": {"number": monto}}}, timeout=8)
+    r = notion_request("PATCH", f"{NOTION_API_BASE}/pages/{gasto['notion_id']}",
+        headers=nh(), json={"properties": {"Monto": {"number": monto}}}, timeout=NOTION_T_DEFAULT)
     if r and r.status_code == 200:
         nid  = gasto.get("notion_id", "")
         link = f"\n[🔗 Ver en Notion]({notion_deep_link(nid)})" if nid else ""
@@ -1282,25 +1294,12 @@ async def cmd_estadisticas(update, context):
 
     await update.message.reply_text(f"⏳ Comparando {mes_ant} vs {mes_act}...")
 
-    async def get_totales(mes):
+    def get_totales(mes):
         mid = buscar_mes_id(mes)
         if not mid:
             return {}
-        gastos, cursor = [], None
-        while True:
-            body = {"filter": {"property": "Mes", "relation": {"contains": mid}}, "page_size": 100}
-            if cursor:
-                body["start_cursor"] = cursor
-            r = notion_request("POST",
-                f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query",
-                headers=nh(), json=body, timeout=15)
-            if not r or r.status_code != 200:
-                return {}
-            data = r.json()
-            gastos.extend(data.get("results", []))
-            if not data.get("has_more"):
-                break
-            cursor = data.get("next_cursor")
+        gastos = query_notion_db(NOTION_DATABASE_ID,
+                                 {"property": "Mes", "relation": {"contains": mid}})
         totales = {}
         for g in gastos:
             props = g.get("properties", {})
@@ -1313,8 +1312,8 @@ async def cmd_estadisticas(update, context):
                     totales[nombre] = totales.get(nombre, 0) + monto
         return totales
 
-    totales_ant = await get_totales(mes_ant)
-    totales_act = await get_totales(mes_act)
+    totales_ant = get_totales(mes_ant)
+    totales_act = get_totales(mes_act)
 
     if not totales_ant and not totales_act:
         await update.message.reply_text("❌ No se pudieron obtener los datos.")
@@ -1327,12 +1326,10 @@ async def cmd_estadisticas(update, context):
     max_nom = max((len(c) for c in categorias), default=8)
     tabla = []
     for cat in categorias:
-        a, b = totales_ant.get(cat, 0), totales_act.get(cat, 0)
+        a, b  = totales_ant.get(cat, 0), totales_act.get(cat, 0)
         diff  = b - a
         arrow = "▲" if diff > 0 else ("▼" if diff < 0 else "═")
-        emoji = PR_EMOJI.get(cat, "📦")
-        e_str = emoji + " " if emoji in EMOJI_ESTRECHO else emoji
-        tabla.append(f"{e_str} {cat.ljust(max_nom)}  ${b:>7,.0f}  {arrow}{abs(diff):>6,.0f}")
+        tabla.append(fila_tabla(cat, b, max_nom, f"  {arrow}{abs(diff):>6,.0f}"))
 
     diff_total = total_act - total_ant
     msg = (
@@ -1367,15 +1364,13 @@ async def cmd_eliminar(update, context):
 async def eliminar_confirmar(update, context):
     txt = update.message.text.strip()
     if "SI" not in txt.upper() and "SÍ" not in txt.upper():
-        context.user_data.clear()
-        await update.message.reply_text("❌ Cancelado.", reply_markup=ReplyKeyboardRemove())
-        return ConversationHandler.END
+        return await _cancelar_conv(update, context)
     gasto = context.user_data.pop("gasto_eliminar", None)
     if not gasto or not gasto.get("notion_id"):
         await update.message.reply_text("❌ No se encontró el gasto en Notion.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
-    r = notion_request("PATCH", f"https://api.notion.com/v1/pages/{gasto['notion_id']}",
-        headers=nh(), json={"archived": True}, timeout=8)
+    r = notion_request("PATCH", f"{NOTION_API_BASE}/pages/{gasto['notion_id']}",
+        headers=nh(), json={"archived": True}, timeout=NOTION_T_DEFAULT)
     if r and r.status_code == 200:
         await update.message.reply_text(
             f"🗑️ Eliminado\n\n📌 {gasto['concepto']}  ${gasto['monto']:,.2f}",
@@ -1383,6 +1378,7 @@ async def eliminar_confirmar(update, context):
         )
     else:
         await update.message.reply_text("❌ Error al eliminar en Notion.", reply_markup=ReplyKeyboardRemove())
+    context.user_data.clear()
     return ConversationHandler.END
 
 # ── WEBHOOK HANDLER ───────────────────────────────────────────────────────────
@@ -1425,7 +1421,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 loop = getattr(getattr(app, "update_processor", None), "_loop", None)
                 if loop:
                     future  = asyncio.run_coroutine_threadsafe(registrar_via_shortcut(texto, user_id), loop)
-                    ok, msg = future.result(timeout=15)
+                    ok, msg = future.result(timeout=NOTION_T_LONG)
                 else:
                     logger.error("/log: loop no disponible"); ok, msg = False, "Loop no disponible"
                 resp = json.dumps({"ok": ok, "msg": msg}, ensure_ascii=False).encode()
