@@ -78,7 +78,7 @@ PR = {
 }
 
 PR_EMOJI = {
-    "Despensa":"🛒","Diversión":"🎉","Servicios":"⚡","Automovil":"🚗",
+    "Despensa":"🛒","Diversión":"🎉","Servicios":"💡","Automovil":"🚗",
     "Restaurantes":"🍽️","Salud":"💊","Deuda":"🏦","MSI":"💳",
     "Renta":"🏠","Ezra":"👶","Cuidado personal":"💆","Vacaciones":"🏖️",
     "Impuestos":"📊","Entretenimiento":"🎭","Generosidad":"🤝","Iglesia":"⛪",
@@ -86,7 +86,7 @@ PR_EMOJI = {
 }
 
 # Emojis que ocupan 1 celda en monoespaciado (en vez de 2) — necesitan espacio extra
-EMOJI_ESTRECHO = {"⚡", "⛪"}  # 💊 es full-width en iOS/Telegram actual
+EMOJI_ESTRECHO = {"⛪"}  # Servicios cambió a 💡 (full-width); solo ⛪ sigue siendo angosto
 
 NOTION_API_BASE    = "https://api.notion.com/v1"
 NOTION_T_SHORT     = 5
