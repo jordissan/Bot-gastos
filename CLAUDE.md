@@ -200,14 +200,7 @@ ELIMINAR_CONFIRM = 50
 ## Pendientes futuros 🔲
 | Feature              | Descripción                                                       | Complejidad |
 |----------------------|-------------------------------------------------------------------|-------------|
-| `/nuevomes`          | Registrar recurrentes estáticos + lista de dinámicos para confirmar | Media     |
 | Alertas presupuesto  | Avisar al acercarse al límite mensual por categoría               | Media       |
-
-### Recurrentes estáticos (candidatos para `/nuevomes`)
-Spotify, Adobe, iCloud, CapCut, Izzi, Claude.ai, Google One, Mapfre (seguro auto)
-
-### Recurrentes dinámicos (requieren confirmación manual cada mes)
-iPhone MSI, MacBook MSI, Digitt, BBVA PR, cualquier cargo a meses sin intereses
 
 ---
 
