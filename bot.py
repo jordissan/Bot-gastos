@@ -78,7 +78,7 @@ PR = {
 }
 
 PR_EMOJI = {
-    "Despensa":"🛒","Diversión":"🎉","Servicios":"💡","Automovil":"🚗",
+    "Despensa":"🛒","Diversión":"🎉","Servicios":"🧾","Automovil":"🚗",
     "Restaurantes":"🍽️","Salud":"💊","Deuda":"🏦","MSI":"💳",
     "Renta":"🏠","Ezra":"👶","Cuidado personal":"💆","Vacaciones":"🏖️",
     "Impuestos":"📊","Entretenimiento":"🎭","Generosidad":"🤝","Iglesia":"⛪",
