@@ -1,4 +1,4 @@
-import os, re, datetime, requests, threading, unicodedata, json, logging, time, base64
+import os, re, datetime, requests, threading, unicodedata, json, logging, time, base64, zoneinfo
 from difflib import SequenceMatcher
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
@@ -25,13 +25,16 @@ USUARIOS_NOTIFICAR   = {8663298433: 8093171397, 8093171397: 8663298433}
 MONTO_INUSUAL    = 5000
 CONFIRMAR_MONTO  = 1
 CONFIRMAR_CAT    = 2
+CONFIRMAR_SUBCAT = 3
 CORREGIR_ELEGIR  = 10
 CORREGIR_QUE     = 11
 CORREGIR_CAT_GRP = 12
 CORREGIR_SUBCAT  = 13
 CORREGIR_PRESU   = 14
+CORREGIR_MONTO   = 15
 PRUEBA_GASTO     = 20
 FOTO_CONFIRMAR   = 30
+ELIMINAR_CONFIRM = 50
 
 SC = {
     "Super":"bf7d4b7d0445441ab89b53eec946d028","Abarrotes":"3587eb0cbb9280c58919c55b065c1e19",
@@ -169,7 +172,6 @@ def buscar_mes_id(mes: str):
 MESES_ESP = {1:"ENE",2:"FEB",3:"MAR",4:"ABR",5:"MAY",6:"JUN",7:"JUL",8:"AGO",9:"SEP",10:"OCT",11:"NOV",12:"DIC"}
 
 def mes_activo_str() -> str:
-    import zoneinfo
     hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
     if hoy.day >= 5:
         if hoy.month == 12:
@@ -270,6 +272,8 @@ CONCEPTOS_UNIVOCOS = {
     "figma","canva","microsoft","chatgpt","at&t","att","cfe","mapfre",
     "seguro auto","qualitas","walmart","soriana","bodega aurrera","oxxo gas","oxxogas",
     "sam's","chedraui","zarapes",
+    "google one","disney+","hbo max","apple one","youtube premium","paramount+",
+    "shein","mercado libre","amazon prime","uber","didi",
 }
 
 def es_concepto_univoco(concepto: str) -> bool:
@@ -327,7 +331,7 @@ def menu_presupuesto():
 def menu_que_corregir():
     return [
         ["🏷️ Subcategoría", "💰 Presupuesto"],
-        ["✏️ Ambas"],
+        ["✏️ Ambas",        "💵 Monto"],
         [BTN_REGRESAR,      BTN_CANCELAR],
     ]
 
@@ -409,7 +413,6 @@ def ocr_ticket(image_bytes: bytes) -> str:
     return ""
 
 def parsear_ticket(texto: str) -> dict:
-    import zoneinfo
     hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
     lineas = [l.strip() for l in texto.split("\n") if l.strip()]
     monto = None
@@ -426,7 +429,7 @@ def parsear_ticket(texto: str) -> dict:
             try:
                 monto = float(m.group(1).replace(",", ""))
                 break
-            except: pass
+            except (ValueError, TypeError): pass
     if monto is None:
         candidatos = re.findall(r'\b(\d{1,5}\.\d{2})\b', texto)
         if candidatos:
@@ -448,7 +451,7 @@ def parsear_ticket(texto: str) -> dict:
                     if y < 100: y += 2000
                 fecha = datetime.date(y, mo, d)
                 break
-            except: pass
+            except (ValueError, TypeError): pass
     concepto = "Ticket"
     for linea in lineas[:8]:
         if len(linea) < 3: continue
@@ -612,7 +615,7 @@ def buscar_maps(concepto):
         if r.status_code==200:
             p=r.json().get("places",[])
             if p: return p[0].get("types",[])
-    except: pass
+    except Exception as e: logger.warning(f"Maps error buscando '{concepto}': {e}")
     return None
 
 MAPS_TIPOS={"restaurant":("Restaurantes","Restaurantes"),"cafe":("Treat","Diversión"),"bakery":("Treat","Diversión"),
@@ -683,7 +686,7 @@ def calcular_mes(fecha,tarjeta):
 
 # ── PARSEO TEXTO ─────────────────────────────────────────────────────────────
 def parsear_fecha(tokens):
-    import zoneinfo; hoy=datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+    hoy=datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
     for i,t in enumerate(tokens):
         tl=t.lower()
         if tl=="ayer": return hoy-datetime.timedelta(days=1),tokens[:i]+tokens[i+1:]
@@ -759,8 +762,7 @@ def actualizar_notion(page_id,sub=None,pre=None):
 
 # ── MENSAJES ─────────────────────────────────────────────────────────────────
 def fmt(f):
-    from datetime import datetime as dt
-    return dt.strptime(f,"%Y-%m-%d").strftime("%d %b %Y").lower()
+    return datetime.datetime.strptime(f,"%Y-%m-%d").strftime("%d %b %Y").lower()
 
 def msg_gasto(g, nombre=None, notion_id=None):
     enc = f"🔔 Nuevo gasto de {nombre}" if nombre else "✅ Gasto guardado"
@@ -916,6 +918,24 @@ async def callback_foto(update, context):
 async def handle_gasto(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
     texto=update.message.text.strip()
+    partes = [p.strip() for p in texto.split(",") if p.strip()]
+    if len(partes) > 1:
+        lineas = []
+        uid = update.effective_user.id
+        for parte in partes:
+            try:
+                gasto = parsear_mensaje(parte)
+                ok, nid, err = guardar_notion(gasto)
+                if ok:
+                    gasto_completo = {**gasto, "notion_id": nid}
+                    threading.Thread(target=guardar_historial_notion, args=(gasto_completo, uid), daemon=True).start()
+                    lineas.append(f"✅ {gasto['concepto']}  ${gasto['monto']:,.2f}")
+                else:
+                    lineas.append(f"❌ {parte.strip()[:20]} (error Notion)")
+            except ValueError as e:
+                lineas.append(f"❌ {parte.strip()[:20]} ({e})")
+        await update.message.reply_text("\n".join(lineas), reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
     try:
         gasto=parsear_mensaje(texto)
         if gasto["monto"]>=MONTO_INUSUAL:
@@ -941,17 +961,48 @@ async def confirmar_monto(update,context):
     else: await update.message.reply_text("❌ Gasto cancelado.",reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-async def confirmar_cat(update,context):
-    txt=update.message.text.strip()
-    if txt==BTN_CANCELAR:
-        context.user_data.clear(); await update.message.reply_text("❌ Cancelado.",reply_markup=ReplyKeyboardRemove()); return ConversationHandler.END
-    gasto=context.user_data.pop("gasto_p",None)
+async def confirmar_cat(update, context):
+    txt = update.message.text.strip()
+    if txt == BTN_CANCELAR:
+        context.user_data.clear()
+        await update.message.reply_text("❌ Cancelado.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+    gasto = context.user_data.get("gasto_p")
     if not gasto:
-        await update.message.reply_text("Error.",reply_markup=ReplyKeyboardRemove()); return ConversationHandler.END
-    grp=grupo_key(txt); subcats=GRUPOS_CAT.get(grp,[grp])
-    gasto["subcategoria"]=subcats[0]; gasto["presupuesto"]=limpiar_emoji(grp)
-    guardar_aprendizaje(gasto["concepto"].lower(),gasto["subcategoria"],gasto["presupuesto"])
-    await registrar_y_notificar(update,context,gasto)
+        await update.message.reply_text("Error.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+    grp = grupo_key(txt)
+    subcats = GRUPOS_CAT.get(grp, [grp])
+    context.user_data["grupo_cat"] = grp
+    if len(subcats) > 1:
+        menu = [[s] for s in subcats] + [[BTN_CANCELAR]]
+        await update.message.reply_text(
+            "🏷️ ¿Qué subcategoría?",
+            reply_markup=ReplyKeyboardMarkup(menu, one_time_keyboard=True, resize_keyboard=True)
+        )
+        return CONFIRMAR_SUBCAT
+    gasto = context.user_data.pop("gasto_p")
+    gasto["subcategoria"] = subcats[0]
+    gasto["presupuesto"] = limpiar_emoji(grp)
+    guardar_aprendizaje(gasto["concepto"].lower(), gasto["subcategoria"], gasto["presupuesto"])
+    await registrar_y_notificar(update, context, gasto)
+    return ConversationHandler.END
+
+async def confirmar_subcat(update, context):
+    txt = update.message.text.strip()
+    if txt == BTN_CANCELAR:
+        context.user_data.clear()
+        await update.message.reply_text("❌ Cancelado.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+    gasto = context.user_data.pop("gasto_p", None)
+    grp   = context.user_data.pop("grupo_cat", txt)
+    if not gasto:
+        await update.message.reply_text("Error.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+    gasto["subcategoria"] = txt
+    gasto["presupuesto"]  = limpiar_emoji(grp)
+    guardar_aprendizaje(gasto["concepto"].lower(), txt, limpiar_emoji(grp))
+    await registrar_y_notificar(update, context, gasto)
     return ConversationHandler.END
 
 # ── CONV CORREGIR ────────────────────────────────────────────────────────────
@@ -993,6 +1044,12 @@ async def corregir_que(update,context):
         await update.message.reply_text(texto,reply_markup=ReplyKeyboardMarkup(menu_elegir(ultimos),one_time_keyboard=True,resize_keyboard=True))
         return CORREGIR_ELEGIR
     context.user_data["que_corregir"]=txt
+    if "Monto" in txt or "💵" in txt:
+        await update.message.reply_text(
+            "💵 ¿Cuál es el monto correcto?",
+            reply_markup=ReplyKeyboardMarkup([[BTN_CANCELAR]], one_time_keyboard=True, resize_keyboard=True)
+        )
+        return CORREGIR_MONTO
     if "Presupuesto" in txt and "Subcategoría" not in txt and "Ambas" not in txt:
         await update.message.reply_text("💰 Elige el nuevo presupuesto:",reply_markup=ReplyKeyboardMarkup(menu_presupuesto(),one_time_keyboard=True,resize_keyboard=True))
         return CORREGIR_PRESU
@@ -1061,6 +1118,45 @@ async def corregir_presu(update,context):
         return CORREGIR_QUE
     return await aplicar_correccion(update,context,pre=presu_limpio(txt))
 
+async def corregir_monto(update, context):
+    txt = update.message.text.strip()
+    if txt == BTN_CANCELAR:
+        context.user_data.clear()
+        await update.message.reply_text("❌ Cancelado.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+    try:
+        monto = float(txt.replace("$", "").replace(",", ""))
+        if monto <= 0:
+            raise ValueError()
+    except ValueError:
+        await update.message.reply_text("❓ Escribe un monto válido (ej: 150).")
+        return CORREGIR_MONTO
+    gasto = context.user_data.get("gasto_corregir")
+    if not gasto:
+        await update.message.reply_text("Error.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+    r = notion_request("PATCH", f"https://api.notion.com/v1/pages/{gasto['notion_id']}",
+        headers=nh(), json={"properties": {"Monto": {"number": monto}}}, timeout=8)
+    if r and r.status_code == 200:
+        nid  = gasto.get("notion_id", "")
+        link = f"\n[🔗 Ver en Notion]({notion_deep_link(nid)})" if nid else ""
+        await update.message.reply_text(
+            f"✅ Monto corregido\n\n📌 {gasto['concepto']}\n💵 ${monto:,.2f}{link}",
+            reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown"
+        )
+        notif  = USUARIOS_NOTIFICAR.get(update.effective_user.id)
+        nombre = USUARIOS_NOMBRES.get(update.effective_user.id, "Alguien")
+        if notif:
+            await context.bot.send_message(
+                chat_id=notif,
+                text=f"✏️ {nombre} corrigió un gasto\n\n📌 {gasto['concepto']}\n💵 ${monto:,.2f}{link}",
+                parse_mode="Markdown"
+            )
+    else:
+        await update.message.reply_text("❌ Error al actualizar Notion.", reply_markup=ReplyKeyboardRemove())
+    context.user_data.clear()
+    return ConversationHandler.END
+
 async def aplicar_correccion(update, context, sub=None, pre=None):
     gasto     = context.user_data.get("gasto_corregir")
     nueva_sub = sub or context.user_data.get("nueva_sub")
@@ -1121,15 +1217,14 @@ async def handle_prueba(update,context):
     texto=update.message.text.strip()
     try:
         tokens=texto.strip().split()
-        import zoneinfo; hoy=datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+        hoy=datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
         fecha,tokens2=parsear_fecha(tokens); texp,tokens2=parsear_tarjeta(tokens2); monto,tokens2=parsear_monto(tokens2)
         concepto=" ".join(tokens2).strip()
         if not concepto: raise ValueError("No encontré el concepto")
         if monto is None: raise ValueError("No encontré el monto")
         tarjeta=calcular_tarjeta(fecha,texp); mes=calcular_mes(fecha,tarjeta)
         sub,pre,seguro,origen_emoji,origen_texto=inferir_categoria_con_origen(concepto)
-        from datetime import datetime as dt
-        fecha_fmt=dt.strptime(fecha.strftime("%Y-%m-%d"),"%Y-%m-%d").strftime("%d %b %Y").lower()
+        fecha_fmt=datetime.datetime.strptime(fecha.strftime("%Y-%m-%d"),"%Y-%m-%d").strftime("%d %b %Y").lower()
         await update.message.reply_text(
             f"🧪 Resultado de prueba\n\n"
             f"📌 {concepto.title()}\n💵 ${monto:,.2f}\n🗓️ {fecha_fmt}\n"
@@ -1166,9 +1261,129 @@ async def start(update,context):
         "/resumen — resumen del mes activo\n"
         "/resumen MAY26 — resumen de un mes específico\n"
         "/corregir — corregir subcategoria o presupuesto\n"
+        "/estadisticas — 📊 Comparar este mes vs el anterior\n"
+        "/eliminar — 🗑️ Eliminar el último gasto\n"
         "/prueba — simular un gasto sin registrar\n"
         "/cancelar — cancelar accion en curso"
     )
+
+async def cmd_estadisticas(update, context):
+    if update.effective_user.id not in USUARIOS_AUTORIZADOS:
+        return
+    mes_act = mes_activo_str()
+    mes_nombre = mes_act[:3]
+    anio = int("20" + mes_act[3:])
+    mes_num = next((k for k, v in MESES_ESP.items() if v == mes_nombre), 1)
+    if mes_num == 1:
+        mes_ant_num, anio_ant = 12, anio - 1
+    else:
+        mes_ant_num, anio_ant = mes_num - 1, anio
+    mes_ant = f"{MESES_ESP[mes_ant_num]}{str(anio_ant)[-2:]}"
+
+    await update.message.reply_text(f"⏳ Comparando {mes_ant} vs {mes_act}...")
+
+    async def get_totales(mes):
+        mid = buscar_mes_id(mes)
+        if not mid:
+            return {}
+        gastos, cursor = [], None
+        while True:
+            body = {"filter": {"property": "Mes", "relation": {"contains": mid}}, "page_size": 100}
+            if cursor:
+                body["start_cursor"] = cursor
+            r = notion_request("POST",
+                f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query",
+                headers=nh(), json=body, timeout=15)
+            if not r or r.status_code != 200:
+                return {}
+            data = r.json()
+            gastos.extend(data.get("results", []))
+            if not data.get("has_more"):
+                break
+            cursor = data.get("next_cursor")
+        totales = {}
+        for g in gastos:
+            props = g.get("properties", {})
+            monto = props.get("Monto", {}).get("number", 0) or 0
+            rel_pre = props.get("Presupuesto", {}).get("relation", [])
+            if rel_pre:
+                pr_id = rel_pre[0].get("id", "").replace("-", "")
+                nombre = next((k for k, v in PR.items() if v == pr_id), None)
+                if nombre:
+                    totales[nombre] = totales.get(nombre, 0) + monto
+        return totales
+
+    totales_ant = await get_totales(mes_ant)
+    totales_act = await get_totales(mes_act)
+
+    if not totales_ant and not totales_act:
+        await update.message.reply_text("❌ No se pudieron obtener los datos.")
+        return
+
+    total_ant = sum(totales_ant.values())
+    total_act = sum(totales_act.values())
+    categorias = sorted(set(totales_ant) | set(totales_act),
+                        key=lambda c: totales_act.get(c, 0), reverse=True)
+    max_nom = max((len(c) for c in categorias), default=8)
+    tabla = []
+    for cat in categorias:
+        a, b = totales_ant.get(cat, 0), totales_act.get(cat, 0)
+        diff  = b - a
+        arrow = "▲" if diff > 0 else ("▼" if diff < 0 else "═")
+        emoji = PR_EMOJI.get(cat, "📦")
+        e_str = emoji + " " if emoji in EMOJI_ESTRECHO else emoji
+        tabla.append(f"{e_str} {cat.ljust(max_nom)}  ${b:>7,.0f}  {arrow}{abs(diff):>6,.0f}")
+
+    diff_total = total_act - total_ant
+    msg = (
+        f"📊 *{mes_ant} → {mes_act}*\n\n"
+        f"```\n{chr(10).join(tabla)}\n```\n\n"
+        f"💵 *{mes_act}  ${total_act:,.0f}*\n"
+        f"💵 *{mes_ant}  ${total_ant:,.0f}*\n"
+        f"{'▲' if diff_total > 0 else '▼'} *Diferencia  ${abs(diff_total):,.0f}*"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def cmd_eliminar(update, context):
+    if update.effective_user.id not in USUARIOS_AUTORIZADOS:
+        return ConversationHandler.END
+    uid = update.effective_user.id
+    historial = cargar_historial_notion(uid)
+    if not historial:
+        await update.message.reply_text("No hay gastos recientes para eliminar.")
+        return ConversationHandler.END
+    ultimo = historial[0]
+    context.user_data["gasto_eliminar"] = ultimo
+    await update.message.reply_text(
+        f"🗑️ ¿Eliminar este gasto?\n\n"
+        f"📌 {ultimo['concepto']}\n"
+        f"💵 ${ultimo['monto']:,.2f}\n"
+        f"🗓️ {fmt(ultimo['fecha'])}\n"
+        f"🏷️ {ultimo['subcategoria']}  •  {ultimo['presupuesto']}",
+        reply_markup=ReplyKeyboardMarkup([["✅ Sí, eliminar", "❌ No"]], one_time_keyboard=True, resize_keyboard=True)
+    )
+    return ELIMINAR_CONFIRM
+
+async def eliminar_confirmar(update, context):
+    txt = update.message.text.strip()
+    if "SI" not in txt.upper() and "SÍ" not in txt.upper():
+        context.user_data.clear()
+        await update.message.reply_text("❌ Cancelado.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+    gasto = context.user_data.pop("gasto_eliminar", None)
+    if not gasto or not gasto.get("notion_id"):
+        await update.message.reply_text("❌ No se encontró el gasto en Notion.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+    r = notion_request("PATCH", f"https://api.notion.com/v1/pages/{gasto['notion_id']}",
+        headers=nh(), json={"archived": True}, timeout=8)
+    if r and r.status_code == 200:
+        await update.message.reply_text(
+            f"🗑️ Eliminado\n\n📌 {gasto['concepto']}  ${gasto['monto']:,.2f}",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    else:
+        await update.message.reply_text("❌ Error al eliminar en Notion.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
 
 # ── WEBHOOK HANDLER ───────────────────────────────────────────────────────────
 _ptb_app = None
@@ -1277,8 +1492,9 @@ def main():
     conv_gasto = ConversationHandler(
         entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gasto)],
         states={
-            CONFIRMAR_MONTO: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_monto)],
-            CONFIRMAR_CAT:   [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_cat)],
+            CONFIRMAR_MONTO:  [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_monto)],
+            CONFIRMAR_CAT:    [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_cat)],
+            CONFIRMAR_SUBCAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_subcat)],
         },
         fallbacks=[CommandHandler("cancelar", cancelar), CommandHandler("start", start)],
         allow_reentry=True,
@@ -1291,15 +1507,23 @@ def main():
             CORREGIR_CAT_GRP: [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_cat_grp)],
             CORREGIR_SUBCAT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_subcat)],
             CORREGIR_PRESU:   [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_presu)],
+            CORREGIR_MONTO:   [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_monto)],
         },
+        fallbacks=[CommandHandler("cancelar", cancelar)], allow_reentry=True,
+    )
+    conv_eliminar = ConversationHandler(
+        entry_points=[CommandHandler("eliminar", cmd_eliminar)],
+        states={ELIMINAR_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, eliminar_confirmar)]},
         fallbacks=[CommandHandler("cancelar", cancelar)], allow_reentry=True,
     )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("resumen", cmd_resumen))
+    app.add_handler(CommandHandler("estadisticas", cmd_estadisticas))
     app.add_handler(conv_prueba)
     app.add_handler(conv_foto)
     app.add_handler(conv_corregir)
+    app.add_handler(conv_eliminar)
     app.add_handler(conv_gasto)
 
     loop = asyncio.new_event_loop()
@@ -1313,7 +1537,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_final15...")
+    logger.info("Bot corriendo v_final16...")
     server.serve_forever()
 
 if __name__ == "__main__":

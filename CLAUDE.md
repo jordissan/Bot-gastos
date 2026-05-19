@@ -51,7 +51,7 @@ SHORTCUT_SECRET       (para iOS Shortcut)
 
 ---
 
-## Versión actual: v_final15
+## Versión actual: v_final16
 
 ### Funcionalidades implementadas ✅
 - Registro de gastos por texto: `Concepto Monto [Tarjeta] [Fecha]`
@@ -63,9 +63,14 @@ SHORTCUT_SECRET       (para iOS Shortcut)
 - Sistema de aprendizaje en Notion con limpieza automática
 - Historial persistente en Notion (últimos 5 por usuario)
 - `/corregir` con navegación completa (Regresar/Cancelar en cada paso)
+- `/corregir` ahora incluye opción para corregir el monto (💵 Monto)
 - `/prueba` — simula parseo sin guardar, muestra origen de inferencia
 - `/resumen` — resumen del mes activo con porcentajes, monoespaciado
 - `/resumen MAY26` — resumen de un mes específico
+- `/estadisticas` — comparación mes anterior vs mes activo
+- `/eliminar` — elimina el último gasto (archiva en Notion)
+- Múltiples gastos en un solo mensaje separados por coma
+- `confirmar_cat` ahora pregunta subcategoría específica cuando el grupo tiene varias
 - Notificaciones cruzadas con botón inline ✏️ Corregir
 - iOS Shortcut + Siri via endpoint POST `/log`
 - Reintentos automáticos a Notion (3 intentos, 2s entre cada uno)
@@ -140,19 +145,23 @@ Si hoy < día 5, mes activo = mes actual. (misma lógica que BBVA05)
 1. `conv_prueba` — entry: `/prueba`
 2. `conv_foto` — entry: `filters.PHOTO` ← debe ir ANTES que conv_gasto
 3. `conv_corregir` — entry: `/corregir` + CallbackQuery `^cor:`
-4. `conv_gasto` — entry: `filters.TEXT`
+4. `conv_eliminar` — entry: `/eliminar`
+5. `conv_gasto` — entry: `filters.TEXT`
 
 ### Estados de conversación
 ```python
 CONFIRMAR_MONTO  = 1   # monto >= 5000
 CONFIRMAR_CAT    = 2   # concepto desconocido
+CONFIRMAR_SUBCAT = 3   # subcategoría cuando grupo tiene varias
 CORREGIR_ELEGIR  = 10
 CORREGIR_QUE     = 11
 CORREGIR_CAT_GRP = 12
 CORREGIR_SUBCAT  = 13
 CORREGIR_PRESU   = 14
+CORREGIR_MONTO   = 15
 PRUEBA_GASTO     = 20
 FOTO_CONFIRMAR   = 30
+ELIMINAR_CONFIRM = 50
 ```
 
 ### Endpoints HTTP
@@ -201,6 +210,8 @@ iPhone MSI, MacBook MSI, Digitt, BBVA PR, cualquier cargo a meses sin intereses
 ```
 resumen - 📊 Resumen del mes activo
 corregir - ✏️ Corregir categoría de un gasto reciente
+estadisticas - 📊 Comparar este mes vs el anterior
+eliminar - 🗑️ Eliminar el último gasto
 cancelar - ❌ Cancelar acción en curso
 start - 👋 Ver instrucciones
 prueba - 🧪 Simular un gasto sin registrar
