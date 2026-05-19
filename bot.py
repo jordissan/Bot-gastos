@@ -1336,28 +1336,19 @@ async def cmd_estadisticas(update, context):
                         key=lambda c: totales_act.get(c, 0), reverse=True)
 
     max_nom = max((len(c) for c in categorias), default=8)
-    filas = []
+    tabla = []
     for cat in categorias:
         a, b = totales_ant.get(cat, 0), totales_act.get(cat, 0)
         diff = b - a
-        emoji = PR_EMOJI.get(cat, "📦")
-        e_pad = emoji + " " if emoji in EMOJI_ESTRECHO else emoji
-        nom = cat.ljust(max_nom)
-        monto_s = f"${b:>8,.0f}"
-        if diff == 0:
-            diff_s = "      ="
-        elif diff > 0:
-            diff_s = f"  ▲{abs(diff):>7,.0f}"
-        else:
-            diff_s = f"  ▼{abs(diff):>7,.0f}"
-        filas.append(f"{e_pad} {nom}  {monto_s}  {diff_s}")
+        arrow = "▲" if diff > 0 else ("▼" if diff < 0 else "=")
+        tabla.append(fila_tabla(cat, b, max_nom, f"  {arrow}{abs(diff):>6,.0f}"))
 
     diff_total = total_act - total_ant
     flecha = "▲" if diff_total > 0 else "▼"
 
     msg = (
         f"📊 *{mes_ant} → {mes_act}*\n\n"
-        f"```\n{chr(10).join(filas)}\n```\n\n"
+        f"```\n{chr(10).join(tabla)}\n```\n\n"
         f"💰 *{mes_act}*   ${total_act:,.0f}\n"
         f"💰 *{mes_ant}*   ${total_ant:,.0f}\n\n"
         f"{flecha} *Diferencia*   ${abs(diff_total):,.0f}"
