@@ -68,6 +68,8 @@ SHORTCUT_SECRET       (para iOS Shortcut)
 - `/resumen` — resumen del mes activo con porcentajes, monoespaciado
 - `/resumen MAY26` — resumen de un mes específico
 - `/estadisticas` — comparación mes anterior vs mes activo
+- `/top` — top 5 gastos más caros del mes activo (o `/top MAY26`)
+- `/buscar <texto>` — busca gastos por concepto (filtro Notion `contains`), últimos 12
 - `/eliminar` — elimina el último gasto (archiva en Notion)
 - Múltiples gastos en un solo mensaje separados por coma
 - `confirmar_cat` ahora pregunta subcategoría específica cuando el grupo tiene varias
@@ -82,6 +84,11 @@ SHORTCUT_SECRET       (para iOS Shortcut)
 - `cmd_estadisticas` usa `asyncio.to_thread` para no bloquear el event loop
 - brüm/brum solo en regla Treat (quitado de Restaurantes)
 - uber/didi/cabify sin espacio en regla Automovil (fix match exacto)
+- OCR `parsear_ticket` reescrito: detecta TOTAL real (último, no subtotal ni "total artículos"),
+  reconoce comercios conocidos (`COMERCIOS_OCR`) para el concepto, ignora folios/RFC en encabezado
+- Nombres unificados en `USUARIOS_NOMBRES` (Jordi/Nani) — eliminado `_NOMBRES_START` duplicado
+- `corregir_elegir` ya no usa `except:` desnudo; reintenta en vez de abortar la conversación
+- Servicios usa 🧾 (full-width) en vez de ⚡ para alineación perfecta en code blocks
 
 ---
 
@@ -209,6 +216,8 @@ ELIMINAR_CONFIRM = 50
 start        - 👋 Ver instrucciones
 resumen      - 📊 Resumen del mes activo
 estadisticas - 📈 Comparar este mes vs el anterior
+top          - 🏆 Top 5 gastos del mes
+buscar       - 🔍 Buscar gastos por concepto
 corregir     - ✏️ Corregir un gasto reciente
 eliminar     - 🗑️ Eliminar el último gasto
 prueba       - 🧪 Simular un gasto sin registrar

@@ -19,7 +19,7 @@ RENDER_EXTERNAL_URL   = os.environ.get("RENDER_EXTERNAL_URL", "")
 NOTION_BALANCE_ID     = os.environ.get("NOTION_BALANCE_ID", "")
 
 USUARIOS_AUTORIZADOS = {8663298433, 8093171397}
-USUARIOS_NOMBRES     = {8663298433: "Jordi", 8093171397: "Nane"}
+USUARIOS_NOMBRES     = {8663298433: "Jordi", 8093171397: "Nani"}
 USUARIOS_NOTIFICAR   = {8663298433: 8093171397, 8093171397: 8663298433}
 
 MONTO_INUSUAL    = 5000
@@ -421,34 +421,69 @@ def ocr_ticket(image_bytes: bytes) -> str:
         logger.error(f"Error en ocr_ticket: {e}")
     return ""
 
+# Comercios reconocibles en el texto OCR → concepto limpio (que luego pasa a inferir_categoria)
+COMERCIOS_OCR = {
+    "walmart":"Walmart","bodega aurrera":"Bodega Aurrera","soriana":"Soriana","chedraui":"Chedraui",
+    "costco":"Costco","sam's":"Sam's Club","sams club":"Sam's Club","la comer":"La Comer","heb":"HEB",
+    "oxxo gas":"Oxxo Gas","oxxo":"Oxxo","7 eleven":"Seven","7-eleven":"Seven","seven eleven":"Seven",
+    "home depot":"Home Depot","liverpool":"Liverpool","coppel":"Coppel","sears":"Sears",
+    "farmacia guadalajara":"Farmacia Guadalajara","farmacias del ahorro":"Farmacias del Ahorro",
+    "farmacia benavides":"Farmacia Benavides","farmacias similares":"Farmacia Similares",
+    "starbucks":"Starbucks","mcdonald":"McDonalds","burger king":"Burger King","kfc":"KFC",
+    "subway":"Subway","domino":"Dominos","little caesar":"Little Caesars","carls jr":"Carl's Jr",
+    "uber eats":"Uber Eats","rappi":"Rappi","cinepolis":"Cinepolis","cinemex":"Cinemex",
+    "shell":"Shell","pemex":"Pemex","bp ":"BP","mobil":"Mobil",
+}
+
+# Palabras que invalidan un "TOTAL" como monto (es conteo, no importe)
+_TOTAL_FALSO = re.compile(r'(ARTICULO|PIEZA|PRODUCTO|ITEM|UNIDAD|CANT)', re.IGNORECASE)
+# Monto con 2 decimales: 1,234.56 / 234.56 / 1234.56
+_RE_MONEY = re.compile(r'\$?\s*(\d{1,3}(?:[,]?\d{3})*\.\d{2})')
+# Palabras clave de total, con prioridad (mayor = más confiable)
+_KW_TOTAL = [
+    (re.compile(r'TOTAL\s*A\s*PAGAR', re.I), 5),
+    (re.compile(r'IMPORTE\s*TOTAL',   re.I), 4),
+    (re.compile(r'\bTOTAL\b',          re.I), 3),
+    (re.compile(r'A\s*PAGAR',          re.I), 3),
+    (re.compile(r'\bIMPORTE\b',        re.I), 2),
+]
+
+def _monto_de_linea(linea: str):
+    m = _RE_MONEY.search(linea)
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", ""))
+    except (ValueError, TypeError):
+        return None
+
 def parsear_ticket(texto: str) -> dict:
     hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
     lineas = [l.strip() for l in texto.split("\n") if l.strip()]
-    monto = None
-    patrones_total = [
-        r'TOTAL\s*\$?\s*([\d,]+\.?\d*)',
-        r'IMPORTE\s*TOTAL\s*\$?\s*([\d,]+\.?\d*)',
-        r'IMPORTE\s*\$?\s*([\d,]+\.?\d*)',
-        r'A\s*PAGAR\s*\$?\s*([\d,]+\.?\d*)',
-        r'SUBTOTAL\s*\$?\s*([\d,]+\.?\d*)',
-    ]
-    for patron in patrones_total:
-        m = re.search(patron, texto, re.IGNORECASE)
-        if m:
-            try:
-                monto = float(m.group(1).replace(",", ""))
+
+    # ── MONTO ── prioriza línea con palabra clave de total; a igual prioridad, la de más abajo
+    mejor = None  # (prioridad, indice, monto)
+    for idx, linea in enumerate(lineas):
+        if _TOTAL_FALSO.search(linea):
+            continue
+        val = _monto_de_linea(linea)
+        if val is None:
+            continue
+        for patron, prio in _KW_TOTAL:
+            if patron.search(linea):
+                if mejor is None or (prio, idx) > (mejor[0], mejor[1]):
+                    mejor = (prio, idx, val)
                 break
-            except (ValueError, TypeError): pass
+    monto = mejor[2] if mejor else None
+    # Fallback: el monto con 2 decimales más grande de todo el ticket
     if monto is None:
-        candidatos = re.findall(r'\b(\d{1,5}\.\d{2})\b', texto)
-        if candidatos:
-            monto = max(float(c.replace(",", "")) for c in candidatos)
+        montos = [v for l in lineas if (v := _monto_de_linea(l)) is not None]
+        if montos:
+            monto = max(montos)
+
+    # ── FECHA ──
     fecha = hoy
-    patrones_fecha = [
-        r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})',
-        r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})',
-    ]
-    for patron in patrones_fecha:
+    for patron in (r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})', r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})'):
         m = re.search(patron, texto)
         if m:
             try:
@@ -461,13 +496,25 @@ def parsear_ticket(texto: str) -> dict:
                 fecha = datetime.date(y, mo, d)
                 break
             except (ValueError, TypeError): pass
-    concepto = "Ticket"
-    for linea in lineas[:8]:
-        if len(linea) < 3: continue
-        if re.match(r'^[\d\s\$\.\,\-\*\/\:]+$', linea): continue
-        if re.match(r'^RFC', linea, re.IGNORECASE): continue
-        concepto = linea.title()
-        break
+
+    # ── CONCEPTO ── 1) comercio conocido en el texto  2) primera línea limpia del encabezado
+    texto_norm = normalizar(texto)
+    concepto = None
+    for clave, nombre in COMERCIOS_OCR.items():
+        if normalizar(clave) in texto_norm:
+            concepto = nombre
+            break
+    if not concepto:
+        for linea in lineas[:6]:
+            if len(linea) < 3: continue
+            if re.search(r'\d{3,}', linea): continue                       # folios, RFC, teléfonos
+            if re.match(r'^[\d\s\$\.\,\-\*\/\:#]+$', linea): continue       # solo símbolos/números
+            if re.match(r'^(RFC|TEL|FOLIO|TICKET|CAJA|SUCURSAL|FECHA|HORA|CP|NO\b)', linea, re.I): continue
+            concepto = linea.title()
+            break
+    if not concepto:
+        concepto = "Ticket"
+
     return {"concepto": concepto, "monto": monto, "fecha": fecha}
 
 # ── APRENDIZAJE ──────────────────────────────────────────────────────────────
@@ -705,11 +752,11 @@ def parsear_fecha(tokens):
         m=re.match(r'^(\d{1,2})[-/](\d{1,2})$',t)
         if m:
             try: return datetime.date(hoy.year,int(m.group(2)),int(m.group(1))),tokens[:i]+tokens[i+1:]
-            except: pass
+            except (ValueError, TypeError): pass
         m=re.match(r'^(\d{1,2})[-/]([a-z]+)$',tl)
         if m and m.group(2) in MESES_TEXTO:
             try: return datetime.date(hoy.year,MESES_TEXTO[m.group(2)],int(m.group(1))),tokens[:i]+tokens[i+1:]
-            except: pass
+            except (ValueError, TypeError): pass
     return hoy,tokens
 
 def parsear_tarjeta(tokens):
@@ -722,7 +769,7 @@ def parsear_monto(tokens):
         try:
             v=float(t.replace("$","").replace(",",""))
             if v>0: return v,tokens[:i]+tokens[i+1:]
-        except: pass
+        except (ValueError, TypeError): pass
     return None,tokens
 
 def parsear_mensaje(texto):
@@ -1061,10 +1108,14 @@ async def corregir_elegir(update,context):
         return await _cancelar_conv(update, context)
     try:
         idx=int(txt)-1
+        if idx < 0: raise IndexError
         gasto=context.user_data["historial_corregir"][idx]
         context.user_data["gasto_corregir"]=gasto
-    except:
-        await update.message.reply_text("Opcion no valida.",reply_markup=ReplyKeyboardRemove()); return ConversationHandler.END
+    except (ValueError, IndexError, KeyError):
+        await update.message.reply_text(
+            "❓ Escribe el número del gasto (1-5) o usa ❌ Cancelar.",
+            reply_markup=ReplyKeyboardMarkup(menu_elegir(context.user_data.get("historial_corregir",[])),one_time_keyboard=True,resize_keyboard=True))
+        return CORREGIR_ELEGIR
     await update.message.reply_text(
         f"📌 {gasto['concepto']}\n🏷️ {gasto['subcategoria']}  •  {gasto['presupuesto']}\n\n¿Qué quieres corregir?",
         reply_markup=ReplyKeyboardMarkup(menu_que_corregir(),one_time_keyboard=True,resize_keyboard=True))
@@ -1276,11 +1327,9 @@ async def cancelar(update,context):
     await update.message.reply_text("❌ Cancelado.",reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-_NOMBRES_START = {8663298433: "Jordi", 8093171397: "Nani"}
-
 async def start(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return
-    nombre = _NOMBRES_START.get(update.effective_user.id, "")
+    nombre = USUARIOS_NOMBRES.get(update.effective_user.id, "")
     await update.message.reply_text(
         f"Hola {nombre} 👋\n\n"
         "💸 *Cómo anotar un gasto*\n"
@@ -1371,6 +1420,76 @@ async def cmd_estadisticas(update, context):
         f"{flecha} *Diferencia*   ${abs(diff_total):,.0f}"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
+
+# ── /BUSCAR y /TOP ────────────────────────────────────────────────────────────
+def _gasto_props(page):
+    p = page.get("properties", {})
+    titulo = p.get("Concepto", {}).get("title", [])
+    concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+    monto = p.get("Monto", {}).get("number", 0) or 0
+    fecha = (p.get("Fecha", {}).get("date", {}) or {}).get("start", "")
+    return concepto, monto, fecha
+
+def _fecha_corta(fecha):
+    return " ".join(fmt(fecha).split()[:2]) if fecha else ""
+
+async def cmd_buscar(update, context):
+    if update.effective_user.id not in USUARIOS_AUTORIZADOS:
+        return
+    q = " ".join(context.args).strip()
+    if not q:
+        await update.message.reply_text("🔍 Uso: /buscar <texto>\nEjemplo: /buscar uber")
+        return
+    await update.message.reply_text(f"🔍 Buscando \"{q}\"...")
+
+    def _buscar():
+        r = notion_request("POST", f"{NOTION_API_BASE}/databases/{NOTION_DATABASE_ID}/query",
+            headers=nh(),
+            json={
+                "filter": {"property": "Concepto", "title": {"contains": q}},
+                "sorts": [{"property": "Fecha", "direction": "descending"}],
+                "page_size": 12,
+            }, timeout=NOTION_T_LONG)
+        return r.json().get("results", []) if r and r.status_code == 200 else []
+
+    resultados = await asyncio.to_thread(_buscar)
+    if not resultados:
+        await update.message.reply_text(f"📭 No encontré gastos con \"{q}\".")
+        return
+    lineas = [f"🔍 *{q}* — {len(resultados)} resultado(s)\n"]
+    suma = 0
+    for page in resultados:
+        concepto, monto, fecha = _gasto_props(page)
+        suma += monto
+        lineas.append(f"📌 {concepto}   ${monto:,.0f}   ·   {_fecha_corta(fecha)}")
+    lineas.append(f"\n💰 *Suma mostrada*   ${suma:,.0f}")
+    await update.message.reply_text("\n".join(lineas), parse_mode="Markdown")
+
+async def cmd_top(update, context):
+    if update.effective_user.id not in USUARIOS_AUTORIZADOS:
+        return
+    mes = context.args[0].upper() if context.args else mes_activo_str()
+    mid = buscar_mes_id(mes)
+    if not mid:
+        await update.message.reply_text(f"❌ No encontré el mes {mes} en Notion.")
+        return
+    await update.message.reply_text(f"⏳ Top gastos de {mes}...")
+
+    def _top():
+        gastos = query_notion_db(NOTION_DATABASE_ID, {"property": "Mes", "relation": {"contains": mid}})
+        items = [_gasto_props(g) for g in gastos]
+        items.sort(key=lambda x: x[1], reverse=True)
+        return items[:5]
+
+    top = await asyncio.to_thread(_top)
+    if not top:
+        await update.message.reply_text(f"📭 No hay gastos en {mes}.")
+        return
+    lineas = [f"🏆 *Top 5 — {mes}*\n"]
+    for i, (concepto, monto, fecha) in enumerate(top):
+        num = _NUM_EMOJI[i] if i < len(_NUM_EMOJI) else f"{i+1}."
+        lineas.append(f"{num}  {concepto}   ${monto:,.0f}   ·   {_fecha_corta(fecha)}")
+    await update.message.reply_text("\n".join(lineas), parse_mode="Markdown")
 
 async def cmd_eliminar(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
@@ -1547,6 +1666,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("resumen", cmd_resumen))
     app.add_handler(CommandHandler("estadisticas", cmd_estadisticas))
+    app.add_handler(CommandHandler("buscar", cmd_buscar))
+    app.add_handler(CommandHandler("top", cmd_top))
     app.add_handler(conv_prueba)
     app.add_handler(conv_foto)
     app.add_handler(conv_corregir)
