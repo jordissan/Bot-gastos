@@ -1276,28 +1276,29 @@ async def cancelar(update,context):
     await update.message.reply_text("❌ Cancelado.",reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
+_NOMBRES_START = {8663298433: "Jordi", 8093171397: "Nani"}
+
 async def start(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return
+    nombre = _NOMBRES_START.get(update.effective_user.id, "")
     await update.message.reply_text(
-        "👋 Hola! Soy tu bot de gastos.\n\n"
-        "Escríbeme así:\n"
-        "Concepto Monto\n\n"
-        "Ejemplos:\n"
+        f"Hola {nombre} 👋\n\n"
+        "💸 *Cómo anotar un gasto*\n"
+        "`Concepto  Monto  [Tarjeta]  [Fecha]`\n\n"
         "Starbucks 150\n"
         "Gasolina 500 BBVA05\n"
         "Walmart 350 ayer\n"
-        "Netflix 299 HEYB25\n"
         "Oxxo Gas 400 15-may\n\n"
-        "📸 También puedes mandarme una foto de tu ticket.\n\n"
-        "Tarjetas: BBVA05  BBVA12  HEYB25  BMEX04  EFVO\n\n"
-        "Comandos:\n"
-        "/resumen — resumen del mes activo\n"
-        "/resumen MAY26 — resumen de un mes específico\n"
-        "/corregir — corregir subcategoria o presupuesto\n"
-        "/estadisticas — 📊 Comparar este mes vs el anterior\n"
-        "/eliminar — 🗑️ Eliminar el último gasto\n"
-        "/prueba — simular un gasto sin registrar\n"
-        "/cancelar — cancelar accion en curso"
+        "📸 También puedes mandar una foto del ticket\n\n"
+        "💳 *Tarjetas*\n"
+        "BBVA05 · BBVA12 · HEYB25 · BMEX04 · EFVO\n\n"
+        "📋 *Comandos*\n"
+        "/resumen — mes activo _(también: /resumen MAY26)_\n"
+        "/estadisticas — este mes vs el anterior\n"
+        "/corregir — cambiar categoría o monto\n"
+        "/eliminar — borrar el último gasto\n"
+        "/prueba — simular sin registrar",
+        parse_mode="Markdown"
     )
 
 async def cmd_estadisticas(update, context):
