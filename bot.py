@@ -1350,15 +1350,21 @@ async def cmd_estadisticas(update, context):
     for cat in categorias:
         a, b = totales_ant.get(cat, 0), totales_act.get(cat, 0)
         diff = b - a
+        emoji = PR_EMOJI.get(cat, "📦")
+        e_str = emoji + " " if emoji in EMOJI_ESTRECHO else emoji
         arrow = "▲" if diff > 0 else ("▼" if diff < 0 else "=")
-        tabla.append(fila_tabla(cat, b, max_nom, f"  {arrow}{abs(diff):>6,.0f}"))
+        monto_s = f"${b:>6,.0f}"
+        diff_s  = f"{abs(diff):>6,.0f}"
+        tabla.append(f"{e_str} {cat.ljust(max_nom)}  {monto_s}  {arrow}{diff_s}")
 
     diff_total = total_act - total_ant
     flecha = "▲" if diff_total > 0 else "▼"
 
+    # Línea vacía al inicio del code block para que el botón </>
+    # de Telegram no tape la primera fila de datos
     msg = (
         f"📊 *{mes_ant} → {mes_act}*\n\n"
-        f"```\n{chr(10).join(tabla)}\n```\n\n"
+        f"```\n\n{chr(10).join(tabla)}\n```\n\n"
         f"💰 *{mes_act}*   ${total_act:,.0f}\n"
         f"💰 *{mes_ant}*   ${total_ant:,.0f}\n\n"
         f"{flecha} *Diferencia*   ${abs(diff_total):,.0f}"
