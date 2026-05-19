@@ -269,8 +269,8 @@ async def cmd_resumen(update, context):
 
     msg = (
         f"📊 *Resumen {mes}*\n\n"
-        f"```\n{chr(10).join(tabla)}\n```\n\n"
-        f"💵 *Total  ${total_general:,.0f}*"
+        f"```\n\n{chr(10).join(tabla)}\n```\n\n"
+        f"💰 *Total*   ${total_general:,.0f}"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
