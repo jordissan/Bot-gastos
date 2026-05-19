@@ -371,7 +371,7 @@ REGLAS_CONCEPTO = [
     (["calii"],"Super","Despensa"),
     (["zarapes","merpago*zarapes"],"Restaurantes","Despensa"),
     (["carniceria","carnes especiales","barrangueno","pescaderia","altamez"],"Carniceria","Despensa"),
-    (["restaurante","taqueria","tacos","pizza","sushi","pollo bronco","dq ","dairy queen","carl's","mcdonald","burger","kfc","subway","domino","clip mx*rest","payclip*rest","la choco","mamma farina","dolce natura","los elotis","punto sur","barbacos","barbacoa","velma","calena","bistro","brüm","brum","meridiao","uber eats","rappi"],"Restaurantes","Restaurantes"),
+    (["restaurante","taqueria","tacos","pizza","sushi","pollo bronco","dq ","dairy queen","carl's","mcdonald","burger","kfc","subway","domino","clip mx*rest","payclip*rest","la choco","mamma farina","dolce natura","los elotis","punto sur","barbacos","barbacoa","velma","calena","bistro","meridiao","uber eats","rappi"],"Restaurantes","Restaurantes"),
     (["oxxo gas","oxxogas","oxxo gaspaseos","gasolina","bp ","shell ","petro","combustible"],"Gasolina","Automovil"),
     (["netflix","spotify","disney","hbo","apple tv","paramount","crunchyroll","max ","prime video"],"Streaming","Servicios"),
     (["izzi","telmex","adobe","icloud","capcut","claude","conekta*parco","figma","canva","microsoft","chatgpt"],"Servicios","Servicios"),
@@ -389,7 +389,7 @@ REGLAS_CONCEPTO = [
     (["teatro","concierto","evento","antro","bar "],"Salidas","Diversión"),
     (["starbucks","cafe ","coffee","brüm","brum","helado","nieve","nieves","paleta","panaderia","pasteleria"],"Treat","Diversión"),
     (["amazon"],"Otros","Otros"),
-    (["uber ","didi ","cabify"],"Gasolina","Automovil"),
+    (["uber","didi","cabify"],"Gasolina","Automovil"),
 ]
 
 MESES_TEXTO = {"ene":1,"feb":2,"mar":3,"abr":4,"may":5,"jun":6,"jul":7,"ago":8,"sep":9,"oct":10,"nov":11,"dic":12,
@@ -538,15 +538,15 @@ def limpiar_aprendizaje():
             fecha_raw = p.get("Fecha",{}).get("date")
             fecha_str = fecha_raw["start"] if fecha_raw else None
             if usos == 1 and fecha_str and fecha_str < limite_90:
-                notion_request("DELETE", f"{NOTION_API_BASE}/pages/{e['id']}",
-                    headers=nh(), timeout=NOTION_T_SHORT)
+                notion_request("PATCH", f"{NOTION_API_BASE}/pages/{e['id']}",
+                    headers=nh(), json={"archived": True}, timeout=NOTION_T_SHORT)
                 borradas += 1
         if len(entradas) - borradas > 150:
             sobrantes = sorted(entradas, key=lambda e: e["properties"].get("Usos",{}).get("number",0) or 0)
             por_borrar = (len(entradas) - borradas) - 100
             for e in sobrantes[:por_borrar]:
-                notion_request("DELETE", f"{NOTION_API_BASE}/pages/{e['id']}",
-                    headers=nh(), timeout=NOTION_T_SHORT)
+                notion_request("PATCH", f"{NOTION_API_BASE}/pages/{e['id']}",
+                    headers=nh(), json={"archived": True}, timeout=NOTION_T_SHORT)
                 borradas += 1
         if borradas: logger.info(f"Limpieza aprendizaje: {borradas} entradas eliminadas")
     except Exception as ex:
@@ -937,6 +937,7 @@ async def handle_gasto(update,context):
     partes = [p.strip() for p in texto.split(",") if p.strip()]
     if len(partes) > 1:
         lineas = []
+        gastos_ok = []
         uid = update.effective_user.id
         for parte in partes:
             try:
@@ -946,11 +947,21 @@ async def handle_gasto(update,context):
                     gasto_completo = {**gasto, "notion_id": nid}
                     threading.Thread(target=guardar_historial_notion, args=(gasto_completo, uid), daemon=True).start()
                     lineas.append(f"✅ {gasto['concepto']}  ${gasto['monto']:,.2f}")
+                    gastos_ok.append(gasto_completo)
                 else:
                     lineas.append(f"❌ {parte.strip()[:20]} (error Notion)")
             except ValueError as e:
                 lineas.append(f"❌ {parte.strip()[:20]} ({e})")
         await update.message.reply_text("\n".join(lineas), reply_markup=ReplyKeyboardRemove())
+        notif  = USUARIOS_NOTIFICAR.get(uid)
+        nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
+        if notif and gastos_ok:
+            for g in gastos_ok:
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Corregir categoría", callback_data=f"cor:{g['notion_id']}:{g['concepto']}")]])
+                await context.bot.send_message(
+                    chat_id=notif, text=msg_gasto(g, nombre=nombre, notion_id=g["notion_id"]),
+                    reply_markup=kb, parse_mode="Markdown"
+                )
         return ConversationHandler.END
     try:
         gasto=parsear_mensaje(texto)
@@ -1312,8 +1323,8 @@ async def cmd_estadisticas(update, context):
                     totales[nombre] = totales.get(nombre, 0) + monto
         return totales
 
-    totales_ant = get_totales(mes_ant)
-    totales_act = get_totales(mes_act)
+    totales_ant = await asyncio.to_thread(get_totales, mes_ant)
+    totales_act = await asyncio.to_thread(get_totales, mes_act)
 
     if not totales_ant and not totales_act:
         await update.message.reply_text("❌ No se pudieron obtener los datos.")
@@ -1533,7 +1544,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_final16...")
+    logger.info("Bot corriendo v_final17...")
     server.serve_forever()
 
 if __name__ == "__main__":

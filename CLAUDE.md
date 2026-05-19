@@ -51,7 +51,7 @@ SHORTCUT_SECRET       (para iOS Shortcut)
 
 ---
 
-## Versión actual: v_final16
+## Versión actual: v_final17
 
 ### Funcionalidades implementadas ✅
 - Registro de gastos por texto: `Concepto Monto [Tarjeta] [Fecha]`
@@ -77,6 +77,11 @@ SHORTCUT_SECRET       (para iOS Shortcut)
 - Precargar meses al arranque (evita timeouts en `buscar_mes_id`)
 - Deep link a Notion en cada confirmación (`[🔗 Ver en Notion](https://...)`)
 - OCR de tickets via Google Vision API con preview Confirmar/Cancelar
+- Notificaciones cruzadas en gastos múltiples por coma
+- `limpiar_aprendizaje` usa PATCH+archived en vez de DELETE (fix Notion API)
+- `cmd_estadisticas` usa `asyncio.to_thread` para no bloquear el event loop
+- brüm/brum solo en regla Treat (quitado de Restaurantes)
+- uber/didi/cabify sin espacio en regla Automovil (fix match exacto)
 
 ---
 
