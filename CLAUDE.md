@@ -94,7 +94,13 @@ GROQ_API_KEY          (Llama 3.3 70B texto + Llama 4 Scout visión; .env local e
 ### Integración Groq (LLM) — capa adicional con fallback total
 - **Parseo flexible** (`parsear_mensaje_groq`, Llama 3.3 70B): entiende "fui al super, unos 350".
   Solo se invoca si el mensaje NO tiene formato estricto (`_parece_gasto_estricto`). Cae al parser regex si falla.
-- **Consultas en lenguaje natural** (`responder_consulta_groq`): "¿cuánto llevo en restaurantes?" → lee Notion y responde.
+- **Consultas en lenguaje natural** (`responder_consulta_groq`): flujo de 2 pasos —
+  (1) Groq genera un *plan de consulta* JSON `{meses, categoria, comercio}`,
+  (2) `ejecutar_consulta_finanzas()` trae los datos de Notion de forma determinística (única función que toca datos),
+  (3) Groq redacta la respuesta con esos datos. Soporta otros meses, comercios y comparaciones
+  ("¿cuánto en Costco en marzo?", "¿gasté más en restaurantes que el mes pasado?"). Toda la inteligencia
+  vive en 2 prompts + 1 función acotada. La heurística `_parece_gasto` decide si un mensaje es consulta
+  (requiere palabra interrogativa o "?"); si Groq falla cae al flujo normal.
 - **Memoria de contexto** (`_ultimo_gasto_usuario`): guarda último gasto por usuario (en RAM).
 - **Insights post-guardado** (`generar_insight_groq`): si una categoría supera $3,000, comenta. Corre en background vía `asyncio.create_task`.
 - **OCR de tickets** (`analizar_ticket_groq`, Llama 4 Scout): la foto va directo al LLM multimodal. Fallback a Google Vision (`ocr_ticket`+`parsear_ticket`) si Groq falla.

@@ -1007,57 +1007,137 @@ def _parece_gasto(texto: str) -> bool:
     ]
     return not any(ind in texto_n for ind in indicadores_consulta)
 
+def _presupuesto_de_props(props) -> str:
+    """Resuelve el nombre del presupuesto (PR) de un gasto de Notion, o '' si no tiene."""
+    rel = props.get("Presupuesto", {}).get("relation", [])
+    if not rel:
+        return ""
+    pr_id = rel[0].get("id", "").replace("-", "")
+    return next((k for k, v in PR.items() if v == pr_id), "")
+
+def ejecutar_consulta_finanzas(plan: dict) -> dict:
+    """
+    Ejecuta un plan de consulta determinístico contra Notion.
+    plan: {"meses": [...], "categoria": str|None, "comercio": str|None}
+    Devuelve un agregado compacto. Es la ÚNICA función que toca datos para consultas NL.
+    """
+    meses = plan.get("meses") or [mes_activo_str()]
+    meses = [m.upper() for m in meses][:6]  # tope defensivo
+    categoria = (plan.get("categoria") or "").strip() or None
+    comercio = normalizar(plan.get("comercio") or "") or None
+
+    res = {"meses": meses, "total": 0.0, "conteo": 0,
+           "por_mes": {}, "por_categoria": {}, "top": []}
+    todos = []
+    for mes in meses:
+        mid = buscar_mes_id(mes)
+        if not mid:
+            continue
+        gastos = query_notion_db(NOTION_DATABASE_ID,
+                                 {"property": "Mes", "relation": {"contains": mid}})
+        for g in gastos:
+            props = g.get("properties", {})
+            monto = props.get("Monto", {}).get("number", 0) or 0
+            pr = _presupuesto_de_props(props)
+            titulo = props.get("Concepto", {}).get("title", [])
+            concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+            fecha = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
+            if categoria and pr != categoria:
+                continue
+            if comercio and comercio not in normalizar(concepto):
+                continue
+            res["total"] += monto
+            res["conteo"] += 1
+            res["por_mes"][mes] = res["por_mes"].get(mes, 0) + monto
+            if pr:
+                res["por_categoria"][pr] = res["por_categoria"].get(pr, 0) + monto
+            todos.append((concepto, monto, fecha, mes))
+    res["top"] = sorted(todos, key=lambda x: x[1], reverse=True)[:8]
+    return res
+
+def _formatear_datos_consulta(res: dict) -> str:
+    if res["conteo"] == 0:
+        return "Sin gastos que coincidan con la consulta."
+    partes = [f"Meses consultados: {', '.join(res['meses'])}",
+              f"Total: ${res['total']:,.0f}  ({res['conteo']} gastos)"]
+    if len(res["por_mes"]) > 1:
+        partes.append("Por mes: " + ", ".join(f"{m}=${v:,.0f}" for m, v in res["por_mes"].items()))
+    if res["por_categoria"]:
+        cats = sorted(res["por_categoria"].items(), key=lambda x: x[1], reverse=True)
+        partes.append("Por categoría: " + ", ".join(f"{k}=${v:,.0f}" for k, v in cats))
+    if res["top"]:
+        partes.append("Gastos más grandes: " + "; ".join(
+            f"{c} ${m:,.0f} ({_fecha_corta(f)})" for c, m, f, _ in res["top"]))
+    return "\n".join(partes)
+
 async def responder_consulta_groq(texto: str, user_id: int, update, context) -> bool:
     """
-    Si el mensaje parece una consulta en lenguaje natural, la responde usando Groq
-    con datos reales de Notion. Retorna True si respondió, False si no era consulta.
+    Responde una consulta en lenguaje natural con datos reales de Notion, en 2 pasos:
+      1) Groq genera un plan de consulta (JSON con filtros).
+      2) ejecutar_consulta_finanzas() trae los datos de forma determinística.
+      3) Groq redacta la respuesta a partir de esos datos.
+    Retorna True si respondió, False si no aplica (cae al flujo normal).
     """
     if not GROQ_API_KEY:
         return False
 
-    mes = mes_activo_str()
-    mid = buscar_mes_id(mes)
-    resumen_ctx = ""
-    if mid:
-        try:
-            gastos = await asyncio.to_thread(
-                query_notion_db, NOTION_DATABASE_ID,
-                {"property": "Mes", "relation": {"contains": mid}}
-            )
-            totales = {}
-            for g in gastos:
-                props = g.get("properties", {})
-                monto = props.get("Monto", {}).get("number", 0) or 0
-                rel_pre = props.get("Presupuesto", {}).get("relation", [])
-                if rel_pre:
-                    pr_id = rel_pre[0].get("id", "").replace("-", "")
-                    pr_nombre = next((k for k, v in PR.items() if v == pr_id), None)
-                    if pr_nombre:
-                        totales[pr_nombre] = totales.get(pr_nombre, 0) + monto
-            if totales:
-                lineas = [f"- {k}: ${v:,.0f}" for k, v in sorted(totales.items(), key=lambda x: x[1], reverse=True)]
-                resumen_ctx = f"Gastos de {mes}:\n" + "\n".join(lineas)
-                resumen_ctx += f"\nTotal: ${sum(totales.values()):,.0f}"
-        except Exception as e:
-            logger.warning(f"Error obteniendo contexto para consulta: {e}")
+    hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+    activo = mes_activo_str()
+    meses_disp = ", ".join(sorted(_meses_cache.keys())) or activo
+    categorias = ", ".join(PR.keys())
 
-    ultimo = obtener_contexto(user_id)
-    ultimo_ctx = ""
-    if ultimo:
-        ultimo_ctx = f"Último gasto: {ultimo['concepto']} ${ultimo['monto']:,.2f} ({ultimo['subcategoria']})"
+    prompt_plan = f"""Hoy es {hoy.strftime('%d/%m/%Y')}. El mes de ciclo activo es {activo}.
+Meses disponibles (formato MES+AA): {meses_disp}
+Categorías válidas: {categorias}
 
-    prompt = f"""Eres el asistente del bot de gastos de Jordi y Nani. Responde en español mexicano, breve y directo (máx 2 oraciones). Usa emojis con moderación.
+El usuario del bot de gastos pregunta: "{texto}"
 
-{resumen_ctx or "Sin datos de gastos este mes."}
-{ultimo_ctx}
+Devuelve SOLO JSON válido, sin markdown ni texto extra:
+{{
+  "meses": ["{activo}"],
+  "categoria": null,
+  "comercio": null
+}}
+
+Reglas:
+- "meses": lista de códigos relevantes. "este mes"={activo}. "mes pasado"=el anterior al activo. Para comparaciones incluye todos los meses. Vacío = mes activo.
+- "categoria": un nombre EXACTO de la lista de categorías válidas, o null.
+- "comercio": texto a buscar dentro del concepto del gasto (ej "costco", "uber"), o null.
+- Nombre de mes en español → código (ej: marzo 2026 → MAR26), usando el año correcto según hoy.
+- Si la pregunta NO es sobre finanzas/gastos, devuelve {{"error":"no_finanzas"}}."""
+
+    raw = await asyncio.to_thread(groq_completar, prompt_plan, 150)
+    if not raw:
+        return False
+    try:
+        raw = re.sub(r'^```(?:json)?\s*', '', raw)
+        raw = re.sub(r'\s*```$', '', raw)
+        plan = json.loads(raw)
+    except Exception as e:
+        logger.warning(f"Plan de consulta inválido: {e} — raw: {raw[:120]}")
+        return False
+    if plan.get("error") == "no_finanzas":
+        return False
+
+    res = await asyncio.to_thread(ejecutar_consulta_finanzas, plan)
+    datos = _formatear_datos_consulta(res)
+
+    prompt_resp = f"""Eres el asistente del bot de gastos de Jordi y Nani. Responde en español mexicano, claro y directo (máx 3 oraciones). Usa $ con separador de miles. Emojis con moderación.
 
 Pregunta: "{texto}"
 
-Si no puedes responder con los datos disponibles, di que no tienes esa información."""
+Datos consultados (reales, de Notion):
+{datos}
 
-    respuesta = await asyncio.to_thread(groq_completar, prompt, 150)
+Responde la pregunta usando SOLO estos datos. No inventes cifras. Si los datos están vacíos, dilo con naturalidad."""
+
+    respuesta = await asyncio.to_thread(groq_completar, prompt_resp, 200)
     if respuesta:
         await update.message.reply_text(respuesta)
+        return True
+    # Fallback: si el segundo LLM falla pero sí hubo datos, responde lo básico
+    if res["conteo"]:
+        await update.message.reply_text(f"💰 Total: ${res['total']:,.0f} en {res['conteo']} gastos ({', '.join(res['meses'])})")
         return True
     return False
 
