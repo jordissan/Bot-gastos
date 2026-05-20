@@ -1789,6 +1789,11 @@ def _esc_md(s: str) -> str:
         s = s.replace(ch, "\\" + ch)
     return s
 
+def _trunc(s: str, n: int) -> str:
+    """Recorta un texto a n caracteres con … final para mantener columnas alineadas."""
+    s = s.strip()
+    return s if len(s) <= n else s[:n-1] + "…"
+
 async def cmd_buscar(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return
@@ -1812,14 +1817,20 @@ async def cmd_buscar(update, context):
     if not resultados:
         await update.message.reply_text(f"📭 No encontré gastos con \"{q}\".")
         return
-    lineas = [f"🔍 *{_esc_md(q)}* — {len(resultados)} resultado(s)\n"]
+    filas = []
     suma = 0
     for page in resultados:
         concepto, monto, fecha = _gasto_props(page)
         suma += monto
-        lineas.append(f"📌 {_esc_md(concepto)}   ${monto:,.0f}   ·   {_fecha_corta(fecha)}")
-    lineas.append(f"\n💰 *Suma mostrada*   ${suma:,.0f}")
-    await update.message.reply_text("\n".join(lineas), parse_mode="Markdown")
+        nom = _trunc(concepto, 14).ljust(14)
+        monto_s = f"${monto:,.0f}".rjust(7)
+        filas.append(f"{nom}  {monto_s}  {_fecha_corta(fecha)}")
+    msg = (
+        f"🔍 *{_esc_md(q)}* — {len(resultados)} resultado(s)\n\n"
+        f"```\n\n{chr(10).join(filas)}\n```\n\n"
+        f"💰 *Suma mostrada*   ${suma:,.0f}"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def cmd_top(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
@@ -1841,11 +1852,16 @@ async def cmd_top(update, context):
     if not top:
         await update.message.reply_text(f"📭 No hay gastos en {mes}.")
         return
-    lineas = [f"🏆 *Top 5 — {_esc_md(mes)}*\n"]
+    filas = []
     for i, (concepto, monto, fecha) in enumerate(top):
-        num = _NUM_EMOJI[i] if i < len(_NUM_EMOJI) else f"{i+1}."
-        lineas.append(f"{num}  {_esc_md(concepto)}   ${monto:,.0f}   ·   {_fecha_corta(fecha)}")
-    await update.message.reply_text("\n".join(lineas), parse_mode="Markdown")
+        nom = _trunc(concepto, 13).ljust(13)
+        monto_s = f"${monto:,.0f}".rjust(7)
+        filas.append(f"{i+1}  {nom}  {monto_s}  {_fecha_corta(fecha)}")
+    msg = (
+        f"🏆 *Top 5 — {_esc_md(mes)}*\n\n"
+        f"```\n\n{chr(10).join(filas)}\n```"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def cmd_eliminar(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
