@@ -907,9 +907,12 @@ def parsear_mensaje(texto):
 # ── PARSEO CON GROQ (LLM) ─────────────────────────────────────────────────────
 def parsear_mensaje_groq(texto: str):
     """
-    Intenta parsear un mensaje de gasto usando Groq/Llama 3.3 70B.
-    Retorna dict con las mismas claves que parsear_mensaje(), o None si falla.
-    El resultado pasa por la misma lógica de tarjeta/mes/categoría que el parser original.
+    Clasifica y parsea un mensaje con Groq/Llama 3.3 70B.
+    Retorna:
+      - dict con campos de gasto (igual que parsear_mensaje) si es un GASTO a registrar
+      - "consulta" si es una PREGUNTA sobre finanzas/gastos
+      - None si es otra cosa (saludo, charla) o si Groq falla
+    Distinguir gasto vs consulta evita registrar gastos por accidente al preguntar.
     """
     if not GROQ_API_KEY:
         return None
@@ -917,24 +920,33 @@ def parsear_mensaje_groq(texto: str):
     hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
     tarjetas_validas = ["BBVA05", "BBVA12", "HEYB25", "BMEX04", "EFVO"]
 
-    prompt = f"""Extrae los datos de este mensaje de gasto personal escrito en español mexicano informal. Hoy es {hoy.strftime('%d/%m/%Y')}.
+    prompt = f"""Eres el clasificador de un bot de gastos en español mexicano. Hoy es {hoy.strftime('%d/%m/%Y')}.
 
-Mensaje: "{texto}"
+Mensaje del usuario: "{texto}"
 
-Responde SOLO con JSON válido, sin texto adicional, sin markdown:
+Decide la intención y responde SOLO con JSON válido, sin texto adicional ni markdown:
+
+- Si el usuario quiere REGISTRAR un gasto (afirma haber gastado/comprado/pagado algo):
 {{
+  "tipo": "gasto",
   "concepto": "nombre del comercio o descripción corta en Title Case",
   "monto": número (solo dígitos sin signo $),
   "fecha": "YYYY-MM-DD",
   "tarjeta": "una de {tarjetas_validas} o null"
 }}
 
-Reglas:
-- Si el mensaje NO es un gasto (es pregunta o comando), responde: {{"error": "no_es_gasto"}}
-- Concepto conciso: "Starbucks", "Super", "Comida", "Gasolina", etc.
-- Si dice "ayer" resta 1 día a la fecha de hoy. Sin fecha mencionada = hoy.
+- Si el usuario PREGUNTA o CONSULTA algo sobre sus gastos/finanzas (cuánto, cuándo, en qué, comparar, totales, presupuestos, etc.), aunque mencione cantidades o categorías:
+{{"tipo": "consulta"}}
+
+- Si es un saludo, charla o algo no relacionado:
+{{"tipo": "otro"}}
+
+Reglas para "gasto":
+- Concepto conciso: "Starbucks", "Super", "Comida", "Gasolina".
+- "ayer" resta 1 día a hoy. Sin fecha = hoy.
 - Montos aproximados ("como 350", "unos 400") → usa ese número.
-- Dos montos → usa el mayor (el total)."""
+- Dos montos → usa el mayor (el total).
+IMPORTANTE: si hay duda entre gasto y consulta, y el mensaje tiene forma de pregunta, elige "consulta". Nunca registres un gasto cuando el usuario está preguntando."""
 
     raw = groq_completar(prompt, max_tokens=120)
     if not raw:
@@ -945,7 +957,13 @@ Reglas:
         raw = re.sub(r'\s*```$', '', raw)
         data = json.loads(raw)
 
-        if data.get("error") == "no_es_gasto":
+        tipo = data.get("tipo")
+        if tipo == "consulta":
+            return "consulta"
+        if tipo == "otro":
+            return None
+        # Compatibilidad: si no vino "tipo" pero hay concepto, lo tratamos como gasto
+        if tipo and tipo != "gasto":
             return None
 
         concepto = data.get("concepto", "").strip()
@@ -996,16 +1014,6 @@ def _parece_gasto_estricto(texto: str) -> bool:
         except ValueError:
             pass
     return False
-
-def _parece_gasto(texto: str) -> bool:
-    """Heurística: ¿el mensaje parece un gasto o una pregunta/consulta?"""
-    texto_n = normalizar(texto)
-    indicadores_consulta = [
-        "cuanto", "cuánto", "cuantos", "cual", "cuál",
-        "cuando", "cuándo", "qué tal", "como voy",
-        "resumen", "estadistica", "compara", "?",
-    ]
-    return not any(ind in texto_n for ind in indicadores_consulta)
 
 def _presupuesto_de_props(props) -> str:
     """Resuelve el nombre del presupuesto (PR) de un gasto de Notion, o '' si no tiene."""
@@ -1277,11 +1285,9 @@ async def registrar_via_shortcut(texto: str, user_id: int):
     if not app:
         return False, "Bot no disponible"
     try:
-        gasto = None
-        if GROQ_API_KEY and not _parece_gasto_estricto(texto):
-            gasto = parsear_mensaje_groq(texto)
-        if gasto is None:
-            gasto = parsear_mensaje(texto)
+        clasif = parsear_mensaje_groq(texto) if (GROQ_API_KEY and not _parece_gasto_estricto(texto)) else None
+        # Vía Shortcut/Siri el intent es registrar; si Groq no devolvió un gasto, usar regex
+        gasto = clasif if isinstance(clasif, dict) else parsear_mensaje(texto)
     except ValueError as e:
         await app.bot.send_message(chat_id=user_id, text=f"❓ {e}\n\nEjemplo: Oxxo 45")
         return False, str(e)
@@ -1399,11 +1405,26 @@ async def callback_foto(update, context):
 async def handle_gasto(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
     texto=update.message.text.strip()
+    uid = update.effective_user.id
+
+    # 1) Clasificar con Groq cuando el mensaje NO tiene formato estricto.
+    #    Distingue gasto vs consulta → evita registrar gastos al preguntar.
+    gasto_groq = None
+    if GROQ_API_KEY and not _parece_gasto_estricto(texto):
+        clasif = parsear_mensaje_groq(texto)
+        if clasif == "consulta":
+            if await responder_consulta_groq(texto, uid, update, context):
+                return ConversationHandler.END
+            await update.message.reply_text("🤔 No pude consultar eso ahorita. Intenta reformularlo.")
+            return ConversationHandler.END
+        if isinstance(clasif, dict):
+            gasto_groq = clasif
+
+    # 2) Múltiples gastos separados por coma (solo si Groq no lo tomó como gasto único)
     partes = [p.strip() for p in texto.split(",") if p.strip()]
-    if len(partes) > 1:
+    if gasto_groq is None and len(partes) > 1:
         lineas = []
         gastos_ok = []
-        uid = update.effective_user.id
         for parte in partes:
             try:
                 gasto = parsear_mensaje(parte)
@@ -1428,20 +1449,10 @@ async def handle_gasto(update,context):
                     reply_markup=kb, parse_mode="Markdown"
                 )
         return ConversationHandler.END
-    # Consulta en lenguaje natural (no es un gasto)
-    if not _parece_gasto_estricto(texto) and not _parece_gasto(texto):
-        respondido = await responder_consulta_groq(
-            texto, update.effective_user.id, update, context
-        )
-        if respondido:
-            return ConversationHandler.END
+
+    # 3) Gasto único (de Groq o del parser estricto/regex)
     try:
-        # Intentar con Groq si el mensaje no tiene formato estricto
-        gasto = None
-        if GROQ_API_KEY and not _parece_gasto_estricto(texto):
-            gasto = parsear_mensaje_groq(texto)
-        if gasto is None:
-            gasto = parsear_mensaje(texto)
+        gasto = gasto_groq or parsear_mensaje(texto)
         if gasto["monto"]>=MONTO_INUSUAL:
             context.user_data["gasto_pendiente"]=gasto
             await update.message.reply_text(

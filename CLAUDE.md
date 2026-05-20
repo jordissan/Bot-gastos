@@ -92,8 +92,10 @@ GROQ_API_KEY          (Llama 3.3 70B texto + Llama 4 Scout visión; .env local e
 - Servicios usa 🧾 (full-width) en vez de ⚡ para alineación perfecta en code blocks
 
 ### Integración Groq (LLM) — capa adicional con fallback total
-- **Parseo flexible** (`parsear_mensaje_groq`, Llama 3.3 70B): entiende "fui al super, unos 350".
-  Solo se invoca si el mensaje NO tiene formato estricto (`_parece_gasto_estricto`). Cae al parser regex si falla.
+- **Clasificación + parseo** (`parsear_mensaje_groq`, Llama 3.3 70B): para mensajes sin formato estricto,
+  Groq decide la intención y devuelve un **gasto** (dict), `"consulta"` (pregunta sobre finanzas) u **None** (otro/falla).
+  Esto evita registrar gastos por accidente al preguntar. El handler `handle_gasto` clasifica ANTES de
+  registrar; si es consulta, llama a `responder_consulta_groq`. (Reemplazó la heurística frágil `_parece_gasto`.)
 - **Consultas en lenguaje natural** (`responder_consulta_groq`): flujo de 2 pasos —
   (1) Groq genera un *plan de consulta* JSON `{meses, categoria, comercio}`,
   (2) `ejecutar_consulta_finanzas()` trae los datos de Notion de forma determinística (única función que toca datos),
