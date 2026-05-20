@@ -1150,7 +1150,7 @@ def msg_gasto(g, nombre=None, notion_id=None):
     enc = f"🔔 Nuevo gasto de {nombre}" if nombre else "✅ Gasto guardado"
     msg = (
         f"{enc}\n\n"
-        f"📌 {g['concepto']}\n"
+        f"📌 {_esc_md(g['concepto'])}\n"
         f"💵 ${g['monto']:,.2f}\n"
         f"🗓️ {fmt(g['fecha'])}\n"
         f"💳 {g['tarjeta']}\n"
@@ -1575,7 +1575,7 @@ async def corregir_monto(update, context):
         nid  = gasto.get("notion_id", "")
         link = f"\n[🔗 Ver en Notion]({notion_deep_link(nid)})" if nid else ""
         await update.message.reply_text(
-            f"✅ Monto corregido\n\n📌 {gasto['concepto']}\n💵 ${monto:,.2f}{link}",
+            f"✅ Monto corregido\n\n📌 {_esc_md(gasto['concepto'])}\n💵 ${monto:,.2f}{link}",
             reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown"
         )
         notif  = USUARIOS_NOTIFICAR.get(update.effective_user.id)
@@ -1583,7 +1583,7 @@ async def corregir_monto(update, context):
         if notif:
             await context.bot.send_message(
                 chat_id=notif,
-                text=f"✏️ {nombre} corrigió un gasto\n\n📌 {gasto['concepto']}\n💵 ${monto:,.2f}{link}",
+                text=f"✏️ {nombre} corrigió un gasto\n\n📌 {_esc_md(gasto['concepto'])}\n💵 ${monto:,.2f}{link}",
                 parse_mode="Markdown"
             )
     else:
@@ -1605,7 +1605,7 @@ async def aplicar_correccion(update, context, sub=None, pre=None):
             nueva_sub or gasto.get("subcategoria",""),
             nuevo_pre or gasto.get("presupuesto","")
         )
-        resumen = f"📌 {gasto['concepto']}\n"
+        resumen = f"📌 {_esc_md(gasto['concepto'])}\n"
         if nueva_sub: resumen += f"🏷️ {nueva_sub}\n"
         if nuevo_pre: resumen += f"🗂️ {nuevo_pre}\n"
         nid  = gasto.get("notion_id","")
@@ -1783,6 +1783,12 @@ def _gasto_props(page):
 def _fecha_corta(fecha):
     return " ".join(fmt(fecha).split()[:2]) if fecha else ""
 
+def _esc_md(s: str) -> str:
+    """Escapa caracteres especiales de Markdown V1 en texto dinámico (conceptos, etc.)."""
+    for ch in ("_", "*", "`", "["):
+        s = s.replace(ch, "\\" + ch)
+    return s
+
 async def cmd_buscar(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return
@@ -1806,12 +1812,12 @@ async def cmd_buscar(update, context):
     if not resultados:
         await update.message.reply_text(f"📭 No encontré gastos con \"{q}\".")
         return
-    lineas = [f"🔍 *{q}* — {len(resultados)} resultado(s)\n"]
+    lineas = [f"🔍 *{_esc_md(q)}* — {len(resultados)} resultado(s)\n"]
     suma = 0
     for page in resultados:
         concepto, monto, fecha = _gasto_props(page)
         suma += monto
-        lineas.append(f"📌 {concepto}   ${monto:,.0f}   ·   {_fecha_corta(fecha)}")
+        lineas.append(f"📌 {_esc_md(concepto)}   ${monto:,.0f}   ·   {_fecha_corta(fecha)}")
     lineas.append(f"\n💰 *Suma mostrada*   ${suma:,.0f}")
     await update.message.reply_text("\n".join(lineas), parse_mode="Markdown")
 
@@ -1835,10 +1841,10 @@ async def cmd_top(update, context):
     if not top:
         await update.message.reply_text(f"📭 No hay gastos en {mes}.")
         return
-    lineas = [f"🏆 *Top 5 — {mes}*\n"]
+    lineas = [f"🏆 *Top 5 — {_esc_md(mes)}*\n"]
     for i, (concepto, monto, fecha) in enumerate(top):
         num = _NUM_EMOJI[i] if i < len(_NUM_EMOJI) else f"{i+1}."
-        lineas.append(f"{num}  {concepto}   ${monto:,.0f}   ·   {_fecha_corta(fecha)}")
+        lineas.append(f"{num}  {_esc_md(concepto)}   ${monto:,.0f}   ·   {_fecha_corta(fecha)}")
     await update.message.reply_text("\n".join(lineas), parse_mode="Markdown")
 
 async def cmd_eliminar(update, context):
