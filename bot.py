@@ -2259,7 +2259,8 @@ Interpreta las cifras, no las repitas tal cual. No inventes nada."""
 async def cmd_reporte(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return
-    tipo = "mensual" if (context.args and "mes" in context.args[0].lower()) else "semanal"
+    texto_cmd = (update.message.text or "").lower()
+    tipo = "mensual" if ("mensual" in texto_cmd or (context.args and "mes" in context.args[0].lower())) else "semanal"
     await update.message.reply_text(f"📊 Generando reporte {tipo}...")
     await enviar_reporte(tipo, solo_a=update.effective_user.id)
     if tipo == "mensual":
