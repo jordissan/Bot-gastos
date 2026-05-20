@@ -77,6 +77,25 @@ def groq_vision(image_bytes: bytes, prompt: str, max_tokens: int = 200):
         logger.warning(f"Groq vision error: {e}")
         return None
 
+def _extraer_json(raw):
+    """Extrae un objeto JSON de una respuesta del LLM, tolerando fences y prosa alrededor."""
+    if not raw:
+        return None
+    import re as _re
+    s = _re.sub(r'^```(?:json)?\s*', '', raw.strip())
+    s = _re.sub(r'\s*```$', '', s.strip())
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+    i, j = s.find("{"), s.rfind("}")
+    if i != -1 and j > i:
+        try:
+            return json.loads(s[i:j + 1])
+        except Exception:
+            return None
+    return None
+
 # ── CONTEXTO DE CONVERSACION ──────────────────────────────────────────────────
 # Guarda el último gasto guardado por usuario para ediciones contextuales
 _ultimo_gasto_usuario = {}
@@ -614,14 +633,11 @@ Reglas:
 - Si no reconoces el comercio, describe brevemente qué tipo de negocio es."""
 
     raw = groq_vision(image_bytes, prompt, max_tokens=150)
-    if not raw:
+    data = _extraer_json(raw)
+    if not data:
         return None
 
     try:
-        raw = re.sub(r'^```(?:json)?\s*', '', raw)
-        raw = re.sub(r'\s*```$', '', raw)
-        data = json.loads(raw)
-
         concepto = data.get("concepto", "").strip()
         monto = data.get("monto")
         fecha_str = data.get("fecha", hoy.strftime("%Y-%m-%d"))
@@ -904,21 +920,34 @@ def parsear_mensaje(texto):
     sub,pre,seguro=inferir_categoria(concepto)
     return {"concepto":concepto.title(),"monto":monto,"fecha":fecha.strftime("%Y-%m-%d"),"tarjeta":tarjeta,"mes":mes,"subcategoria":sub,"presupuesto":pre,"seguro":seguro}
 
-# ── PARSEO CON GROQ (LLM) ─────────────────────────────────────────────────────
-def parsear_mensaje_groq(texto: str):
+# ── CLASIFICACIÓN + PARSEO CON GROQ (LLM) ─────────────────────────────────────
+TARJETAS_VALIDAS = ["BBVA05", "BBVA12", "HEYB25", "BMEX04", "EFVO"]
+
+def clasificar_mensaje_groq(texto: str, ultimo: dict = None):
     """
-    Clasifica y parsea un mensaje con Groq/Llama 3.3 70B.
-    Retorna:
-      - dict con campos de gasto (igual que parsear_mensaje) si es un GASTO a registrar
-      - "consulta" si es una PREGUNTA sobre finanzas/gastos
-      - None si es otra cosa (saludo, charla) o si Groq falla
-    Distinguir gasto vs consulta evita registrar gastos por accidente al preguntar.
+    Clasifica un mensaje con Groq/Llama 3.3 70B. Devuelve (tipo, payload):
+      - ("gasto", gasto_dict)     → registrar un gasto nuevo
+      - ("consulta", None)        → pregunta sobre finanzas/gastos
+      - ("edicion", campos_dict)  → modificar el último gasto (solo si `ultimo` existe)
+      - ("otro", None)            → saludo/charla
+      - (None, None)              → Groq falló / no parseable
+    `ultimo`: último gasto del usuario (para habilitar la opción de edición).
     """
     if not GROQ_API_KEY:
-        return None
+        return (None, None)
 
     hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
-    tarjetas_validas = ["BBVA05", "BBVA12", "HEYB25", "BMEX04", "EFVO"]
+
+    bloque_edicion = ""
+    if ultimo:
+        bloque_edicion = f"""
+- Si el usuario quiere MODIFICAR el último gasto registrado (usa "cámbialo", "ponlo en", "era", "más bien", "corrige"):
+{{"tipo": "edicion", "monto": número o null, "concepto": texto o null, "tarjeta": "{'/'.join(TARJETAS_VALIDAS)} o null", "fecha": "YYYY-MM-DD o null", "presupuesto": "un presupuesto exacto de la lista o null", "subcategoria": "una subcategoría exacta de la lista o null"}}
+  (incluye SOLO los campos que el usuario pide cambiar; el resto null)
+  Último gasto: {ultimo.get('concepto')} ${ultimo.get('monto')} — {ultimo.get('subcategoria')}/{ultimo.get('presupuesto')}
+  Presupuestos válidos: {', '.join(PR.keys())}
+  Subcategorías válidas: {', '.join(SC.keys())}
+"""
 
     prompt = f"""Eres el clasificador de un bot de gastos en español mexicano. Hoy es {hoy.strftime('%d/%m/%Y')}.
 
@@ -926,77 +955,59 @@ Mensaje del usuario: "{texto}"
 
 Decide la intención y responde SOLO con JSON válido, sin texto adicional ni markdown:
 
-- Si el usuario quiere REGISTRAR un gasto (afirma haber gastado/comprado/pagado algo):
-{{
-  "tipo": "gasto",
-  "concepto": "nombre del comercio o descripción corta en Title Case",
-  "monto": número (solo dígitos sin signo $),
-  "fecha": "YYYY-MM-DD",
-  "tarjeta": "una de {tarjetas_validas} o null"
-}}
+- Si el usuario quiere REGISTRAR un gasto NUEVO (afirma haber gastado/comprado/pagado algo):
+{{"tipo": "gasto", "concepto": "comercio o descripción corta en Title Case", "monto": número sin $, "fecha": "YYYY-MM-DD", "tarjeta": "{'/'.join(TARJETAS_VALIDAS)} o null"}}
 
-- Si el usuario PREGUNTA o CONSULTA algo sobre sus gastos/finanzas (cuánto, cuándo, en qué, comparar, totales, presupuestos, etc.), aunque mencione cantidades o categorías:
+- Si el usuario PREGUNTA o CONSULTA sobre sus gastos/finanzas (cuánto, cuándo, en qué, comparar, totales, presupuestos), aunque mencione cantidades o categorías:
 {{"tipo": "consulta"}}
-
+{bloque_edicion}
 - Si es un saludo, charla o algo no relacionado:
 {{"tipo": "otro"}}
 
 Reglas para "gasto":
 - Concepto conciso: "Starbucks", "Super", "Comida", "Gasolina".
 - "ayer" resta 1 día a hoy. Sin fecha = hoy.
-- Montos aproximados ("como 350", "unos 400") → usa ese número.
-- Dos montos → usa el mayor (el total).
-IMPORTANTE: si hay duda entre gasto y consulta, y el mensaje tiene forma de pregunta, elige "consulta". Nunca registres un gasto cuando el usuario está preguntando."""
+- Montos aproximados ("como 350", "unos 400") → usa ese número. Dos montos → el mayor.
+IMPORTANTE: si hay duda y el mensaje tiene forma de pregunta, elige "consulta". Nunca registres un gasto cuando el usuario está preguntando."""
 
-    raw = groq_completar(prompt, max_tokens=120)
-    if not raw:
-        return None
+    raw = groq_completar(prompt, max_tokens=160)
+    data = _extraer_json(raw)
+    if not data:
+        return (None, None)
 
     try:
-        raw = re.sub(r'^```(?:json)?\s*', '', raw)
-        raw = re.sub(r'\s*```$', '', raw)
-        data = json.loads(raw)
-
         tipo = data.get("tipo")
+
         if tipo == "consulta":
-            return "consulta"
-        if tipo == "otro":
-            return None
-        # Compatibilidad: si no vino "tipo" pero hay concepto, lo tratamos como gasto
-        if tipo and tipo != "gasto":
-            return None
+            return ("consulta", None)
+        if tipo == "edicion" and ultimo:
+            campos = {k: data.get(k) for k in
+                      ("monto", "concepto", "tarjeta", "fecha", "presupuesto", "subcategoria")
+                      if data.get(k) not in (None, "", "null")}
+            return ("edicion", campos) if campos else ("otro", None)
+        if tipo != "gasto":
+            return ("otro", None)
 
-        concepto = data.get("concepto", "").strip()
+        concepto = (data.get("concepto") or "").strip()
         monto = data.get("monto")
-        fecha_str = data.get("fecha", hoy.strftime("%Y-%m-%d"))
-        tarjeta_raw = data.get("tarjeta")
-
         if not concepto or monto is None:
-            return None
-
+            return (None, None)
         try:
-            fecha = datetime.date.fromisoformat(fecha_str)
+            fecha = datetime.date.fromisoformat(data.get("fecha") or hoy.strftime("%Y-%m-%d"))
         except (ValueError, TypeError):
             fecha = hoy
-
-        tarjeta_exp = tarjeta_raw if tarjeta_raw in tarjetas_validas else None
-        tarjeta = calcular_tarjeta(fecha, tarjeta_exp)
+        tarjeta_raw = data.get("tarjeta")
+        tarjeta = calcular_tarjeta(fecha, tarjeta_raw if tarjeta_raw in TARJETAS_VALIDAS else None)
         mes = calcular_mes(fecha, tarjeta)
         sub, pre, seguro = inferir_categoria(concepto)
-
-        return {
-            "concepto": concepto.title(),
-            "monto": float(monto),
-            "fecha": fecha.strftime("%Y-%m-%d"),
-            "tarjeta": tarjeta,
-            "mes": mes,
-            "subcategoria": sub,
-            "presupuesto": pre,
-            "seguro": seguro,
-        }
+        return ("gasto", {
+            "concepto": concepto.title(), "monto": float(monto),
+            "fecha": fecha.strftime("%Y-%m-%d"), "tarjeta": tarjeta, "mes": mes,
+            "subcategoria": sub, "presupuesto": pre, "seguro": seguro,
+        })
     except Exception as e:
-        logger.warning(f"Groq parseo fallido: {e} — texto: {texto[:80]}")
-        return None
+        logger.warning(f"Groq clasificación fallida: {e} — texto: {texto[:80]}")
+        return (None, None)
 
 def _parece_gasto_estricto(texto: str) -> bool:
     """
@@ -1115,14 +1126,9 @@ Reglas:
 - Si la pregunta NO es sobre finanzas/gastos, devuelve {{"error":"no_finanzas"}}."""
 
     raw = await asyncio.to_thread(groq_completar, prompt_plan, 150)
-    if not raw:
-        return False
-    try:
-        raw = re.sub(r'^```(?:json)?\s*', '', raw)
-        raw = re.sub(r'\s*```$', '', raw)
-        plan = json.loads(raw)
-    except Exception as e:
-        logger.warning(f"Plan de consulta inválido: {e} — raw: {raw[:120]}")
+    plan = _extraer_json(raw)
+    if not plan:
+        logger.warning(f"Plan de consulta inválido — raw: {(raw or '')[:120]}")
         return False
     if plan.get("error") == "no_finanzas":
         return False
@@ -1234,8 +1240,8 @@ def actualizar_notion(page_id,sub=None,pre=None):
 def fmt(f):
     return datetime.datetime.strptime(f,"%Y-%m-%d").strftime("%d %b %Y").lower()
 
-def msg_gasto(g, nombre=None, notion_id=None):
-    enc = f"🔔 Nuevo gasto de {nombre}" if nombre else "✅ Gasto guardado"
+def msg_gasto(g, nombre=None, notion_id=None, header=None):
+    enc = header or (f"🔔 Nuevo gasto de {nombre}" if nombre else "✅ Gasto guardado")
     msg = (
         f"{enc}\n\n"
         f"📌 {_esc_md(g['concepto'])}\n"
@@ -1278,6 +1284,75 @@ async def registrar_y_notificar(update, context, gasto):
             reply_markup=kb, parse_mode="Markdown"
         )
 
+# ── EDICIÓN CONTEXTUAL ("cámbialo a 400", "ponlo en restaurantes") ─────────────
+async def aplicar_edicion_contextual(update, context, campos: dict, base: dict):
+    uid = update.effective_user.id
+    nid = base.get("notion_id")
+    if not nid:
+        await update.message.reply_text("🤔 No tengo un gasto reciente para editar. Usa /corregir.")
+        return
+    g = dict(base)
+    props, recompute_mes = {}, False
+
+    if campos.get("monto") is not None:
+        try:
+            g["monto"] = float(campos["monto"]); props["Monto"] = {"number": g["monto"]}
+        except (ValueError, TypeError):
+            pass
+    if campos.get("concepto"):
+        g["concepto"] = str(campos["concepto"]).title()
+        props["Concepto"] = {"title": [{"text": {"content": g["concepto"]}}]}
+    if campos.get("tarjeta") in TARJETAS_VALIDAS:
+        g["tarjeta"] = campos["tarjeta"]
+        props["Estado de Cuenta"] = {"rich_text": [{"text": {"content": g["tarjeta"]}}]}
+        props["Pago"] = {"select": {"name": g["tarjeta"]}}
+        recompute_mes = True
+    if campos.get("fecha"):
+        try:
+            f = datetime.date.fromisoformat(campos["fecha"])
+            g["fecha"] = f.strftime("%Y-%m-%d"); props["Fecha"] = {"date": {"start": g["fecha"]}}
+            recompute_mes = True
+        except (ValueError, TypeError):
+            pass
+    if recompute_mes:
+        f = datetime.date.fromisoformat(g["fecha"])
+        g["mes"] = calcular_mes(f, g["tarjeta"])
+        mid = buscar_mes_id(g["mes"])
+        if mid:
+            props["Mes"] = {"relation": [{"id": mid}]}
+    cat_cambio = False
+    if campos.get("presupuesto") in PR:
+        g["presupuesto"] = campos["presupuesto"]
+        props["Presupuesto"] = {"relation": [{"id": PR[g["presupuesto"]]}]}; cat_cambio = True
+    if campos.get("subcategoria") in SC:
+        g["subcategoria"] = campos["subcategoria"]
+        props["Subcategoria"] = {"relation": [{"id": SC[g["subcategoria"]]}]}; cat_cambio = True
+
+    if not props:
+        await update.message.reply_text("🤔 No entendí qué cambiar del último gasto.")
+        return
+
+    r = notion_request("PATCH", f"{NOTION_API_BASE}/pages/{nid}",
+                       headers=nh(), json={"properties": props}, timeout=NOTION_T_DEFAULT)
+    if not (r and r.status_code == 200):
+        await update.message.reply_text("❌ No pude actualizar el gasto en Notion.")
+        return
+
+    g["seguro"] = True
+    guardar_contexto(uid, g)
+    if cat_cambio:
+        guardar_aprendizaje(g["concepto"].lower(), g["subcategoria"], g["presupuesto"])
+    await update.message.reply_text(
+        msg_gasto(g, notion_id=nid, header="✏️ Gasto actualizado"),
+        reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+    notif = USUARIOS_NOTIFICAR.get(uid)
+    nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
+    if notif:
+        await context.bot.send_message(
+            chat_id=notif,
+            text=msg_gasto(g, notion_id=nid, header=f"✏️ {nombre} editó un gasto"),
+            parse_mode="Markdown")
+
 # ── REGISTRAR VIA SHORTCUT (iOS) ─────────────────────────────────────────────
 async def registrar_via_shortcut(texto: str, user_id: int):
     import random
@@ -1285,9 +1360,9 @@ async def registrar_via_shortcut(texto: str, user_id: int):
     if not app:
         return False, "Bot no disponible"
     try:
-        clasif = parsear_mensaje_groq(texto) if (GROQ_API_KEY and not _parece_gasto_estricto(texto)) else None
+        tipo, payload = clasificar_mensaje_groq(texto) if (GROQ_API_KEY and not _parece_gasto_estricto(texto)) else (None, None)
         # Vía Shortcut/Siri el intent es registrar; si Groq no devolvió un gasto, usar regex
-        gasto = clasif if isinstance(clasif, dict) else parsear_mensaje(texto)
+        gasto = payload if tipo == "gasto" else parsear_mensaje(texto)
     except ValueError as e:
         await app.bot.send_message(chat_id=user_id, text=f"❓ {e}\n\nEjemplo: Oxxo 45")
         return False, str(e)
@@ -1408,17 +1483,21 @@ async def handle_gasto(update,context):
     uid = update.effective_user.id
 
     # 1) Clasificar con Groq cuando el mensaje NO tiene formato estricto.
-    #    Distingue gasto vs consulta → evita registrar gastos al preguntar.
+    #    Distingue gasto / consulta / edición → evita registrar gastos al preguntar.
     gasto_groq = None
     if GROQ_API_KEY and not _parece_gasto_estricto(texto):
-        clasif = parsear_mensaje_groq(texto)
-        if clasif == "consulta":
+        ultimo = obtener_contexto(uid)
+        tipo, payload = clasificar_mensaje_groq(texto, ultimo)
+        if tipo == "consulta":
             if await responder_consulta_groq(texto, uid, update, context):
                 return ConversationHandler.END
             await update.message.reply_text("🤔 No pude consultar eso ahorita. Intenta reformularlo.")
             return ConversationHandler.END
-        if isinstance(clasif, dict):
-            gasto_groq = clasif
+        if tipo == "edicion" and ultimo:
+            await aplicar_edicion_contextual(update, context, payload, ultimo)
+            return ConversationHandler.END
+        if tipo == "gasto":
+            gasto_groq = payload
 
     # 2) Múltiples gastos separados por coma (solo si Groq no lo tomó como gasto único)
     partes = [p.strip() for p in texto.split(",") if p.strip()]
@@ -1954,6 +2033,82 @@ async def cmd_top(update, context):
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
+# ── REPORTES PROACTIVOS (semanal / mensual) ──────────────────────────────────
+def _datos_reporte(tipo: str = "semanal") -> dict:
+    """Agrega gastos del periodo y del periodo anterior por rango de Fecha (sync)."""
+    hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+    if tipo == "mensual":
+        ini = hoy.replace(day=1)
+        fin_prev = ini - datetime.timedelta(days=1)
+        ini_prev = fin_prev.replace(day=1)
+        etiqueta = "este mes"
+    else:
+        tipo = "semanal"
+        ini, fin_prev = hoy - datetime.timedelta(days=6), hoy - datetime.timedelta(days=7)
+        ini_prev = ini - datetime.timedelta(days=7)
+        etiqueta = "esta semana"
+
+    def agg(d1, d2):
+        gastos = query_notion_db(NOTION_DATABASE_ID, {"and": [
+            {"property": "Fecha", "date": {"on_or_after": d1.isoformat()}},
+            {"property": "Fecha", "date": {"on_or_before": d2.isoformat()}}]})
+        total, cats = 0.0, {}
+        for g in gastos:
+            props = g.get("properties", {})
+            m = props.get("Monto", {}).get("number", 0) or 0
+            total += m
+            pr = _presupuesto_de_props(props)
+            if pr:
+                cats[pr] = cats.get(pr, 0) + m
+        return total, len(gastos), cats
+
+    total, n, cats = agg(ini, hoy)
+    total_prev, _, _ = agg(ini_prev, fin_prev)
+    return {"tipo": tipo, "etiqueta": etiqueta, "total": total, "conteo": n,
+            "por_categoria": cats, "total_prev": total_prev}
+
+async def enviar_reporte(tipo: str = "semanal", solo_a: int = None):
+    """Genera el reporte en lenguaje natural y lo envía a ambos usuarios (o a uno)."""
+    app = get_app()
+    if not app:
+        return
+    d = await asyncio.to_thread(_datos_reporte, tipo)
+    cats = sorted(d["por_categoria"].items(), key=lambda x: x[1], reverse=True)
+    resumen = ", ".join(f"{k}=${v:,.0f}" for k, v in cats[:6])
+
+    if d["conteo"] == 0:
+        texto = f"📊 Reporte de {d['etiqueta']}: no hay gastos registrados en el periodo."
+    else:
+        diff = d["total"] - d["total_prev"]
+        texto = None
+        if GROQ_API_KEY:
+            prompt = f"""Escribe un reporte de gastos {d['etiqueta']} para Jordi y Nani, en español mexicano, cálido y breve (3-4 oraciones, 1-2 emojis).
+Datos reales (no inventes nada):
+- Total {d['etiqueta']}: ${d['total']:,.0f} en {d['conteo']} gastos
+- Periodo anterior: ${d['total_prev']:,.0f} (diferencia ${diff:+,.0f})
+- Por categoría: {resumen}
+Menciona el total, cómo va contra el periodo anterior, y en qué categoría se fue más. Cierra con un comentario útil o de ánimo."""
+            texto = await asyncio.to_thread(groq_completar, prompt, 220)
+        if not texto:
+            flecha = "🔺" if diff > 0 else ("🔻" if diff < 0 else "➡️")
+            texto = (f"📊 *Reporte {d['etiqueta']}*\n\n"
+                     f"💰 Total: ${d['total']:,.0f}  ({d['conteo']} gastos)\n"
+                     f"{flecha} vs anterior: ${d['total_prev']:,.0f}\n\n{resumen}")
+
+    destinos = [solo_a] if solo_a else list(USUARIOS_AUTORIZADOS)
+    for uid in destinos:
+        try:
+            await app.bot.send_message(chat_id=uid, text=texto)
+        except Exception as e:
+            logger.warning(f"No pude enviar reporte a {uid}: {e}")
+
+async def cmd_reporte(update, context):
+    if update.effective_user.id not in USUARIOS_AUTORIZADOS:
+        return
+    tipo = "mensual" if (context.args and "mes" in context.args[0].lower()) else "semanal"
+    await update.message.reply_text(f"📊 Generando reporte {tipo}...")
+    await enviar_reporte(tipo, solo_a=update.effective_user.id)
+
 async def cmd_eliminar(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return ConversationHandler.END
@@ -2003,6 +2158,25 @@ def get_app():
 
 class WebhookHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        import asyncio
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(self.path)
+        if parsed.path == "/reporte":
+            qs = parse_qs(parsed.query)
+            secret = qs.get("secret", [""])[0]
+            tipo   = qs.get("tipo", ["semanal"])[0]
+            SC_SECRET = os.environ.get("SHORTCUT_SECRET", "")
+            if SC_SECRET and secret != SC_SECRET:
+                self.send_response(403); self.end_headers(); self.wfile.write(b'{"ok":false}'); return
+            app = get_app()
+            loop = getattr(getattr(app, "update_processor", None), "_loop", None)
+            if loop:
+                asyncio.run_coroutine_threadsafe(enviar_reporte(tipo), loop)
+                logger.info(f"/reporte disparado (tipo={tipo})")
+            resp = b'{"ok":true}'
+            self.send_response(200); self.send_header("Content-Type","application/json")
+            self.send_header("Content-Length", str(len(resp))); self.end_headers()
+            self.wfile.write(resp); return
         self.send_response(200); self.send_header("Content-Type","text/plain")
         self.send_header("Content-Length","2"); self.end_headers()
         self.wfile.write(b"OK"); self.wfile.flush()
@@ -2131,6 +2305,7 @@ def main():
     app.add_handler(CommandHandler("estadisticas", cmd_estadisticas))
     app.add_handler(CommandHandler("buscar", cmd_buscar))
     app.add_handler(CommandHandler("top", cmd_top))
+    app.add_handler(CommandHandler("reporte", cmd_reporte))
     app.add_handler(conv_prueba)
     app.add_handler(conv_foto)
     app.add_handler(conv_corregir)

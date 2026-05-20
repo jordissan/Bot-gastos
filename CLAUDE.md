@@ -92,17 +92,22 @@ GROQ_API_KEY          (Llama 3.3 70B texto + Llama 4 Scout visión; .env local e
 - Servicios usa 🧾 (full-width) en vez de ⚡ para alineación perfecta en code blocks
 
 ### Integración Groq (LLM) — capa adicional con fallback total
-- **Clasificación + parseo** (`parsear_mensaje_groq`, Llama 3.3 70B): para mensajes sin formato estricto,
-  Groq decide la intención y devuelve un **gasto** (dict), `"consulta"` (pregunta sobre finanzas) u **None** (otro/falla).
-  Esto evita registrar gastos por accidente al preguntar. El handler `handle_gasto` clasifica ANTES de
-  registrar; si es consulta, llama a `responder_consulta_groq`. (Reemplazó la heurística frágil `_parece_gasto`.)
+- **Clasificación + parseo** (`clasificar_mensaje_groq`, Llama 3.3 70B): para mensajes sin formato estricto,
+  Groq decide la intención y devuelve `(tipo, payload)` con tipo ∈ {gasto, consulta, edicion, otro, None}.
+  Evita registrar gastos por accidente al preguntar. `handle_gasto` clasifica ANTES de registrar.
+  (Reemplazó la heurística frágil `_parece_gasto`, ya eliminada.)
 - **Consultas en lenguaje natural** (`responder_consulta_groq`): flujo de 2 pasos —
   (1) Groq genera un *plan de consulta* JSON `{meses, categoria, comercio}`,
   (2) `ejecutar_consulta_finanzas()` trae los datos de Notion de forma determinística (única función que toca datos),
   (3) Groq redacta la respuesta con esos datos. Soporta otros meses, comercios y comparaciones
-  ("¿cuánto en Costco en marzo?", "¿gasté más en restaurantes que el mes pasado?"). Toda la inteligencia
-  vive en 2 prompts + 1 función acotada. La heurística `_parece_gasto` decide si un mensaje es consulta
-  (requiere palabra interrogativa o "?"); si Groq falla cae al flujo normal.
+  ("¿cuánto en Costco en marzo?", "¿gasté más en restaurantes que el mes pasado?").
+- **Edición contextual** (`aplicar_edicion_contextual`): tras registrar, frases como "cámbialo a 400",
+  "ponlo en restaurantes", "fue con BBVA05" editan el último gasto (de `_ultimo_gasto_usuario`, en RAM).
+  Recalcula mes si cambia tarjeta/fecha; aprende si cambia categoría; notifica al otro usuario.
+- **Reportes proactivos** (`enviar_reporte`, `_datos_reporte`): reporte semanal/mensual en lenguaje natural
+  (total, comparación vs periodo anterior, top categorías). Disparable por `/reporte [mensual]` (a quien lo pide)
+  o por `GET /reporte?secret=<SHORTCUT_SECRET>&tipo=semanal|mensual` (a ambos) desde una rutina programada externa.
+- **`_extraer_json`**: extrae JSON de respuestas del LLM tolerando fences y prosa alrededor (usado por los 3 parsers).
 - **Memoria de contexto** (`_ultimo_gasto_usuario`): guarda último gasto por usuario (en RAM).
 - **Insights post-guardado** (`generar_insight_groq`): si una categoría supera $3,000, comenta. Corre en background vía `asyncio.create_task`.
 - **OCR de tickets** (`analizar_ticket_groq`, Llama 4 Scout): la foto va directo al LLM multimodal. Fallback a Google Vision (`ocr_ticket`+`parsear_ticket`) si Groq falla.
@@ -199,6 +204,8 @@ ELIMINAR_CONFIRM = 50
 - `GET /` — health check (responde "OK", para UptimeRobot)
 - `POST /webhook` — recibe updates de Telegram
 - `POST /log` — recibe gastos del iOS Shortcut/Siri (JSON: `{text, user_id, secret}`)
+- `GET /reporte?secret=<SHORTCUT_SECRET>&tipo=semanal|mensual` — dispara el reporte proactivo a ambos
+  usuarios (fire-and-forget). Para programar: una rutina externa (cron/Claude Code schedule) que haga GET semanal.
 
 ---
 
@@ -235,6 +242,7 @@ ELIMINAR_CONFIRM = 50
 start        - 👋 Ver instrucciones
 resumen      - 📊 Resumen del mes activo
 estadisticas - 📈 Comparar este mes vs el anterior
+reporte      - 📰 Reporte semanal (o /reporte mensual)
 top          - 🏆 Top 5 gastos del mes
 buscar       - 🔍 Buscar gastos por concepto
 corregir     - ✏️ Corregir un gasto reciente
