@@ -18,6 +18,8 @@ WEBHOOK_SECRET        = os.environ.get("WEBHOOK_SECRET", "")
 RENDER_EXTERNAL_URL   = os.environ.get("RENDER_EXTERNAL_URL", "")
 NOTION_BALANCE_ID     = os.environ.get("NOTION_BALANCE_ID", "")
 GROQ_API_KEY          = os.environ.get("GROQ_API_KEY", "")
+RESEND_API_KEY        = os.environ.get("RESEND_API_KEY", "")
+REPORTE_EMAIL         = os.environ.get("REPORTE_EMAIL", "jor.jorwww@gmail.com")
 
 # ── GROQ LLM ──────────────────────────────────────────────────────────────────
 _groq_client = None
@@ -2034,19 +2036,48 @@ async def cmd_top(update, context):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 # ── REPORTES PROACTIVOS (semanal / mensual) ──────────────────────────────────
+def _mes_anterior(codigo: str) -> str:
+    """'JUN26' → 'MAY26'. Retrocede un ciclo."""
+    nombre, aa = codigo[:3], codigo[3:]
+    num = next((k for k, v in MESES_ESP.items() if v == nombre), 1)
+    anio = 2000 + int(aa)
+    if num == 1:
+        num, anio = 12, anio - 1
+    else:
+        num -= 1
+    return f"{MESES_ESP[num]}{str(anio)[-2:]}"
+
+def _agg_ciclo(mes: str) -> dict:
+    """Agrega los gastos de un ciclo (relación Mes) de Notion."""
+    mid = buscar_mes_id(mes)
+    if not mid:
+        return {"total": 0.0, "conteo": 0, "por_categoria": {}, "items": []}
+    gastos = query_notion_db(NOTION_DATABASE_ID, {"property": "Mes", "relation": {"contains": mid}})
+    total, cats, items = 0.0, {}, []
+    for g in gastos:
+        props = g.get("properties", {})
+        m = props.get("Monto", {}).get("number", 0) or 0
+        total += m
+        pr = _presupuesto_de_props(props)
+        if pr:
+            cats[pr] = cats.get(pr, 0) + m
+        titulo = props.get("Concepto", {}).get("title", [])
+        concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+        fecha = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
+        items.append((concepto, m, fecha))
+    return {"total": total, "conteo": len(items), "por_categoria": cats, "items": items}
+
 def _datos_reporte(tipo: str = "semanal") -> dict:
-    """Agrega gastos del periodo y del periodo anterior por rango de Fecha (sync)."""
+    """Datos para el reporte simple (Telegram). Semanal=últimos 7 días; Mensual=ciclo recién cerrado."""
     hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
     if tipo == "mensual":
-        ini = hoy.replace(day=1)
-        fin_prev = ini - datetime.timedelta(days=1)
-        ini_prev = fin_prev.replace(day=1)
-        etiqueta = "este mes"
-    else:
-        tipo = "semanal"
-        ini, fin_prev = hoy - datetime.timedelta(days=6), hoy - datetime.timedelta(days=7)
-        ini_prev = ini - datetime.timedelta(days=7)
-        etiqueta = "esta semana"
+        cerrado = _mes_anterior(mes_activo_str())
+        a, b = _agg_ciclo(cerrado), _agg_ciclo(_mes_anterior(cerrado))
+        return {"tipo": "mensual", "periodo": f"el ciclo {cerrado}", "titulo": f"Reporte {cerrado}",
+                "total": a["total"], "conteo": a["conteo"],
+                "por_categoria": a["por_categoria"], "total_prev": b["total"]}
+    ini, fin_prev = hoy - datetime.timedelta(days=6), hoy - datetime.timedelta(days=7)
+    ini_prev = ini - datetime.timedelta(days=7)
 
     def agg(d1, d2):
         gastos = query_notion_db(NOTION_DATABASE_ID, {"and": [
@@ -2064,11 +2095,11 @@ def _datos_reporte(tipo: str = "semanal") -> dict:
 
     total, n, cats = agg(ini, hoy)
     total_prev, _, _ = agg(ini_prev, fin_prev)
-    return {"tipo": tipo, "etiqueta": etiqueta, "total": total, "conteo": n,
-            "por_categoria": cats, "total_prev": total_prev}
+    return {"tipo": "semanal", "periodo": "esta semana", "titulo": "Reporte semanal",
+            "total": total, "conteo": n, "por_categoria": cats, "total_prev": total_prev}
 
 async def enviar_reporte(tipo: str = "semanal", solo_a: int = None):
-    """Genera el reporte en lenguaje natural y lo envía a ambos usuarios (o a uno)."""
+    """Reporte SIMPLE a Telegram (a ambos o a uno). Lenguaje natural con fallback."""
     app = get_app()
     if not app:
         return
@@ -2077,21 +2108,21 @@ async def enviar_reporte(tipo: str = "semanal", solo_a: int = None):
     resumen = ", ".join(f"{k}=${v:,.0f}" for k, v in cats[:6])
 
     if d["conteo"] == 0:
-        texto = f"📊 Reporte de {d['etiqueta']}: no hay gastos registrados en el periodo."
+        texto = f"📊 {d['titulo']}: no hay gastos registrados en el periodo."
     else:
         diff = d["total"] - d["total_prev"]
         texto = None
         if GROQ_API_KEY:
-            prompt = f"""Escribe un reporte de gastos {d['etiqueta']} para Jordi y Nani, en español mexicano, cálido y breve (3-4 oraciones, 1-2 emojis).
+            prompt = f"""Escribe un reporte de gastos de {d['periodo']} para Jordi y Nani, en español mexicano, cálido y breve (3-4 oraciones, 1-2 emojis).
 Datos reales (no inventes nada):
-- Total {d['etiqueta']}: ${d['total']:,.0f} en {d['conteo']} gastos
+- Total: ${d['total']:,.0f} en {d['conteo']} gastos
 - Periodo anterior: ${d['total_prev']:,.0f} (diferencia ${diff:+,.0f})
 - Por categoría: {resumen}
 Menciona el total, cómo va contra el periodo anterior, y en qué categoría se fue más. Cierra con un comentario útil o de ánimo."""
             texto = await asyncio.to_thread(groq_completar, prompt, 220)
         if not texto:
             flecha = "🔺" if diff > 0 else ("🔻" if diff < 0 else "➡️")
-            texto = (f"📊 *Reporte {d['etiqueta']}*\n\n"
+            texto = (f"📊 *{d['titulo']}*\n\n"
                      f"💰 Total: ${d['total']:,.0f}  ({d['conteo']} gastos)\n"
                      f"{flecha} vs anterior: ${d['total_prev']:,.0f}\n\n{resumen}")
 
@@ -2102,12 +2133,139 @@ Menciona el total, cómo va contra el periodo anterior, y en qué categoría se 
         except Exception as e:
             logger.warning(f"No pude enviar reporte a {uid}: {e}")
 
+# ── REPORTE MENSUAL DETALLADO POR CORREO (Resend + HTML) ─────────────────────
+def enviar_email_resend(asunto: str, html: str) -> bool:
+    if not RESEND_API_KEY:
+        logger.warning("RESEND_API_KEY no configurado — email omitido")
+        return False
+    try:
+        r = requests.post("https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+            json={"from": "Bot Gastos <onboarding@resend.dev>", "to": [REPORTE_EMAIL],
+                  "subject": asunto, "html": html}, timeout=15)
+        if r.status_code in (200, 201):
+            return True
+        logger.error(f"Resend error {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        logger.error(f"Error enviando email: {e}")
+    return False
+
+def _datos_mensual_detallado() -> dict:
+    cerrado = _mes_anterior(mes_activo_str())
+    previo = _mes_anterior(cerrado)
+    a, b = _agg_ciclo(cerrado), _agg_ciclo(previo)
+    cats = []
+    for k in sorted(set(a["por_categoria"]) | set(b["por_categoria"]),
+                    key=lambda x: a["por_categoria"].get(x, 0), reverse=True):
+        v = a["por_categoria"].get(k, 0)
+        cats.append((k, v, v - b["por_categoria"].get(k, 0)))
+    top = sorted(a["items"], key=lambda x: x[1], reverse=True)[:6]
+    msi = []
+    for c, m, _f in a["items"]:
+        mm = re.search(r'(\d{1,2})\s*/\s*(\d{1,2})', c)
+        if mm:
+            msi.append((c, m, int(mm.group(1)), int(mm.group(2))))
+    alertas = [(k, dd) for k, v, dd in cats
+               if dd > 800 and b["por_categoria"].get(k, 0) > 0 and v > b["por_categoria"].get(k, 0) * 1.4]
+    return {"cerrado": cerrado, "previo": previo, "total": a["total"], "total_prev": b["total"],
+            "conteo": a["conteo"], "cats": cats, "top": top, "msi": msi, "alertas": alertas,
+            "promedio": a["total"] / 30 if a["total"] else 0}
+
+def _html_reporte_mensual(d: dict, recom_html: str = "") -> str:
+    diff = d["total"] - d["total_prev"]
+    pct = (diff / d["total_prev"] * 100) if d["total_prev"] else 0
+    col = "#dc2626" if diff > 0 else "#16a34a"
+    signo = "▲" if diff > 0 else ("▼" if diff < 0 else "=")
+    maxcat = max((v for _, v, _ in d["cats"]), default=1) or 1
+    filas = ""
+    for k, v, dd in d["cats"][:12]:
+        pctv = (v / d["total"] * 100) if d["total"] else 0
+        ancho = max(2, int(v / maxcat * 100))
+        dcol = "#dc2626" if dd > 0 else ("#16a34a" if dd < 0 else "#9ca3af")
+        filas += (
+            f'<tr>'
+            f'<td style="padding:8px 6px;font:14px -apple-system,Arial,sans-serif;color:#111;">{k}'
+            f'<div style="margin-top:4px;height:6px;background:#eef2f5;border-radius:4px;">'
+            f'<div style="height:6px;width:{ancho}%;background:#0f766e;border-radius:4px;"></div></div></td>'
+            f'<td style="padding:8px 6px;font:600 14px -apple-system,Arial,sans-serif;color:#111;text-align:right;white-space:nowrap;">${v:,.0f}</td>'
+            f'<td style="padding:8px 6px;font:13px -apple-system,Arial,sans-serif;color:#6b7280;text-align:right;">{pctv:.0f}%</td>'
+            f'<td style="padding:8px 6px;font:13px -apple-system,Arial,sans-serif;color:{dcol};text-align:right;white-space:nowrap;">{dd:+,.0f}</td>'
+            f'</tr>')
+    tops = "".join(
+        f'<li style="margin:6px 0;font:14px -apple-system,Arial,sans-serif;color:#111;">{c} — '
+        f'<b>${m:,.0f}</b> <span style="color:#9ca3af;">· {_fecha_corta(f)}</span></li>'
+        for c, m, f in d["top"])
+    msi_html = ""
+    if d["msi"]:
+        items = "".join(
+            f'<li style="margin:6px 0;font:14px -apple-system,Arial,sans-serif;color:#111;">{c} — '
+            f'${m:,.0f} <span style="color:#9ca3af;">(pago {n} de {t})</span></li>'
+            for c, m, n, t in d["msi"])
+        msi_html = (f'<h3 style="font:600 16px -apple-system,Arial,sans-serif;color:#111;margin:26px 0 8px;">'
+                    f'💳 Meses sin intereses activos</h3>'
+                    f'<ul style="margin:0;padding-left:18px;">{items}</ul>')
+    recom_block = ""
+    if recom_html.strip():
+        recom_block = (f'<div style="margin-top:26px;padding:16px 18px;background:#f0fdf4;border-radius:10px;'
+                       f'border:1px solid #bbf7d0;">{recom_html}</div>')
+    return (
+        f'<div style="margin:0;padding:24px 12px;background:#f3f4f6;">'
+        f'<div style="max-width:600px;margin:0 auto;background:#fff;border-radius:16px;overflow:hidden;'
+        f'box-shadow:0 1px 4px rgba(0,0,0,.08);">'
+        f'<div style="background:#0f766e;padding:28px 24px;">'
+        f'<div style="font:13px -apple-system,Arial,sans-serif;color:#a7f3d0;letter-spacing:1px;">REPORTE MENSUAL · {d["cerrado"]}</div>'
+        f'<div style="font:700 34px -apple-system,Arial,sans-serif;color:#fff;margin-top:6px;">${d["total"]:,.0f}</div>'
+        f'<div style="font:14px -apple-system,Arial,sans-serif;color:#d1fae5;margin-top:4px;">'
+        f'{signo} ${abs(diff):,.0f} ({pct:+.0f}%) vs ciclo anterior · {d["conteo"]} gastos · ~${d["promedio"]:,.0f}/día</div>'
+        f'</div>'
+        f'<div style="padding:24px;">'
+        f'<h3 style="font:600 16px -apple-system,Arial,sans-serif;color:#111;margin:0 0 8px;">Gasto por categoría</h3>'
+        f'<table style="width:100%;border-collapse:collapse;">{filas}</table>'
+        f'<h3 style="font:600 16px -apple-system,Arial,sans-serif;color:#111;margin:26px 0 8px;">🏆 Gastos más grandes</h3>'
+        f'<ul style="margin:0;padding-left:18px;">{tops}</ul>'
+        f'{msi_html}'
+        f'{recom_block}'
+        f'<p style="margin:26px 0 0;font:12px -apple-system,Arial,sans-serif;color:#9ca3af;text-align:center;">'
+        f'Generado automáticamente por tu Bot de Gastos · ciclo {d["cerrado"]} vs {d["previo"]}</p>'
+        f'</div></div></div>')
+
+async def enviar_reporte_email_mensual() -> bool:
+    if not RESEND_API_KEY:
+        return False
+    d = await asyncio.to_thread(_datos_mensual_detallado)
+    if d["conteo"] == 0:
+        return False
+    recom = ""
+    if GROQ_API_KEY:
+        resumen_cats = ", ".join(f"{k}=${v:,.0f}(Δ{dd:+,.0f})" for k, v, dd in d["cats"][:8])
+        msi_txt = ", ".join(c for c, _, _, _ in d["msi"]) or "ninguno"
+        prompt = f"""Eres el asesor financiero personal de Jordi y Nani (México). Datos reales del ciclo {d['cerrado']}:
+- Total: ${d['total']:,.0f} (ciclo anterior ${d['total_prev']:,.0f})
+- Categorías con cambio vs ciclo anterior: {resumen_cats}
+- Compras a meses sin intereses activas: {msi_txt}
+
+Escribe en español mexicano, conciso, al grano y sin redundancias. Devuelve SOLO fragmento HTML (sin <html> ni <body>) con exactamente dos secciones:
+<h3 style="font:600 16px -apple-system,Arial,sans-serif;color:#065f46;margin:0 0 8px;">💡 Recomendaciones</h3>
+<ul>...2 a 3 acciones concretas para el próximo ciclo...</ul>
+<h3 style="font:600 16px -apple-system,Arial,sans-serif;color:#065f46;margin:16px 0 8px;">📌 A tener en cuenta</h3>
+<ul>...cargos/MSI o categorías a vigilar...</ul>
+Interpreta las cifras, no las repitas tal cual. No inventes nada."""
+        recom = await asyncio.to_thread(groq_completar, prompt, 500) or ""
+        recom = re.sub(r'^```(?:html)?\s*', '', recom.strip())
+        recom = re.sub(r'\s*```$', '', recom.strip())
+    html = _html_reporte_mensual(d, recom)
+    return await asyncio.to_thread(enviar_email_resend, f"📊 Tu reporte de gastos — {d['cerrado']}", html)
+
 async def cmd_reporte(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return
     tipo = "mensual" if (context.args and "mes" in context.args[0].lower()) else "semanal"
     await update.message.reply_text(f"📊 Generando reporte {tipo}...")
     await enviar_reporte(tipo, solo_a=update.effective_user.id)
+    if tipo == "mensual":
+        ok = await enviar_reporte_email_mensual()
+        await update.message.reply_text("📧 Reporte detallado enviado a tu correo." if ok
+                                        else "⚠️ No pude enviar el correo (revisa RESEND_API_KEY).")
 
 async def cmd_eliminar(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
@@ -2172,6 +2330,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
             loop = getattr(getattr(app, "update_processor", None), "_loop", None)
             if loop:
                 asyncio.run_coroutine_threadsafe(enviar_reporte(tipo), loop)
+                if tipo == "mensual":
+                    asyncio.run_coroutine_threadsafe(enviar_reporte_email_mensual(), loop)
                 logger.info(f"/reporte disparado (tipo={tipo})")
             resp = b'{"ok":true}'
             self.send_response(200); self.send_header("Content-Type","application/json")

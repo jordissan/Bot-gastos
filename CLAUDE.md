@@ -30,6 +30,8 @@ WEBHOOK_SECRET        (opcional)
 RENDER_EXTERNAL_URL   = https://bot-gastos-socj.onrender.com
 SHORTCUT_SECRET       (para iOS Shortcut)
 GROQ_API_KEY          (Llama 3.3 70B texto + Llama 4 Scout visión; .env local en .gitignore)
+RESEND_API_KEY        (envío del reporte mensual por correo; .env local en .gitignore)
+REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com)
 ```
 
 ---
@@ -104,9 +106,15 @@ GROQ_API_KEY          (Llama 3.3 70B texto + Llama 4 Scout visión; .env local e
 - **Edición contextual** (`aplicar_edicion_contextual`): tras registrar, frases como "cámbialo a 400",
   "ponlo en restaurantes", "fue con BBVA05" editan el último gasto (de `_ultimo_gasto_usuario`, en RAM).
   Recalcula mes si cambia tarjeta/fecha; aprende si cambia categoría; notifica al otro usuario.
-- **Reportes proactivos** (`enviar_reporte`, `_datos_reporte`): reporte semanal/mensual en lenguaje natural
-  (total, comparación vs periodo anterior, top categorías). Disparable por `/reporte [mensual]` (a quien lo pide)
-  o por `GET /reporte?secret=<SHORTCUT_SECRET>&tipo=semanal|mensual` (a ambos) desde una rutina programada externa.
+- **Reportes proactivos** (`enviar_reporte`, `_datos_reporte`):
+  - **Telegram (simple):** semanal = últimos 7 días; mensual = ciclo recién cerrado (`_mes_anterior(mes_activo)`).
+    Lenguaje natural (Groq) con fallback a texto.
+  - **Correo (detallado, solo mensual):** `enviar_reporte_email_mensual` → HTML bonito vía Resend
+    (`_html_reporte_mensual`): total, barras por categoría con Δ, top gastos, MSI activos (regex `n/total`),
+    + sección de recomendaciones y "a tener en cuenta" generada por Groq. Datos en `_datos_mensual_detallado`.
+  - Disparo: `/reporte [mensual]` (Telegram a quien pide; mensual además manda el correo) o
+    `GET /reporte?secret=<SHORTCUT_SECRET>&tipo=semanal|mensual` (a ambos; mensual también el correo).
+  - **Calendario en producción:** semanal lunes 9am, mensual día 5 (ciclo ya cerrado) — vía rutina externa que pega el endpoint.
 - **`_extraer_json`**: extrae JSON de respuestas del LLM tolerando fences y prosa alrededor (usado por los 3 parsers).
 - **Memoria de contexto** (`_ultimo_gasto_usuario`): guarda último gasto por usuario (en RAM).
 - **Insights post-guardado** (`generar_insight_groq`): si una categoría supera $3,000, comenta. Corre en background vía `asyncio.create_task`.
