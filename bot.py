@@ -1,4 +1,4 @@
-import os, re, datetime, requests, threading, unicodedata, json, logging, time, base64, zoneinfo
+import os, re, datetime, requests, threading, unicodedata, json, logging, time, base64, zoneinfo, asyncio
 from difflib import SequenceMatcher
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
@@ -17,6 +17,76 @@ GOOGLE_VISION_API_KEY = os.environ.get("GOOGLE_VISION_API_KEY", "")
 WEBHOOK_SECRET        = os.environ.get("WEBHOOK_SECRET", "")
 RENDER_EXTERNAL_URL   = os.environ.get("RENDER_EXTERNAL_URL", "")
 NOTION_BALANCE_ID     = os.environ.get("NOTION_BALANCE_ID", "")
+GROQ_API_KEY          = os.environ.get("GROQ_API_KEY", "")
+
+# ── GROQ LLM ──────────────────────────────────────────────────────────────────
+_groq_client = None
+
+def get_groq():
+    global _groq_client
+    if _groq_client is None and GROQ_API_KEY:
+        try:
+            from groq import Groq
+            _groq_client = Groq(api_key=GROQ_API_KEY)
+            logger.info("Groq (Llama 3.3 70B) inicializado correctamente")
+        except Exception as e:
+            logger.error(f"Error inicializando Groq: {e}")
+    return _groq_client
+
+def groq_completar(prompt: str, max_tokens: int = 300):
+    """Llamada síncrona a Groq (texto). Retorna el texto generado o None si falla."""
+    client = get_groq()
+    if not client:
+        return None
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=max_tokens,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.warning(f"Groq texto error: {e}")
+        return None
+
+def groq_vision(image_bytes: bytes, prompt: str, max_tokens: int = 200):
+    """Llamada síncrona a Groq con imagen (Llama 4 Scout). Retorna texto o None si falla."""
+    client = get_groq()
+    if not client:
+        return None
+    try:
+        img_b64 = base64.b64encode(image_bytes).decode()
+        response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+            temperature=0.1,
+            max_tokens=max_tokens,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.warning(f"Groq vision error: {e}")
+        return None
+
+# ── CONTEXTO DE CONVERSACION ──────────────────────────────────────────────────
+# Guarda el último gasto guardado por usuario para ediciones contextuales
+_ultimo_gasto_usuario = {}
+
+def guardar_contexto(user_id: int, gasto: dict):
+    """Guarda el último gasto completo del usuario para uso contextual."""
+    _ultimo_gasto_usuario[user_id] = gasto.copy()
+
+def obtener_contexto(user_id: int):
+    return _ultimo_gasto_usuario.get(user_id)
 
 USUARIOS_AUTORIZADOS = {8663298433, 8093171397}
 USUARIOS_NOMBRES     = {8663298433: "Jordi", 8093171397: "Nani"}
@@ -517,6 +587,58 @@ def parsear_ticket(texto: str) -> dict:
 
     return {"concepto": concepto, "monto": monto, "fecha": fecha}
 
+def analizar_ticket_groq(image_bytes: bytes):
+    """
+    Analiza una foto de ticket con Llama 4 Scout y extrae concepto, monto y fecha.
+    Reemplaza el flujo ocr_ticket() + parsear_ticket().
+    Retorna dict con las mismas claves que parsear_ticket(), o None si falla.
+    """
+    if not GROQ_API_KEY:
+        return None
+
+    hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+
+    prompt = f"""Analiza este ticket o recibo de compra y extrae los datos principales. Hoy es {hoy.strftime('%d/%m/%Y')}.
+
+Responde SOLO con JSON válido, sin texto adicional, sin markdown:
+{{
+  "concepto": "nombre del comercio en Title Case (ej: Walmart, Oxxo, Starbucks)",
+  "monto": número con decimales (el TOTAL A PAGAR final, no subtotal ni total de artículos),
+  "fecha": "YYYY-MM-DD"
+}}
+
+Reglas:
+- El monto debe ser el total final que se pagó, incluyendo IVA.
+- Si hay varios totales, elige el mayor que sea claramente el total de la compra.
+- Si no puedes leer la fecha, usa {hoy.strftime('%Y-%m-%d')}.
+- Si no reconoces el comercio, describe brevemente qué tipo de negocio es."""
+
+    raw = groq_vision(image_bytes, prompt, max_tokens=150)
+    if not raw:
+        return None
+
+    try:
+        raw = re.sub(r'^```(?:json)?\s*', '', raw)
+        raw = re.sub(r'\s*```$', '', raw)
+        data = json.loads(raw)
+
+        concepto = data.get("concepto", "").strip()
+        monto = data.get("monto")
+        fecha_str = data.get("fecha", hoy.strftime("%Y-%m-%d"))
+
+        if not concepto or monto is None:
+            return None
+
+        try:
+            fecha = datetime.date.fromisoformat(fecha_str)
+        except (ValueError, TypeError):
+            fecha = hoy
+
+        return {"concepto": concepto.title(), "monto": float(monto), "fecha": fecha}
+    except Exception as e:
+        logger.warning(f"Groq ticket fallido: {e}")
+        return None
+
 # ── APRENDIZAJE ──────────────────────────────────────────────────────────────
 def _buscar_entrada_aprendizaje(concepto: str):
     r = notion_request("POST", f"{NOTION_API_BASE}/databases/{NOTION_APRENDIZAJE_ID}/query",
@@ -782,6 +904,208 @@ def parsear_mensaje(texto):
     sub,pre,seguro=inferir_categoria(concepto)
     return {"concepto":concepto.title(),"monto":monto,"fecha":fecha.strftime("%Y-%m-%d"),"tarjeta":tarjeta,"mes":mes,"subcategoria":sub,"presupuesto":pre,"seguro":seguro}
 
+# ── PARSEO CON GROQ (LLM) ─────────────────────────────────────────────────────
+def parsear_mensaje_groq(texto: str):
+    """
+    Intenta parsear un mensaje de gasto usando Groq/Llama 3.3 70B.
+    Retorna dict con las mismas claves que parsear_mensaje(), o None si falla.
+    El resultado pasa por la misma lógica de tarjeta/mes/categoría que el parser original.
+    """
+    if not GROQ_API_KEY:
+        return None
+
+    hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+    tarjetas_validas = ["BBVA05", "BBVA12", "HEYB25", "BMEX04", "EFVO"]
+
+    prompt = f"""Extrae los datos de este mensaje de gasto personal escrito en español mexicano informal. Hoy es {hoy.strftime('%d/%m/%Y')}.
+
+Mensaje: "{texto}"
+
+Responde SOLO con JSON válido, sin texto adicional, sin markdown:
+{{
+  "concepto": "nombre del comercio o descripción corta en Title Case",
+  "monto": número (solo dígitos sin signo $),
+  "fecha": "YYYY-MM-DD",
+  "tarjeta": "una de {tarjetas_validas} o null"
+}}
+
+Reglas:
+- Si el mensaje NO es un gasto (es pregunta o comando), responde: {{"error": "no_es_gasto"}}
+- Concepto conciso: "Starbucks", "Super", "Comida", "Gasolina", etc.
+- Si dice "ayer" resta 1 día a la fecha de hoy. Sin fecha mencionada = hoy.
+- Montos aproximados ("como 350", "unos 400") → usa ese número.
+- Dos montos → usa el mayor (el total)."""
+
+    raw = groq_completar(prompt, max_tokens=120)
+    if not raw:
+        return None
+
+    try:
+        raw = re.sub(r'^```(?:json)?\s*', '', raw)
+        raw = re.sub(r'\s*```$', '', raw)
+        data = json.loads(raw)
+
+        if data.get("error") == "no_es_gasto":
+            return None
+
+        concepto = data.get("concepto", "").strip()
+        monto = data.get("monto")
+        fecha_str = data.get("fecha", hoy.strftime("%Y-%m-%d"))
+        tarjeta_raw = data.get("tarjeta")
+
+        if not concepto or monto is None:
+            return None
+
+        try:
+            fecha = datetime.date.fromisoformat(fecha_str)
+        except (ValueError, TypeError):
+            fecha = hoy
+
+        tarjeta_exp = tarjeta_raw if tarjeta_raw in tarjetas_validas else None
+        tarjeta = calcular_tarjeta(fecha, tarjeta_exp)
+        mes = calcular_mes(fecha, tarjeta)
+        sub, pre, seguro = inferir_categoria(concepto)
+
+        return {
+            "concepto": concepto.title(),
+            "monto": float(monto),
+            "fecha": fecha.strftime("%Y-%m-%d"),
+            "tarjeta": tarjeta,
+            "mes": mes,
+            "subcategoria": sub,
+            "presupuesto": pre,
+            "seguro": seguro,
+        }
+    except Exception as e:
+        logger.warning(f"Groq parseo fallido: {e} — texto: {texto[:80]}")
+        return None
+
+def _parece_gasto_estricto(texto: str) -> bool:
+    """
+    Retorna True si el texto ya tiene formato estricto (Concepto Monto [opcional])
+    y NO necesita LLM. Ahorra llamadas a la API.
+    Ejemplos estrictos: "Oxxo 45", "Starbucks 150 BBVA05", "Super 350 ayer"
+    """
+    tokens = texto.strip().split()
+    if len(tokens) < 2:
+        return False
+    for t in tokens[-3:]:
+        try:
+            float(t.replace("$", "").replace(",", ""))
+            return True
+        except ValueError:
+            pass
+    return False
+
+def _parece_gasto(texto: str) -> bool:
+    """Heurística: ¿el mensaje parece un gasto o una pregunta/consulta?"""
+    texto_n = normalizar(texto)
+    indicadores_consulta = [
+        "cuanto", "cuánto", "cuantos", "cual", "cuál",
+        "cuando", "cuándo", "qué tal", "como voy",
+        "resumen", "estadistica", "compara", "?",
+    ]
+    return not any(ind in texto_n for ind in indicadores_consulta)
+
+async def responder_consulta_groq(texto: str, user_id: int, update, context) -> bool:
+    """
+    Si el mensaje parece una consulta en lenguaje natural, la responde usando Groq
+    con datos reales de Notion. Retorna True si respondió, False si no era consulta.
+    """
+    if not GROQ_API_KEY:
+        return False
+
+    mes = mes_activo_str()
+    mid = buscar_mes_id(mes)
+    resumen_ctx = ""
+    if mid:
+        try:
+            gastos = await asyncio.to_thread(
+                query_notion_db, NOTION_DATABASE_ID,
+                {"property": "Mes", "relation": {"contains": mid}}
+            )
+            totales = {}
+            for g in gastos:
+                props = g.get("properties", {})
+                monto = props.get("Monto", {}).get("number", 0) or 0
+                rel_pre = props.get("Presupuesto", {}).get("relation", [])
+                if rel_pre:
+                    pr_id = rel_pre[0].get("id", "").replace("-", "")
+                    pr_nombre = next((k for k, v in PR.items() if v == pr_id), None)
+                    if pr_nombre:
+                        totales[pr_nombre] = totales.get(pr_nombre, 0) + monto
+            if totales:
+                lineas = [f"- {k}: ${v:,.0f}" for k, v in sorted(totales.items(), key=lambda x: x[1], reverse=True)]
+                resumen_ctx = f"Gastos de {mes}:\n" + "\n".join(lineas)
+                resumen_ctx += f"\nTotal: ${sum(totales.values()):,.0f}"
+        except Exception as e:
+            logger.warning(f"Error obteniendo contexto para consulta: {e}")
+
+    ultimo = obtener_contexto(user_id)
+    ultimo_ctx = ""
+    if ultimo:
+        ultimo_ctx = f"Último gasto: {ultimo['concepto']} ${ultimo['monto']:,.2f} ({ultimo['subcategoria']})"
+
+    prompt = f"""Eres el asistente del bot de gastos de Jordi y Nani. Responde en español mexicano, breve y directo (máx 2 oraciones). Usa emojis con moderación.
+
+{resumen_ctx or "Sin datos de gastos este mes."}
+{ultimo_ctx}
+
+Pregunta: "{texto}"
+
+Si no puedes responder con los datos disponibles, di que no tienes esa información."""
+
+    respuesta = await asyncio.to_thread(groq_completar, prompt, 150)
+    if respuesta:
+        await update.message.reply_text(respuesta)
+        return True
+    return False
+
+async def generar_insight_groq(gasto: dict, user_id: int, context) -> None:
+    """
+    Después de guardar un gasto, verifica si la categoría supera su promedio.
+    Se llama en background — no bloquea la confirmación del gasto.
+    Solo actúa si el total acumulado en la categoría supera $3,000.
+    """
+    if not GROQ_API_KEY:
+        return
+
+    presupuesto = gasto.get("presupuesto", "")
+    mes_actual = gasto.get("mes", "")
+    if not presupuesto or not mes_actual:
+        return
+
+    try:
+        mid = buscar_mes_id(mes_actual)
+        if not mid:
+            return
+        gastos_mes = await asyncio.to_thread(
+            query_notion_db, NOTION_DATABASE_ID,
+            {"property": "Mes", "relation": {"contains": mid}}
+        )
+        total_categoria = sum(
+            (g.get("properties", {}).get("Monto", {}).get("number", 0) or 0)
+            for g in gastos_mes
+            if next((k for k, v in PR.items()
+                     if v == (g.get("properties", {}).get("Presupuesto", {}).get("relation", [{}])[0].get("id", "")).replace("-", "")),
+                    None) == presupuesto
+        )
+
+        if total_categoria < 3000:
+            return
+
+        prompt = f"""Bot de gastos personales. Acaban de registrar:
+- {gasto['concepto']}: ${gasto['monto']:,.2f}
+- Categoría {presupuesto}, total acumulado este mes: ${total_categoria:,.2f}
+
+¿Hay algo notable? Responde en 1 línea en español o exactamente "sin_insight" si no hay nada relevante."""
+
+        insight = await asyncio.to_thread(groq_completar, prompt, 60)
+        if insight and insight.strip() != "sin_insight" and len(insight) > 5:
+            await context.bot.send_message(chat_id=user_id, text=f"💡 {insight}")
+    except Exception as e:
+        logger.debug(f"Insight omitido: {e}")
+
 # ── NOTION GASTOS ────────────────────────────────────────────────────────────
 def guardar_notion(gasto):
     props={
@@ -848,6 +1172,8 @@ async def registrar_y_notificar(update, context, gasto):
     gasto_completo = {**gasto, "notion_id": nid}
     uid = update.effective_user.id
     threading.Thread(target=guardar_historial_notion, args=(gasto_completo, uid), daemon=True).start()
+    guardar_contexto(uid, gasto_completo)
+    asyncio.create_task(generar_insight_groq(gasto_completo, uid, context))
     import random
     if random.randint(1,50)==1:
         threading.Thread(target=limpiar_aprendizaje, daemon=True).start()
@@ -871,7 +1197,11 @@ async def registrar_via_shortcut(texto: str, user_id: int):
     if not app:
         return False, "Bot no disponible"
     try:
-        gasto = parsear_mensaje(texto)
+        gasto = None
+        if GROQ_API_KEY and not _parece_gasto_estricto(texto):
+            gasto = parsear_mensaje_groq(texto)
+        if gasto is None:
+            gasto = parsear_mensaje(texto)
     except ValueError as e:
         await app.bot.send_message(chat_id=user_id, text=f"❓ {e}\n\nEjemplo: Oxxo 45")
         return False, str(e)
@@ -885,6 +1215,7 @@ async def registrar_via_shortcut(texto: str, user_id: int):
         return False, f"Error Notion: {err}"
     gasto_completo = {**gasto, "notion_id": nid}
     threading.Thread(target=guardar_historial_notion, args=(gasto_completo, user_id), daemon=True).start()
+    guardar_contexto(user_id, gasto_completo)
     if random.randint(1, 50) == 1:
         threading.Thread(target=limpiar_aprendizaje, daemon=True).start()
     msg = msg_gasto(gasto, notion_id=nid)
@@ -910,20 +1241,27 @@ async def _cancelar_conv(update, context):
 async def handle_foto(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return ConversationHandler.END
-    if not GOOGLE_VISION_API_KEY:
-        await update.message.reply_text("❌ Google Vision no está configurado.")
+    if not GROQ_API_KEY and not GOOGLE_VISION_API_KEY:
+        await update.message.reply_text("❌ No hay servicio de lectura de tickets configurado.")
         return ConversationHandler.END
     msg_espera = await update.message.reply_text("📸 Analizando ticket...")
     photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
     image_bytes = await file.download_as_bytearray()
-    texto_ocr = ocr_ticket(bytes(image_bytes))
-    if not texto_ocr:
-        await msg_espera.edit_text("❌ No pude leer el ticket. Intenta con mejor iluminación o más cerca.")
-        return ConversationHandler.END
-    datos = parsear_ticket(texto_ocr)
-    if not datos["monto"]:
-        await msg_espera.edit_text("❌ No encontré el monto total. Regístralo manualmente.")
+
+    # Intentar con Llama 4 Scout primero (más preciso, sin regex)
+    datos = await asyncio.to_thread(analizar_ticket_groq, bytes(image_bytes))
+
+    # Fallback a Google Vision si Groq no está disponible o falla
+    if datos is None:
+        texto_ocr = ocr_ticket(bytes(image_bytes))
+        if not texto_ocr:
+            await msg_espera.edit_text("❌ No pude leer el ticket. Intenta con mejor iluminación o más cerca.")
+            return ConversationHandler.END
+        datos = parsear_ticket(texto_ocr)
+
+    if not datos or datos.get("monto") is None:
+        await msg_espera.edit_text("❌ No encontré el monto en el ticket.")
         return ConversationHandler.END
     fecha   = datos["fecha"]
     tarjeta = calcular_tarjeta(fecha)
@@ -1010,8 +1348,20 @@ async def handle_gasto(update,context):
                     reply_markup=kb, parse_mode="Markdown"
                 )
         return ConversationHandler.END
+    # Consulta en lenguaje natural (no es un gasto)
+    if not _parece_gasto_estricto(texto) and not _parece_gasto(texto):
+        respondido = await responder_consulta_groq(
+            texto, update.effective_user.id, update, context
+        )
+        if respondido:
+            return ConversationHandler.END
     try:
-        gasto=parsear_mensaje(texto)
+        # Intentar con Groq si el mensaje no tiene formato estricto
+        gasto = None
+        if GROQ_API_KEY and not _parece_gasto_estricto(texto):
+            gasto = parsear_mensaje_groq(texto)
+        if gasto is None:
+            gasto = parsear_mensaje(texto)
         if gasto["monto"]>=MONTO_INUSUAL:
             context.user_data["gasto_pendiente"]=gasto
             await update.message.reply_text(

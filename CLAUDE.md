@@ -29,6 +29,7 @@ GOOGLE_VISION_API_KEY (misma key que Maps, Vision API habilitada en GCloud)
 WEBHOOK_SECRET        (opcional)
 RENDER_EXTERNAL_URL   = https://bot-gastos-socj.onrender.com
 SHORTCUT_SECRET       (para iOS Shortcut)
+GROQ_API_KEY          (Llama 3.3 70B texto + Llama 4 Scout visión; .env local en .gitignore)
 ```
 
 ---
@@ -89,6 +90,16 @@ SHORTCUT_SECRET       (para iOS Shortcut)
 - Nombres unificados en `USUARIOS_NOMBRES` (Jordi/Nani) — eliminado `_NOMBRES_START` duplicado
 - `corregir_elegir` ya no usa `except:` desnudo; reintenta en vez de abortar la conversación
 - Servicios usa 🧾 (full-width) en vez de ⚡ para alineación perfecta en code blocks
+
+### Integración Groq (LLM) — capa adicional con fallback total
+- **Parseo flexible** (`parsear_mensaje_groq`, Llama 3.3 70B): entiende "fui al super, unos 350".
+  Solo se invoca si el mensaje NO tiene formato estricto (`_parece_gasto_estricto`). Cae al parser regex si falla.
+- **Consultas en lenguaje natural** (`responder_consulta_groq`): "¿cuánto llevo en restaurantes?" → lee Notion y responde.
+- **Memoria de contexto** (`_ultimo_gasto_usuario`): guarda último gasto por usuario (en RAM).
+- **Insights post-guardado** (`generar_insight_groq`): si una categoría supera $3,000, comenta. Corre en background vía `asyncio.create_task`.
+- **OCR de tickets** (`analizar_ticket_groq`, Llama 4 Scout): la foto va directo al LLM multimodal. Fallback a Google Vision (`ocr_ticket`+`parsear_ticket`) si Groq falla.
+- **Fallback silencioso:** sin `GROQ_API_KEY` o ante cualquier fallo, el bot usa el comportamiento original. Cero regresiones.
+- Modelos: `llama-3.3-70b-versatile` (texto) y `meta-llama/llama-4-scout-17b-16e-instruct` (visión). Free tier: 1,000 req/día c/u.
 
 ---
 
