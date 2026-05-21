@@ -79,6 +79,22 @@ def groq_vision(image_bytes: bytes, prompt: str, max_tokens: int = 200):
         logger.warning(f"Groq vision error: {e}")
         return None
 
+def groq_transcribir(audio_bytes: bytes, filename: str = "audio.ogg"):
+    """Transcribe audio a texto con Whisper (Groq). Retorna el texto o None si falla."""
+    client = get_groq()
+    if not client:
+        return None
+    try:
+        result = client.audio.transcriptions.create(
+            file=(filename, audio_bytes),
+            model="whisper-large-v3-turbo",
+            language="es",
+        )
+        return (result.text or "").strip()
+    except Exception as e:
+        logger.warning(f"Groq transcripción error: {e}")
+        return None
+
 def _extraer_json(raw):
     """Extrae un objeto JSON de una respuesta del LLM, tolerando fences y prosa alrededor."""
     if not raw:
@@ -565,13 +581,25 @@ COMERCIOS_OCR = {
     "costco":"Costco","sam's":"Sam's Club","sams club":"Sam's Club","la comer":"La Comer","heb":"HEB",
     "oxxo gas":"Oxxo Gas","oxxo":"Oxxo","7 eleven":"Seven","7-eleven":"Seven","seven eleven":"Seven",
     "home depot":"Home Depot","liverpool":"Liverpool","coppel":"Coppel","sears":"Sears",
-    "farmacia guadalajara":"Farmacia Guadalajara","farmacias del ahorro":"Farmacias del Ahorro",
+    "super farmacia":"Farmacia Guadalajara","farmacia guadalajara":"Farmacia Guadalajara",
+    "farmacias guadalajara":"Farmacia Guadalajara","farmacias del ahorro":"Farmacias del Ahorro",
     "farmacia benavides":"Farmacia Benavides","farmacias similares":"Farmacia Similares",
     "starbucks":"Starbucks","mcdonald":"McDonalds","burger king":"Burger King","kfc":"KFC",
     "subway":"Subway","domino":"Dominos","little caesar":"Little Caesars","carls jr":"Carl's Jr",
     "uber eats":"Uber Eats","rappi":"Rappi","cinepolis":"Cinepolis","cinemex":"Cinemex",
     "shell":"Shell","pemex":"Pemex","bp ":"BP","mobil":"Mobil",
 }
+
+def normalizar_comercio(concepto: str) -> str:
+    """Si el concepto contiene un comercio conocido, devuelve su nombre canónico.
+    Se aplica en ambos flujos de ticket (Groq y Vision)."""
+    if not concepto:
+        return concepto
+    c = normalizar(concepto)
+    for clave, nombre in COMERCIOS_OCR.items():
+        if normalizar(clave) in c:
+            return nombre
+    return concepto
 
 # Palabras que invalidan un "TOTAL" como monto (es conteo, no importe)
 _TOTAL_FALSO = re.compile(r'(ARTICULO|PIEZA|PRODUCTO|ITEM|UNIDAD|CANT)', re.IGNORECASE)
@@ -666,22 +694,26 @@ def analizar_ticket_groq(image_bytes: bytes):
 
     hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
 
-    prompt = f"""Analiza este ticket o recibo de compra y extrae los datos principales. Hoy es {hoy.strftime('%d/%m/%Y')}.
+    prompt = f"""Analiza este ticket o recibo de compra y extrae los datos. Hoy es {hoy.strftime('%d/%m/%Y')}.
 
 Responde SOLO con JSON válido, sin texto adicional, sin markdown:
 {{
   "concepto": "nombre del comercio en Title Case (ej: Walmart, Oxxo, Starbucks)",
   "monto": número con decimales (el TOTAL A PAGAR final, no subtotal ni total de artículos),
-  "fecha": "YYYY-MM-DD"
+  "fecha": "YYYY-MM-DD",
+  "productos": [{{"nombre": "nombre del producto", "precio": número}}]
 }}
 
 Reglas:
 - El monto debe ser el total final que se pagó, incluyendo IVA.
 - Si hay varios totales, elige el mayor que sea claramente el total de la compra.
 - Si no puedes leer la fecha, usa {hoy.strftime('%Y-%m-%d')}.
-- Si no reconoces el comercio, describe brevemente qué tipo de negocio es."""
+- Si no reconoces el comercio, describe brevemente qué tipo de negocio es.
+- En "productos" lista cada artículo comprado con su precio individual, tal como aparece en el ticket.
+  Limpia nombres abreviados a algo legible cuando sea obvio. Si el ticket no tiene desglose de
+  productos (ej: un recibo de pago o voucher), devuelve "productos": []."""
 
-    raw = groq_vision(image_bytes, prompt, max_tokens=150)
+    raw = groq_vision(image_bytes, prompt, max_tokens=900)
     data = _extraer_json(raw)
     if not data:
         return None
@@ -699,7 +731,19 @@ Reglas:
         except (ValueError, TypeError):
             fecha = hoy
 
-        return {"concepto": concepto.title(), "monto": float(monto), "fecha": fecha}
+        productos = []
+        for p in (data.get("productos") or []):
+            try:
+                nombre = str(p.get("nombre", "")).strip()
+                precio = p.get("precio")
+                precio = float(precio) if precio is not None else None
+                if nombre:
+                    productos.append({"nombre": nombre[:100], "precio": precio})
+            except (ValueError, TypeError, AttributeError):
+                continue
+
+        return {"concepto": normalizar_comercio(concepto.title()), "monto": float(monto),
+                "fecha": fecha, "productos": productos[:50]}
     except Exception as e:
         logger.warning(f"Groq ticket fallido: {e}")
         return None
@@ -1279,11 +1323,31 @@ def guardar_notion(gasto):
     if sid: props["Subcategoria"]={"relation":[{"id":sid}]}
     pid=PR.get(gasto["presupuesto"])
     if pid: props["Presupuesto"]={"relation":[{"id":pid}]}
+    cuerpo={"parent":{"database_id":NOTION_DATABASE_ID},"properties":props}
+    children=_bloques_productos(gasto.get("productos"))
+    if children:
+        cuerpo["children"]=children
     r=notion_request("POST",f"{NOTION_API_BASE}/pages",headers=nh(),
-        json={"parent":{"database_id":NOTION_DATABASE_ID},"properties":props},timeout=NOTION_T_DEFAULT)
+        json=cuerpo,timeout=NOTION_T_DEFAULT)
     if r and r.status_code==200:
         return True, r.json().get("id",""), ""
     return False, "", (r.text if r else "Sin respuesta")
+
+def _bloques_productos(productos):
+    """Convierte una lista de productos [{nombre, precio}] en bloques de Notion (desglose en el cuerpo)."""
+    if not productos:
+        return None
+    bloques=[{"object":"block","type":"heading_3",
+              "heading_3":{"rich_text":[{"text":{"content":"🧾 Desglose"}}]}}]
+    for p in productos[:95]:
+        nombre=p.get("nombre","").strip()
+        if not nombre:
+            continue
+        precio=p.get("precio")
+        txt=f"{nombre} — ${precio:,.2f}" if isinstance(precio,(int,float)) else nombre
+        bloques.append({"object":"block","type":"bulleted_list_item",
+                        "bulleted_list_item":{"rich_text":[{"text":{"content":txt[:200]}}]}})
+    return bloques if len(bloques)>1 else None
 
 def actualizar_notion(page_id,sub=None,pre=None):
     props={}
@@ -1489,10 +1553,12 @@ async def handle_foto(update, context):
     tarjeta = calcular_tarjeta(fecha)
     mes     = calcular_mes(fecha, tarjeta)
     sub, pre, seguro = inferir_categoria(datos["concepto"])
+    productos = datos.get("productos") or []
     gasto = {
         "concepto": datos["concepto"], "monto": datos["monto"],
         "fecha": fecha.strftime("%Y-%m-%d"), "tarjeta": tarjeta,
         "mes": mes, "subcategoria": sub, "presupuesto": pre, "seguro": seguro,
+        "productos": productos,
     }
     context.user_data["gasto_foto"] = gasto
     aviso = "\n⚠️ Categoría inferida." if not seguro else ""
@@ -1503,10 +1569,29 @@ async def handle_foto(update, context):
     await msg_espera.edit_text(
         f"📋 Resumen del ticket\n\n"
         f"📌 {gasto['concepto']}\n💵 ${gasto['monto']:,.2f}\n🗓️ {fmt(gasto['fecha'])}\n"
-        f"💳 {gasto['tarjeta']}\n🧾 {gasto['mes']}\n🏷️ {gasto['subcategoria']}\n🗂️ {gasto['presupuesto']}{aviso}",
+        f"💳 {gasto['tarjeta']}\n🧾 {gasto['mes']}\n🏷️ {gasto['subcategoria']}\n🗂️ {gasto['presupuesto']}{aviso}"
+        + _texto_desglose(productos),
         reply_markup=kb
     )
     return FOTO_CONFIRMAR
+
+def _texto_desglose(productos, limite=15):
+    """Texto compacto del desglose de productos para mostrar en Telegram."""
+    if not productos:
+        return ""
+    lineas = ["\n\n🧾 Desglose:"]
+    for p in productos[:limite]:
+        nombre = (p.get("nombre") or "").strip()
+        if not nombre:
+            continue
+        precio = p.get("precio")
+        if isinstance(precio, (int, float)):
+            lineas.append(f"• {nombre} — ${precio:,.2f}")
+        else:
+            lineas.append(f"• {nombre}")
+    if len(productos) > limite:
+        lineas.append(f"… y {len(productos) - limite} más")
+    return "\n".join(lineas)
 
 async def callback_foto(update, context):
     query = update.callback_query
@@ -1541,9 +1626,34 @@ async def callback_foto(update, context):
 # ── CONV GASTO ───────────────────────────────────────────────────────────────
 async def handle_gasto(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
-    texto=update.message.text.strip()
-    uid = update.effective_user.id
+    return await _procesar_conversacion(update, context, update.message.text.strip(), update.effective_user.id)
 
+async def handle_voice(update, context):
+    """Mensaje de voz → transcribe con Whisper → mismo flujo conversacional que el texto."""
+    if update.effective_user.id not in USUARIOS_AUTORIZADOS:
+        return ConversationHandler.END
+    uid = update.effective_user.id
+    if not GROQ_API_KEY:
+        await update.message.reply_text("🎤 Para usar audio necesito GROQ_API_KEY configurada.")
+        return ConversationHandler.END
+    voz = update.message.voice or update.message.audio
+    if not voz:
+        return ConversationHandler.END
+    msg_espera = await update.message.reply_text("🎤 Escuchando...")
+    try:
+        file = await context.bot.get_file(voz.file_id)
+        audio_bytes = await file.download_as_bytearray()
+    except Exception:
+        await msg_espera.edit_text("🤔 No pude descargar el audio.")
+        return ConversationHandler.END
+    texto = await asyncio.to_thread(groq_transcribir, bytes(audio_bytes), "audio.ogg")
+    if not texto:
+        await msg_espera.edit_text("🤔 No pude entender el audio. Intenta de nuevo.")
+        return ConversationHandler.END
+    await msg_espera.edit_text(f"🎤 Entendí: {texto}")
+    return await _procesar_conversacion(update, context, texto, uid)
+
+async def _procesar_conversacion(update, context, texto, uid):
     # 1) Clasificar con Groq cuando el mensaje NO tiene formato estricto.
     #    Distingue gasto / consulta / edición → evita registrar gastos al preguntar.
     gasto_groq = None
@@ -2494,7 +2604,10 @@ def main():
         fallbacks=[CommandHandler("cancelar", cancelar)], allow_reentry=True,
     )
     conv_gasto = ConversationHandler(
-        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gasto)],
+        entry_points=[
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gasto),
+            MessageHandler(filters.VOICE | filters.AUDIO, handle_voice),
+        ],
         states={
             CONFIRMAR_MONTO:  [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_monto)],
             CONFIRMAR_CAT:    [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_cat)],
