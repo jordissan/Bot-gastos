@@ -473,7 +473,7 @@ REGLAS_CONCEPTO = [
     (["autolavado","refaccion","mecanico","llantas"],"Mantenimiento","Automovil"),
     (["farmacia guadalajara","farmacia benavides","farmacias del ahorro","farmacia similares","farmacia"],"Medicina","Personal"),
     (["doctor","hospital","clinica","medico","consulta"],"Doctor","Personal"),
-    (["gerber","nutrileche","pedialyte"],"Ezra","Ezra"),
+    (["gerber","nutrileche","pedialyte","pediatra","pediatria","vacuna","pañal","pañales","formula bebe","leche bebe"],"Ezra","Ezra"),
     (["oxxo","naranjitas","rancherita","super rancherita","abarrotes","minisuper","seven","mercado ","barreto","merpago*abarrotes"],"Abarrotes","Despensa"),
     (["parco","conekta*parco","estacionamiento"],"Estacionamento","Automovil"),
     (["cinepolis","cinemex","cine "],"Cine","Diversión"),
