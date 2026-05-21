@@ -1335,9 +1335,9 @@ def _datos_consulta_especial(modo: str):
                 f"Estás gastando ${abs(dif):,.0f} {signo} que tu promedio.")
     if modo == "hormiga":
         items = _gastos_recientes(3)
-        chicos = [(c, m) for c, m, f in items if 0 < m <= 200]
+        chicos = [(c, m) for c, m, f in items if 0 < m < 150]
         total = sum(m for _, m in chicos)
-        return (f"Gasto hormiga últimos 3 meses (gastos ≤ $200): ${total:,.0f} en {len(chicos)} gastos chiquitos. "
+        return (f"Gasto hormiga últimos 3 meses (gastos < $150): ${total:,.0f} en {len(chicos)} gastos chiquitos. "
                 f"Equivale a ${total/3:,.0f} al mes en gastos pequeños.")
     return None
 
