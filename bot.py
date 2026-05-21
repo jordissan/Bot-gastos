@@ -179,6 +179,25 @@ PR_EMOJI = {
     "Educación":"📚","Emergencias":"🚨","Deudas":"🏦",
 }
 
+# Subcategoría → Presupuesto. Respaldo cuando el gasto NO tiene relación de Presupuesto
+# (el usuario borra la columna Presupuesto cada mes; Subcategoria permanece).
+SUBCAT_PRESUPUESTO = {
+    "Super":"Despensa","Abarrotes":"Despensa","Carniceria":"Despensa","Mercado":"Despensa","Comida":"Despensa",
+    "Restaurantes":"Restaurantes",
+    "Gasolina":"Automovil","Estacionamento":"Automovil","Mantenimiento":"Automovil","VW POLO":"Automovil","Seguro Auto":"Automovil",
+    "Servicios":"Servicios","Streaming":"Servicios","Internet":"Servicios","Telefonia Celular":"Servicios","Luz":"Servicios","Agua":"Servicios",
+    "Renta":"Renta","Muebles":"Departamento","Decoracion":"Departamento",
+    "Treat":"Diversión","Salidas":"Diversión","Cine":"Diversión","Conciertos":"Diversión","Tiempo de calidad":"Diversión",
+    "Ropa":"Personal","Calzado":"Personal","Gimnasio":"Personal","Corte de pelo":"Personal","Gasto personal":"Personal",
+    "Doctor":"Salud","Medicina":"Salud",
+    "Cuidado personal":"Cuidado personal",
+    "Libros":"Educación","Cursos":"Educación",
+    "Emergencias":"Emergencias","Ezra":"Ezra",
+    "Regalos":"Generosidad","Ofrenda":"Generosidad","Diezmo":"Generosidad",
+    "MSI":"MSI","Deudas":"Deuda","EFI":"Deuda","DBMEX":"Deuda","PDHB25":"Deuda","PRP":"Deuda",
+    "Impuestos":"Impuestos","Vacaciones":"Vacaciones","Otros":"Otros",
+}
+
 # Emojis que ocupan 1 celda en monoespaciado (en vez de 2) — necesitan espacio extra
 EMOJI_ESTRECHO = {"⛪"}  # Servicios cambió a 💡 (full-width); solo ⛪ sigue siendo angosto
 
@@ -1059,10 +1078,22 @@ def _parece_gasto_estricto(texto: str) -> bool:
 def _presupuesto_de_props(props) -> str:
     """Resuelve el nombre del presupuesto (PR) de un gasto de Notion, o '' si no tiene."""
     rel = props.get("Presupuesto", {}).get("relation", [])
+    if rel:
+        pr_id = rel[0].get("id", "").replace("-", "")
+        nombre = next((k for k, v in PR.items() if v == pr_id), "")
+        if nombre:
+            return nombre
+    # Respaldo: derivar el presupuesto desde la Subcategoria (que el usuario no borra)
+    return _presupuesto_desde_subcat(props)
+
+def _presupuesto_desde_subcat(props) -> str:
+    """Deriva el presupuesto desde la relación Subcategoria, vía SUBCAT_PRESUPUESTO."""
+    rel = props.get("Subcategoria", {}).get("relation", [])
     if not rel:
         return ""
-    pr_id = rel[0].get("id", "").replace("-", "")
-    return next((k for k, v in PR.items() if v == pr_id), "")
+    sc_id = rel[0].get("id", "").replace("-", "")
+    nombre_sc = next((k for k, v in SC.items() if v == sc_id), "")
+    return SUBCAT_PRESUPUESTO.get(nombre_sc, "")
 
 def ejecutar_consulta_finanzas(plan: dict) -> dict:
     """
