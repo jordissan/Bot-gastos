@@ -165,7 +165,9 @@ PR = {
     "Impuestos":"224cdb40f1f749c7b5d6e165ad31110d","Entretenimiento":"3547eb0cbb92815d8248db75a759646b",
     "Generosidad":"f4cac9f4b95e4508942ad02ae69ddffe","Iglesia":"89b897bd6fa24b8d897adf380491130e",
     "Personal":"3c42302c396c4f4abffa38bff79ccac6","Departamento":"1af955c917f54a2da39e9bbb8e4032ff",
-    "Otros":"1ea7eb0cbb9280cbbe43c1bd54396691",
+    "Otros":"1ea7eb0cbb9280cbbe43c1bd54396691","Educación":"3677eb0cbb9281c4b82cc803cb114d65",
+    "Emergencias":"3677eb0cbb9281598e2fe19be3db3d74",
+    "Deudas":"91ab43856d1e4ae69f21f4203eeb3c54",  # alias del grupo "🏦 Deudas" → misma página que "Deuda"
 }
 
 PR_EMOJI = {
@@ -174,6 +176,7 @@ PR_EMOJI = {
     "Renta":"🏠","Ezra":"👶","Cuidado personal":"💆","Vacaciones":"🏖️",
     "Impuestos":"📊","Entretenimiento":"🎭","Generosidad":"🤝","Iglesia":"⛪",
     "Personal":"👤","Departamento":"🏡","Otros":"📦",
+    "Educación":"📚","Emergencias":"🚨","Deudas":"🏦",
 }
 
 # Emojis que ocupan 1 celda en monoespaciado (en vez de 2) — necesitan espacio extra
@@ -499,6 +502,9 @@ REGLAS_CONCEPTO = [
     (["teatro","concierto","evento","antro","bar "],"Salidas","Diversión"),
     # ── VACACIONES ──
     (["hotel","airbnb","booking","expedia","despegar","volaris","aeromexico","vivaaerobus","viva aerobus","trivago","hospedaje"],"Vacaciones","Vacaciones"),
+    # ── EDUCACIÓN ──
+    (["udemy","coursera","platzi","domestika","masterclass","skillshare"],"Cursos","Educación"),
+    (["libreria","gandhi","gonvill","el sotano","libro"],"Libros","Educación"),
     # ── DEPARTAMENTO ──
     (["ikea","home store","mueble"],"Muebles","Departamento"),
     # ── OTROS / marketplaces (amazon al final: "prime video" gana en streaming) ──
