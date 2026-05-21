@@ -1265,10 +1265,14 @@ def _promedio_mensual() -> dict:
         return {}
     return {"promedio": sum(totales) / len(totales), "meses": len(totales), "total": sum(totales)}
 
-def _gastos_recientes(n_meses: int = 3) -> list:
-    """Lista de (concepto, monto, fecha) de los últimos n ciclos."""
+def _gastos_recientes(n_meses: int = 3, categoria: str = None, meses_especificos: list = None) -> list:
+    """Lista de (concepto, monto, fecha) de los últimos n ciclos.
+    Si se pasa meses_especificos, usa esos en vez de los últimos n meses.
+    Si se pasa categoria, filtra por presupuesto.
+    """
     items = []
-    for mes in _meses_recientes(n_meses):
+    meses_a_consultar = meses_especificos if meses_especificos else _meses_recientes(n_meses)
+    for mes in meses_a_consultar:
         mid = buscar_mes_id(mes)
         if not mid:
             continue
@@ -1278,11 +1282,21 @@ def _gastos_recientes(n_meses: int = 3) -> list:
             titulo = props.get("Concepto", {}).get("title", [])
             concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
             fecha = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
+            if categoria:
+                pr = _presupuesto_de_props(props)
+                if pr != categoria:
+                    continue
             items.append((concepto, monto, fecha))
     return items
 
-def _datos_consulta_especial(modo: str):
-    """Devuelve el texto de datos para los modos de agregación especial, o None si no aplica."""
+def _datos_consulta_especial(modo: str, plan: dict = None):
+    """Devuelve el texto de datos para los modos de agregación especial, o None si no aplica.
+    plan puede incluir 'categoria' y 'meses' para filtrar en modos que lo soporten.
+    """
+    plan = plan or {}
+    categoria = (plan.get("categoria") or "").strip() or None
+    meses_plan = [m.upper() for m in (plan.get("meses") or [])] or None
+
     if modo == "por_anio":
         pa = _agg_por_anio()
         if not pa:
@@ -1302,28 +1316,60 @@ def _datos_consulta_especial(modo: str):
         cat = f", categoría {g['presupuesto']}" if g.get("presupuesto") else ""
         return f"El gasto {etq}: '{g['concepto']}' por ${g['monto']:,.2f} el {g['fecha']}{cat}."
     if modo == "ranking_categorias":
-        res = ejecutar_consulta_finanzas({"meses": _meses_recientes(3)})
+        res = ejecutar_consulta_finanzas({"meses": meses_plan or _meses_recientes(3)})
         if res["conteo"] == 0:
             return "Sin gastos en los últimos 3 meses."
         cats = sorted(res["por_categoria"].items(), key=lambda x: x[1], reverse=True)
         detalle = ", ".join(f"{k}=${v:,.0f}" for k, v in cats[:8])
         return f"En qué se va el dinero (últimos 3 meses, {', '.join(res['meses'])}): {detalle}. Total ${res['total']:,.0f}."
     if modo == "promedio_mensual":
+        if categoria:
+            # Promedio mensual de una categoría específica
+            meses_hist = _meses_recientes(12)
+            totales_cat = []
+            for mes in meses_hist:
+                r = ejecutar_consulta_finanzas({"meses": [mes], "categoria": categoria})
+                if r["total"] > 0:
+                    totales_cat.append(r["total"])
+            if not totales_cat:
+                return f"Sin gastos en {categoria} para calcular promedio."
+            prom = sum(totales_cat) / len(totales_cat)
+            return f"Promedio mensual en {categoria}: ${prom:,.0f} (sobre {len(totales_cat)} meses con registro)."
         d = _promedio_mensual()
         if not d:
             return "Sin datos para calcular el promedio."
         return f"Promedio de gasto mensual: ${d['promedio']:,.0f} (sobre {d['meses']} meses con registro)."
     if modo == "dia_semana":
-        items = _gastos_recientes(3)
+        items = _gastos_recientes(3, categoria=categoria, meses_especificos=meses_plan)
         entre = sum(m for c, m, f in items if f and _es_finde(f) is False)
         finde = sum(m for c, m, f in items if f and _es_finde(f) is True)
         ce = sum(1 for c, m, f in items if f and _es_finde(f) is False)
         cf = sum(1 for c, m, f in items if f and _es_finde(f) is True)
-        return (f"Últimos 3 meses — Entre semana (lun-vie): ${entre:,.0f} en {ce} gastos. "
+        periodo = f" en {', '.join(meses_plan)}" if meses_plan else " (últimos 3 meses)"
+        cat_str = f" en {categoria}" if categoria else ""
+        return (f"Gastos{cat_str}{periodo} — Entre semana (lun-vie): ${entre:,.0f} en {ce} gastos. "
                 f"Fines de semana (sáb-dom): ${finde:,.0f} en {cf} gastos.")
     if modo == "desviacion":
-        tot = _totales_por_ciclo()
         activo = mes_activo_str()
+        if categoria:
+            # Comparar categoría en mes activo vs su promedio histórico
+            meses_hist = _meses_recientes(7)
+            totales_cat = {}
+            for mes in meses_hist:
+                r = ejecutar_consulta_finanzas({"meses": [mes], "categoria": categoria})
+                if r["total"] > 0:
+                    totales_cat[mes] = r["total"]
+            actual = totales_cat.get(activo, 0)
+            otros = [v for k, v in totales_cat.items() if k != activo and v > 0]
+            if not otros:
+                return f"Aún no tengo suficientes meses con gastos en {categoria} para comparar."
+            prom = sum(otros) / len(otros)
+            dif = actual - prom
+            signo = "MÁS" if dif >= 0 else "MENOS"
+            return (f"Mes activo ({activo}) en {categoria}: ${actual:,.0f}. "
+                    f"Tu promedio histórico en {categoria}: ${prom:,.0f}. "
+                    f"Estás gastando ${abs(dif):,.0f} {signo} que tu promedio.")
+        tot = _totales_por_ciclo()
         actual = tot.get(activo, 0)
         otros = [v for k, v in tot.items() if k != activo and v > 0]
         if not otros:
@@ -1334,11 +1380,15 @@ def _datos_consulta_especial(modo: str):
         return (f"Mes activo ({activo}): ${actual:,.0f}. Promedio de tus otros meses: ${prom:,.0f}. "
                 f"Estás gastando ${abs(dif):,.0f} {signo} que tu promedio.")
     if modo == "hormiga":
-        items = _gastos_recientes(3)
+        items = _gastos_recientes(3, categoria=categoria, meses_especificos=meses_plan)
         chicos = [(c, m) for c, m, f in items if 0 < m < 150]
         total = sum(m for _, m in chicos)
-        return (f"Gasto hormiga últimos 3 meses (gastos < $150): ${total:,.0f} en {len(chicos)} gastos chiquitos. "
-                f"Equivale a ${total/3:,.0f} al mes en gastos pequeños.")
+        n_meses = len(meses_plan) if meses_plan else 3
+        periodo = f" en {', '.join(meses_plan)}" if meses_plan else " (últimos 3 meses)"
+        cat_str = f" en {categoria}" if categoria else ""
+        return (f"Gasto hormiga{cat_str}{periodo} (gastos < $150): "
+                f"${total:,.0f} en {len(chicos)} gastos chiquitos. "
+                f"Equivale a ${total/n_meses:,.0f} al mes en gastos pequeños.")
     return None
 
 def _es_finde(fecha_iso: str):
@@ -1390,8 +1440,8 @@ Reglas:
    - "dia_semana": "¿cuánto gasto en fines de semana?", "entre semana vs fin de semana".
    - "desviacion": "¿estoy gastando de más este mes?", "¿cómo voy vs mi promedio?".
    - "hormiga": "¿cuál es mi gasto hormiga?", gastos pequeños repetidos.
-   Si el modo no es "detalle", "meses"/"categoria"/"comercio" se ignoran (salvo "comercio" para frecuencia en detalle).
-- "meses": lista de códigos relevantes (solo modo detalle). "este mes"={activo}. "mes pasado"=el anterior al activo. Para comparaciones incluye todos los meses. Vacío = mes activo.
+   Los modos "hormiga", "dia_semana", "desviacion" y "promedio_mensual" SÍ aceptan "categoria" y "meses" como filtro opcional.
+- "meses": lista de códigos relevantes. "este mes"={activo}. "mes pasado"=el anterior al activo. Para comparaciones incluye todos los meses. Vacío = mes activo.
 - "categoria": un nombre EXACTO de la lista de categorías válidas, o null.
 - "comercio": texto a buscar dentro del concepto del gasto (ej "costco", "uber", "starbucks"), o null.
 - Nombre de mes en español → código (ej: marzo 2026 → MAR26), usando el año correcto según hoy.
@@ -1406,8 +1456,9 @@ Reglas:
         return False
 
     modo = (plan.get("modo") or "detalle").strip().lower()
+    res = {"conteo": 0, "total": 0.0, "meses": []}  # fallback por si no se asigna abajo
     if modo != "detalle":
-        datos = await asyncio.to_thread(_datos_consulta_especial, modo)
+        datos = await asyncio.to_thread(_datos_consulta_especial, modo, plan)
         if not datos:
             res = await asyncio.to_thread(ejecutar_consulta_finanzas, plan)
             datos = _formatear_datos_consulta(res)
@@ -1728,8 +1779,9 @@ async def handle_foto(update, context):
     mes     = calcular_mes(fecha, tarjeta)
     sub, pre, seguro = inferir_categoria(datos["concepto"])
     productos = datos.get("productos") or []
+    concepto_foto = datos["concepto"] + ("*" if productos else "")
     gasto = {
-        "concepto": datos["concepto"], "monto": datos["monto"],
+        "concepto": concepto_foto, "monto": datos["monto"],
         "fecha": fecha.strftime("%Y-%m-%d"), "tarjeta": tarjeta,
         "mes": mes, "subcategoria": sub, "presupuesto": pre, "seguro": seguro,
         "productos": productos,
