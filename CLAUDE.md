@@ -54,12 +54,16 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
 
 ---
 
-## Versión actual: v_final18
+## Versión actual: v_final19
 
 > Novedades v18: voz (Whisper), desglose de productos en tickets, respaldo de presupuesto por
 > Subcategoría, consultas de agregación (por año / primer-último-mayor gasto / promedio / día de
 > semana / desviación / gasto hormiga), reglas de categorización ampliadas, presupuestos
 > `Educación` y `Emergencias` creados en Notion + alias `Deudas`→`Deuda`.
+
+> Novedades v19: filtro de categoría y meses en modos especiales (hormiga, dia_semana, desviacion,
+> promedio_mensual) — "¿cuánto gasto hormiga en Servicios?" ya funciona. Asterisco `*` al final del
+> concepto cuando el ticket tiene desglose de productos, para identificar en Notion que tiene detalle interno.
 
 ### Funcionalidades implementadas ✅
 - Registro de gastos por texto: `Concepto Monto [Tarjeta] [Fecha]`
@@ -112,12 +116,12 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
   - `por_anio` (`_agg_por_anio`): gasto por año desde los rollups de Balance ("¿qué año gasté más?", "cuánto llevo este año").
   - `primero`/`ultimo`/`mayor` (`_gasto_extremo`): gasto más antiguo/reciente/caro (1 query con sort+limit).
   - `ranking_categorias`: top categorías últimos 3 meses ("¿en qué se me va el dinero?").
-  - `promedio_mensual` (`_promedio_mensual`): promedio de gasto por mes (rollups de Balance).
-  - `dia_semana` (`_es_finde`): entre semana vs fin de semana, últimos 3 meses.
-  - `desviacion` (`_totales_por_ciclo`): mes activo vs promedio de los demás meses.
-  - `hormiga`: suma de gastos pequeños (≤ $200) de los últimos 3 meses.
+  - `promedio_mensual` (`_promedio_mensual`): promedio de gasto por mes global (rollups de Balance). **Con `categoria`**: promedio mensual de esa categoría específica (12 meses atrás).
+  - `dia_semana` (`_es_finde`): entre semana vs fin de semana. **Acepta `categoria` y `meses`** para filtrar.
+  - `desviacion` (`_totales_por_ciclo`): mes activo vs promedio histórico. **Con `categoria`**: compara esa categoría en el mes activo vs su promedio histórico (últimos 7 meses).
+  - `hormiga`: suma de gastos < $150. **Acepta `categoria` y `meses`** para filtrar ("¿cuánto gasto hormiga en Servicios?").
   - Frecuencia de un comercio ("¿cuántas veces fui a Starbucks?") = `detalle` + `comercio` (usa `conteo`).
-  - Helpers: `_meses_recientes(n)`, `_gastos_recientes(n)`.
+  - Helpers: `_meses_recientes(n)`, `_gastos_recientes(n, categoria, meses_especificos)`.
 - **Voz unificada** (`handle_voice`, `groq_transcribir` con `whisper-large-v3-turbo`): los mensajes de voz se
   transcriben y pasan por el MISMO clasificador que el texto (gasto/consulta/edición). Registrado como
   entry_point extra de `conv_gasto` (`filters.VOICE | filters.AUDIO`).
@@ -144,6 +148,8 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
   Extrae comercio, monto, fecha **y la lista de productos** (`productos:[{nombre,precio}]`). El desglose se
   guarda en el CUERPO de la página de Notion (`_bloques_productos` → heading + lista) y se muestra en Telegram
   (`_texto_desglose`). El concepto pasa por `normalizar_comercio` (usa `COMERCIOS_OCR`) en ambos flujos.
+  **Si el ticket tiene productos, el concepto lleva `*` al final** (ej: `Walmart*`) — señal visual en Notion de que
+  esa página tiene desglose interno. Sin productos, el nombre queda limpio.
   Fallback a Google Vision (`ocr_ticket`+`parsear_ticket`) si Groq falla. Tras registrar por foto, `callback_foto`
   guarda el contexto → habilita edición conversacional sobre ese gasto.
 - **Fallback silencioso:** sin `GROQ_API_KEY` o ante cualquier fallo, el bot usa el comportamiento original. Cero regresiones.
