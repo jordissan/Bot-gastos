@@ -1525,6 +1525,7 @@ async def callback_foto(update, context):
         return ConversationHandler.END
     gasto_completo = {**gasto, "notion_id": nid}
     uid = query.from_user.id
+    guardar_contexto(uid, gasto_completo)  # habilita edición conversacional tras registrar por foto
     threading.Thread(target=guardar_historial_notion, args=(gasto_completo, uid), daemon=True).start()
     await query.message.edit_text(msg_gasto(gasto, notion_id=nid), parse_mode="Markdown")
     notif  = USUARIOS_NOTIFICAR.get(uid)
