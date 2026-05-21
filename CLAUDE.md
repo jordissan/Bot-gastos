@@ -63,7 +63,8 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
 
 > Novedades v19: filtro de categoría y meses en modos especiales (hormiga, dia_semana, desviacion,
 > promedio_mensual) — "¿cuánto gasto hormiga en Servicios?" ya funciona. Asterisco `*` al final del
-> concepto cuando el ticket tiene desglose de productos, para identificar en Notion que tiene detalle interno.
+> concepto cuando el ticket tiene desglose de productos. Desglose guardado como tabla Notion
+> (Producto | Precio) en vez de lista de bullets.
 
 ### Funcionalidades implementadas ✅
 - Registro de gastos por texto: `Concepto Monto [Tarjeta] [Fecha]`
@@ -150,6 +151,8 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
   (`_texto_desglose`). El concepto pasa por `normalizar_comercio` (usa `COMERCIOS_OCR`) en ambos flujos.
   **Si el ticket tiene productos, el concepto lleva `*` al final** (ej: `Walmart*`) — señal visual en Notion de que
   esa página tiene desglose interno. Sin productos, el nombre queda limpio.
+  El desglose se guarda como **tabla Notion** (`_bloques_productos` → `table` + `table_row`): columna *Producto* (bold)
+  y columna *Precio* (bold), una fila por ítem. Reemplazó la lista de bullets anterior.
   Fallback a Google Vision (`ocr_ticket`+`parsear_ticket`) si Groq falla. Tras registrar por foto, `callback_foto`
   guarda el contexto → habilita edición conversacional sobre ese gasto.
 - **Fallback silencioso:** sin `GROQ_API_KEY` o ante cualquier fallo, el bot usa el comportamiento original. Cero regresiones.

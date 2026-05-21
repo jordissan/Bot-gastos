@@ -1559,20 +1559,37 @@ def guardar_notion(gasto):
     return False, "", (r.text if r else "Sin respuesta")
 
 def _bloques_productos(productos):
-    """Convierte una lista de productos [{nombre, precio}] en bloques de Notion (desglose en el cuerpo)."""
+    """Convierte una lista de productos [{nombre, precio}] en una tabla de Notion (Producto | Precio)."""
     if not productos:
         return None
-    bloques=[{"object":"block","type":"heading_3",
-              "heading_3":{"rich_text":[{"text":{"content":"🧾 Desglose"}}]}}]
+    # Fila de encabezado
+    filas = [{
+        "object": "block", "type": "table_row",
+        "table_row": {"cells": [
+            [{"type": "text", "text": {"content": "Producto"}, "annotations": {"bold": True}}],
+            [{"type": "text", "text": {"content": "Precio"},   "annotations": {"bold": True}}],
+        ]},
+    }]
     for p in productos[:95]:
-        nombre=p.get("nombre","").strip()
+        nombre = p.get("nombre", "").strip()
         if not nombre:
             continue
-        precio=p.get("precio")
-        txt=f"{nombre} — ${precio:,.2f}" if isinstance(precio,(int,float)) else nombre
-        bloques.append({"object":"block","type":"bulleted_list_item",
-                        "bulleted_list_item":{"rich_text":[{"text":{"content":txt[:200]}}]}})
-    return bloques if len(bloques)>1 else None
+        precio = p.get("precio")
+        precio_str = f"${precio:,.2f}" if isinstance(precio, (int, float)) else "—"
+        filas.append({
+            "object": "block", "type": "table_row",
+            "table_row": {"cells": [
+                [{"type": "text", "text": {"content": nombre[:200]}}],
+                [{"type": "text", "text": {"content": precio_str}}],
+            ]},
+        })
+    if len(filas) <= 1:   # solo encabezado, sin productos válidos
+        return None
+    return [{
+        "object": "block", "type": "table",
+        "table": {"table_width": 2, "has_column_header": True, "has_row_header": False},
+        "children": filas,
+    }]
 
 def actualizar_notion(page_id,sub=None,pre=None):
     props={}
