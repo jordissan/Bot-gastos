@@ -458,29 +458,51 @@ def presu_limpio(texto):
     return limpiar_emoji(texto.strip())
 
 REGLAS_CONCEPTO = [
-    (["walmart","soriana","costco","bodega aurrera","bae ","chedraui","sam's"],"Super","Despensa"),
+    # ── DESPENSA: super / carniceria ──
+    (["walmart","soriana","costco","bodega aurrera","bae ","chedraui","sam's","sams club","heb ","h-e-b","la comer","fresko","city market","calimax","comercial mexicana","superama","s-mart","smart & final"],"Super","Despensa"),
     (["calii"],"Super","Despensa"),
-    (["zarapes","merpago*zarapes"],"Restaurantes","Despensa"),
     (["carniceria","carnes especiales","barrangueno","pescaderia","altamez"],"Carniceria","Despensa"),
-    (["restaurante","taqueria","tacos","pizza","sushi","pollo bronco","dq ","dairy queen","carl's","mcdonald","burger","kfc","subway","domino","clip mx*rest","payclip*rest","la choco","mamma farina","dolce natura","los elotis","punto sur","barbacos","barbacoa","velma","calena","bistro","meridiao","uber eats","rappi"],"Restaurantes","Restaurantes"),
-    (["oxxo gas","oxxogas","oxxo gaspaseos","gasolina","bp ","shell ","petro","combustible"],"Gasolina","Automovil"),
-    (["netflix","spotify","disney","hbo","apple tv","paramount","crunchyroll","max ","prime video"],"Streaming","Servicios"),
-    (["izzi","telmex","adobe","icloud","capcut","claude","conekta*parco","figma","canva","microsoft","chatgpt"],"Servicios","Servicios"),
-    (["google"],"Servicios","Servicios"),
-    (["at&t","att "],"Telefonia Celular","Servicios"),
-    (["cfe"],"Luz","Servicios"),
+    # ── RESTAURANTES (antes que abarrotes y treat; "didi food" antes que "didi") ──
+    (["zarapes","merpago*zarapes"],"Restaurantes","Despensa"),
+    (["restaurante","taqueria","tacos","pizza","sushi","ramen","pollo bronco","dq ","dairy queen","carl's","mcdonald","burger","kfc","subway","domino","clip mx*rest","payclip*rest","la choco","mamma farina","dolce natura","los elotis","punto sur","barbacos","barbacoa","velma","calena","bistro","meridiao","uber eats","rappi","didi food","vips","sanborns","toks","wings","italianni","chili's","chilis","applebee","ihop","sonora grill","fogon","fogoncito","birria","mariscos","sirloin","la mansion","el porton","fonda","cantina","wok ","ostioneria","cevicheria","parrilla","asador","pf chang","casa de tono"],"Restaurantes","Restaurantes"),
+    # ── TREAT / café / postres ──
+    (["starbucks","cafe ","coffee","brüm","brum","helado","nieve","nieves","paleta","panaderia","pasteleria","cielito querido","el pendulo","italian coffee","punta del cielo","krispy kreme","dunkin","la michoacana","santa clara","haagen","cinnabon","churreria","churros","donas","cheesecake","cupcake","frappe"],"Treat","Diversión"),
+    # ── AUTOMOVIL (gasolina antes que "oxxo" de abarrotes) ──
+    (["oxxo gas","oxxogas","oxxo gaspaseos","gasolina","bp ","shell ","petro","combustible","pemex","mobil ","g500","arco ","repsol"],"Gasolina","Automovil"),
     (["mapfre","seguro auto","qualitas"],"Seguro Auto","Automovil"),
-    (["autolavado","refaccion","mecanico","llantas"],"Mantenimiento","Automovil"),
-    (["farmacia guadalajara","farmacia benavides","farmacias del ahorro","farmacia similares","farmacia"],"Medicina","Personal"),
-    (["doctor","hospital","clinica","medico","consulta"],"Doctor","Personal"),
-    (["gerber","nutrileche","pedialyte","pediatra","pediatria","vacuna","pañal","pañales","formula bebe","leche bebe"],"Ezra","Ezra"),
-    (["oxxo","naranjitas","rancherita","super rancherita","abarrotes","minisuper","seven","mercado ","barreto","merpago*abarrotes"],"Abarrotes","Despensa"),
+    (["autolavado","refaccion","mecanico","llantas","verificacion","afinacion","taller "],"Mantenimiento","Automovil"),
     (["parco","conekta*parco","estacionamiento"],"Estacionamento","Automovil"),
-    (["cinepolis","cinemex","cine "],"Cine","Diversión"),
-    (["teatro","concierto","evento","antro","bar "],"Salidas","Diversión"),
-    (["starbucks","cafe ","coffee","brüm","brum","helado","nieve","nieves","paleta","panaderia","pasteleria"],"Treat","Diversión"),
-    (["amazon"],"Otros","Otros"),
     (["uber","didi","cabify"],"Gasolina","Automovil"),
+    # ── ABARROTES (después de gasolina por "oxxo gas") ──
+    (["oxxo","naranjitas","rancherita","super rancherita","abarrotes","minisuper","seven","barreto","merpago*abarrotes"],"Abarrotes","Despensa"),
+    # ── SERVICIOS ──
+    (["netflix","spotify","disney","hbo","apple tv","paramount","crunchyroll","max ","prime video","youtube premium","tidal","deezer","mubi","vix","claro video"],"Streaming","Servicios"),
+    (["izzi","telmex","megacable","totalplay","total play","axtel"],"Internet","Servicios"),
+    (["telcel","movistar","at&t","att ","bait","unefon"],"Telefonia Celular","Servicios"),
+    (["cfe"],"Luz","Servicios"),
+    (["jumapa","simapag","sapal","siapa","capama","comapa","interapas"],"Agua","Servicios"),
+    (["adobe","icloud","capcut","claude","figma","canva","microsoft","chatgpt","openai","notion","dropbox","github","midjourney","perplexity","grammarly","godaddy","namecheap","vercel","hostinger","google"],"Servicios","Servicios"),
+    # ── SALUD ──
+    (["farmacia guadalajara","farmacia benavides","farmacias del ahorro","farmacia similares","farmacia","dr simi","doctor simi","salud digna","laboratorio","chopo","analisis clinicos"],"Medicina","Salud"),
+    (["doctor","hospital","clinica","medico","consulta","dentista","ortodoncia","oftalmologo","optica","lentes","ginecologo","consultorio"],"Doctor","Salud"),
+    # ── EZRA (antes de cualquier regla genérica de salud que use "pediatra") ──
+    (["gerber","nutrileche","pedialyte","pediatra","pediatria","vacuna","pañal","pañales","formula bebe","leche bebe"],"Ezra","Ezra"),
+    # ── PERSONAL: ropa / calzado / gimnasio / corte ──
+    (["zara","h&m","bershka","pull&bear","pull and bear","shein","nike","adidas","puma","old navy","gap ","levis","american eagle","forever 21","hollister","calvin klein","suburbia","uniqlo","stradivarius","oysho","sfera","aeropostale"],"Ropa","Personal"),
+    (["flexi","andrea","price shoes","dportenis","innovasport","vans","converse","dr martens"],"Calzado","Personal"),
+    (["smart fit","smartfit","sports world","sport city","anytime","gimnasio","gym "],"Gimnasio","Personal"),
+    (["barberia","barber","peluqueria","estetica","salon ","corte de pelo"],"Corte de pelo","Personal"),
+    (["sephora","sally beauty","body shop","kiehl","mac cosmetics","lush","rituals","ulta","perfumeria","perfume"],"Cuidado personal","Cuidado personal"),
+    # ── DIVERSIÓN ──
+    (["cinepolis","cinemex","cine "],"Cine","Diversión"),
+    (["ticketmaster","superboletos","eticket"],"Conciertos","Diversión"),
+    (["teatro","concierto","evento","antro","bar "],"Salidas","Diversión"),
+    # ── VACACIONES ──
+    (["hotel","airbnb","booking","expedia","despegar","volaris","aeromexico","vivaaerobus","viva aerobus","trivago","hospedaje"],"Vacaciones","Vacaciones"),
+    # ── DEPARTAMENTO ──
+    (["ikea","home store","mueble"],"Muebles","Departamento"),
+    # ── OTROS / marketplaces (amazon al final: "prime video" gana en streaming) ──
+    (["amazon","mercado libre","mercadolibre","aliexpress","temu","shopee"],"Otros","Otros"),
 ]
 
 MESES_TEXTO = {"ene":1,"feb":2,"mar":3,"abr":4,"may":5,"jun":6,"jul":7,"ago":8,"sep":9,"oct":10,"nov":11,"dic":12,
