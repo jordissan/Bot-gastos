@@ -54,7 +54,12 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
 
 ---
 
-## Versión actual: v_final17
+## Versión actual: v_final18
+
+> Novedades v18: voz (Whisper), desglose de productos en tickets, respaldo de presupuesto por
+> Subcategoría, consultas de agregación (por año / primer-último-mayor gasto / promedio / día de
+> semana / desviación / gasto hormiga), reglas de categorización ampliadas, presupuestos
+> `Educación` y `Emergencias` creados en Notion + alias `Deudas`→`Deuda`.
 
 ### Funcionalidades implementadas ✅
 - Registro de gastos por texto: `Concepto Monto [Tarjeta] [Fecha]`
@@ -99,10 +104,27 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
   Evita registrar gastos por accidente al preguntar. `handle_gasto` clasifica ANTES de registrar.
   (Reemplazó la heurística frágil `_parece_gasto`, ya eliminada.)
 - **Consultas en lenguaje natural** (`responder_consulta_groq`): flujo de 2 pasos —
-  (1) Groq genera un *plan de consulta* JSON `{meses, categoria, comercio}`,
-  (2) `ejecutar_consulta_finanzas()` trae los datos de Notion de forma determinística (única función que toca datos),
+  (1) Groq genera un *plan de consulta* JSON `{modo, meses, categoria, comercio}`,
+  (2) según el `modo` se traen los datos de Notion de forma determinística,
   (3) Groq redacta la respuesta con esos datos. Soporta otros meses, comercios y comparaciones
   ("¿cuánto en Costco en marzo?", "¿gasté más en restaurantes que el mes pasado?").
+- **Modos de agregación del plan de consulta** (`_datos_consulta_especial`): además de `detalle`:
+  - `por_anio` (`_agg_por_anio`): gasto por año desde los rollups de Balance ("¿qué año gasté más?", "cuánto llevo este año").
+  - `primero`/`ultimo`/`mayor` (`_gasto_extremo`): gasto más antiguo/reciente/caro (1 query con sort+limit).
+  - `ranking_categorias`: top categorías últimos 3 meses ("¿en qué se me va el dinero?").
+  - `promedio_mensual` (`_promedio_mensual`): promedio de gasto por mes (rollups de Balance).
+  - `dia_semana` (`_es_finde`): entre semana vs fin de semana, últimos 3 meses.
+  - `desviacion` (`_totales_por_ciclo`): mes activo vs promedio de los demás meses.
+  - `hormiga`: suma de gastos pequeños (≤ $200) de los últimos 3 meses.
+  - Frecuencia de un comercio ("¿cuántas veces fui a Starbucks?") = `detalle` + `comercio` (usa `conteo`).
+  - Helpers: `_meses_recientes(n)`, `_gastos_recientes(n)`.
+- **Voz unificada** (`handle_voice`, `groq_transcribir` con `whisper-large-v3-turbo`): los mensajes de voz se
+  transcriben y pasan por el MISMO clasificador que el texto (gasto/consulta/edición). Registrado como
+  entry_point extra de `conv_gasto` (`filters.VOICE | filters.AUDIO`).
+- **Respaldo de presupuesto por Subcategoría** (`_presupuesto_desde_subcat`, `SUBCAT_PRESUPUESTO`):
+  el usuario borra la columna `Presupuesto` cada mes para resetear su tabla dinámica; `Subcategoria`
+  permanece. Si un gasto no tiene `Presupuesto`, el bot deriva la categoría desde la `Subcategoria`.
+  Así las consultas por categoría funcionan en cualquier mes histórico.
 - **Edición contextual** (`aplicar_edicion_contextual`): tras registrar, frases como "cámbialo a 400",
   "ponlo en restaurantes", "fue con BBVA05" editan el último gasto (de `_ultimo_gasto_usuario`, en RAM).
   Recalcula mes si cambia tarjeta/fecha; aprende si cambia categoría; notifica al otro usuario.
@@ -118,9 +140,14 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
 - **`_extraer_json`**: extrae JSON de respuestas del LLM tolerando fences y prosa alrededor (usado por los 3 parsers).
 - **Memoria de contexto** (`_ultimo_gasto_usuario`): guarda último gasto por usuario (en RAM).
 - **Insights post-guardado** (`generar_insight_groq`): si una categoría supera $3,000, comenta. Corre en background vía `asyncio.create_task`.
-- **OCR de tickets** (`analizar_ticket_groq`, Llama 4 Scout): la foto va directo al LLM multimodal. Fallback a Google Vision (`ocr_ticket`+`parsear_ticket`) si Groq falla.
+- **OCR de tickets + desglose** (`analizar_ticket_groq`, Llama 4 Scout): la foto va directo al LLM multimodal.
+  Extrae comercio, monto, fecha **y la lista de productos** (`productos:[{nombre,precio}]`). El desglose se
+  guarda en el CUERPO de la página de Notion (`_bloques_productos` → heading + lista) y se muestra en Telegram
+  (`_texto_desglose`). El concepto pasa por `normalizar_comercio` (usa `COMERCIOS_OCR`) en ambos flujos.
+  Fallback a Google Vision (`ocr_ticket`+`parsear_ticket`) si Groq falla. Tras registrar por foto, `callback_foto`
+  guarda el contexto → habilita edición conversacional sobre ese gasto.
 - **Fallback silencioso:** sin `GROQ_API_KEY` o ante cualquier fallo, el bot usa el comportamiento original. Cero regresiones.
-- Modelos: `llama-3.3-70b-versatile` (texto) y `meta-llama/llama-4-scout-17b-16e-instruct` (visión). Free tier: 1,000 req/día c/u.
+- Modelos: `llama-3.3-70b-versatile` (texto), `meta-llama/llama-4-scout-17b-16e-instruct` (visión) y `whisper-large-v3-turbo` (voz). Free tier: 1,000 req/día.
 
 ---
 

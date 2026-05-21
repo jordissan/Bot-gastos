@@ -1229,6 +1229,58 @@ def _gasto_extremo(propiedad: str, direccion: str):
     return {"concepto": concepto, "monto": monto, "fecha": fecha,
             "presupuesto": _presupuesto_de_props(props)}
 
+def _meses_recientes(n: int) -> list:
+    """Últimos n ciclos terminando en el mes activo (ej: [JUN26, MAY26, ABR26])."""
+    meses, m = [], mes_activo_str()
+    for _ in range(max(1, n)):
+        meses.append(m)
+        m = _mes_anterior(m)
+    return meses
+
+def _totales_por_ciclo() -> dict:
+    """{codigo_mes: gasto_total} leído de los rollups de Balance (1 query)."""
+    res = {}
+    if not NOTION_BALANCE_ID:
+        return res
+    for p in query_notion_db(NOTION_BALANCE_ID):
+        props = p.get("properties", {})
+        code = ""
+        for v in props.values():
+            if v.get("type") == "title":
+                t = v.get("title", [])
+                code = t[0]["text"]["content"] if t else ""
+                break
+        g = props.get("Gasto", {})
+        total = (g.get("rollup", {}) or {}).get("number")
+        if total is None:
+            total = g.get("number")
+        if code and isinstance(total, (int, float)):
+            res[code] = total
+    return res
+
+def _promedio_mensual() -> dict:
+    """Promedio de gasto mensual sobre los ciclos con gasto > 0."""
+    totales = [v for v in _totales_por_ciclo().values() if v > 0]
+    if not totales:
+        return {}
+    return {"promedio": sum(totales) / len(totales), "meses": len(totales), "total": sum(totales)}
+
+def _gastos_recientes(n_meses: int = 3) -> list:
+    """Lista de (concepto, monto, fecha) de los últimos n ciclos."""
+    items = []
+    for mes in _meses_recientes(n_meses):
+        mid = buscar_mes_id(mes)
+        if not mid:
+            continue
+        for g in query_notion_db(NOTION_DATABASE_ID, {"property": "Mes", "relation": {"contains": mid}}):
+            props = g.get("properties", {})
+            monto = props.get("Monto", {}).get("number", 0) or 0
+            titulo = props.get("Concepto", {}).get("title", [])
+            concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+            fecha = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
+            items.append((concepto, monto, fecha))
+    return items
+
 def _datos_consulta_especial(modo: str):
     """Devuelve el texto de datos para los modos de agregación especial, o None si no aplica."""
     if modo == "por_anio":
@@ -1249,7 +1301,52 @@ def _datos_consulta_especial(modo: str):
             return "No encontré ese gasto."
         cat = f", categoría {g['presupuesto']}" if g.get("presupuesto") else ""
         return f"El gasto {etq}: '{g['concepto']}' por ${g['monto']:,.2f} el {g['fecha']}{cat}."
+    if modo == "ranking_categorias":
+        res = ejecutar_consulta_finanzas({"meses": _meses_recientes(3)})
+        if res["conteo"] == 0:
+            return "Sin gastos en los últimos 3 meses."
+        cats = sorted(res["por_categoria"].items(), key=lambda x: x[1], reverse=True)
+        detalle = ", ".join(f"{k}=${v:,.0f}" for k, v in cats[:8])
+        return f"En qué se va el dinero (últimos 3 meses, {', '.join(res['meses'])}): {detalle}. Total ${res['total']:,.0f}."
+    if modo == "promedio_mensual":
+        d = _promedio_mensual()
+        if not d:
+            return "Sin datos para calcular el promedio."
+        return f"Promedio de gasto mensual: ${d['promedio']:,.0f} (sobre {d['meses']} meses con registro)."
+    if modo == "dia_semana":
+        items = _gastos_recientes(3)
+        entre = sum(m for c, m, f in items if f and _es_finde(f) is False)
+        finde = sum(m for c, m, f in items if f and _es_finde(f) is True)
+        ce = sum(1 for c, m, f in items if f and _es_finde(f) is False)
+        cf = sum(1 for c, m, f in items if f and _es_finde(f) is True)
+        return (f"Últimos 3 meses — Entre semana (lun-vie): ${entre:,.0f} en {ce} gastos. "
+                f"Fines de semana (sáb-dom): ${finde:,.0f} en {cf} gastos.")
+    if modo == "desviacion":
+        tot = _totales_por_ciclo()
+        activo = mes_activo_str()
+        actual = tot.get(activo, 0)
+        otros = [v for k, v in tot.items() if k != activo and v > 0]
+        if not otros:
+            return "Aún no tengo suficientes meses para comparar."
+        prom = sum(otros) / len(otros)
+        dif = actual - prom
+        signo = "MÁS" if dif >= 0 else "MENOS"
+        return (f"Mes activo ({activo}): ${actual:,.0f}. Promedio de tus otros meses: ${prom:,.0f}. "
+                f"Estás gastando ${abs(dif):,.0f} {signo} que tu promedio.")
+    if modo == "hormiga":
+        items = _gastos_recientes(3)
+        chicos = [(c, m) for c, m, f in items if 0 < m <= 200]
+        total = sum(m for _, m in chicos)
+        return (f"Gasto hormiga últimos 3 meses (gastos ≤ $200): ${total:,.0f} en {len(chicos)} gastos chiquitos. "
+                f"Equivale a ${total/3:,.0f} al mes en gastos pequeños.")
     return None
+
+def _es_finde(fecha_iso: str):
+    """True si la fecha cae en sábado o domingo; False entre semana; None si no parsea."""
+    try:
+        return datetime.date.fromisoformat(fecha_iso[:10]).weekday() >= 5
+    except (ValueError, TypeError):
+        return None
 
 async def responder_consulta_groq(texto: str, user_id: int, update, context) -> bool:
     """
@@ -1283,15 +1380,20 @@ Devuelve SOLO JSON válido, sin markdown ni texto extra:
 
 Reglas:
 - "modo" decide cómo se consultan los datos:
-   - "detalle" (default): totales/categorías de meses específicos. Usa "meses".
-   - "por_anio": comparar o totalizar gasto POR AÑO ("¿qué año gasté más?", "gasto por año", "cuánto gasté en 2023").
+   - "detalle" (default): totales/categorías de meses específicos. Usa "meses". También para "¿cuántas veces fui a X?" (pon el comercio y se cuenta la frecuencia).
+   - "por_anio": gasto POR AÑO ("¿qué año gasté más?", "gasto por año", "cuánto gasté en 2023", "cuánto llevo este año").
    - "primero": el gasto MÁS ANTIGUO registrado ("mi primer gasto").
    - "ultimo": el gasto MÁS RECIENTE.
    - "mayor": el gasto MÁS CARO de toda la historia.
-   Si el modo no es "detalle", "meses"/"categoria"/"comercio" se ignoran.
+   - "ranking_categorias": "¿en qué se me va el dinero?", "¿en qué gasto más?" (top categorías recientes, sin mes específico).
+   - "promedio_mensual": "¿cuánto gasto en promedio al mes?".
+   - "dia_semana": "¿cuánto gasto en fines de semana?", "entre semana vs fin de semana".
+   - "desviacion": "¿estoy gastando de más este mes?", "¿cómo voy vs mi promedio?".
+   - "hormiga": "¿cuál es mi gasto hormiga?", gastos pequeños repetidos.
+   Si el modo no es "detalle", "meses"/"categoria"/"comercio" se ignoran (salvo "comercio" para frecuencia en detalle).
 - "meses": lista de códigos relevantes (solo modo detalle). "este mes"={activo}. "mes pasado"=el anterior al activo. Para comparaciones incluye todos los meses. Vacío = mes activo.
 - "categoria": un nombre EXACTO de la lista de categorías válidas, o null.
-- "comercio": texto a buscar dentro del concepto del gasto (ej "costco", "uber"), o null.
+- "comercio": texto a buscar dentro del concepto del gasto (ej "costco", "uber", "starbucks"), o null.
 - Nombre de mes en español → código (ej: marzo 2026 → MAR26), usando el año correcto según hoy.
 - Si la pregunta NO es sobre finanzas/gastos, devuelve {{"error":"no_finanzas"}}."""
 
