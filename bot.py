@@ -1194,6 +1194,63 @@ def _formatear_datos_consulta(res: dict) -> str:
             f"{c} ${m:,.0f} ({_fecha_corta(f)})" for c, m, f, _ in res["top"]))
     return "\n".join(partes)
 
+def _agg_por_anio() -> dict:
+    """Gasto total por año, leído de los rollups de la BD Balance (1 query, eficiente)."""
+    if not NOTION_BALANCE_ID:
+        return {}
+    por_anio = {}
+    for p in query_notion_db(NOTION_BALANCE_ID):
+        props = p.get("properties", {})
+        sel = props.get("Año", {}).get("select")
+        anio = sel.get("name") if sel else None
+        g = props.get("Gasto", {})
+        total = (g.get("rollup", {}) or {}).get("number")
+        if total is None:
+            total = g.get("number")
+        if anio and isinstance(total, (int, float)):
+            por_anio[anio] = por_anio.get(anio, 0) + total
+    return por_anio
+
+def _gasto_extremo(propiedad: str, direccion: str):
+    """Trae 1 gasto ordenado por una propiedad (más antiguo/reciente/caro). 1 query."""
+    body = {"page_size": 1, "sorts": [{"property": propiedad, "direction": direccion}]}
+    r = notion_request("POST", f"{NOTION_API_BASE}/databases/{NOTION_DATABASE_ID}/query",
+                       headers=nh(), json=body, timeout=NOTION_T_DEFAULT)
+    if not r or r.status_code != 200:
+        return None
+    res = r.json().get("results", [])
+    if not res:
+        return None
+    props = res[0].get("properties", {})
+    titulo = props.get("Concepto", {}).get("title", [])
+    concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+    monto = props.get("Monto", {}).get("number", 0) or 0
+    fecha = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
+    return {"concepto": concepto, "monto": monto, "fecha": fecha,
+            "presupuesto": _presupuesto_de_props(props)}
+
+def _datos_consulta_especial(modo: str):
+    """Devuelve el texto de datos para los modos de agregación especial, o None si no aplica."""
+    if modo == "por_anio":
+        pa = _agg_por_anio()
+        if not pa:
+            return "Sin datos de gasto por año."
+        top = max(pa.items(), key=lambda x: x[1])
+        detalle = ", ".join(f"{a}=${v:,.0f}" for a, v in sorted(pa.items()))
+        return f"Gasto total por año: {detalle}. El año con MÁS gasto fue {top[0]} (${top[1]:,.0f})."
+    if modo in ("primero", "ultimo", "mayor"):
+        if modo == "primero":
+            g, etq = _gasto_extremo("Fecha", "ascending"), "más antiguo registrado"
+        elif modo == "ultimo":
+            g, etq = _gasto_extremo("Fecha", "descending"), "más reciente"
+        else:
+            g, etq = _gasto_extremo("Monto", "descending"), "más caro de toda la historia"
+        if not g:
+            return "No encontré ese gasto."
+        cat = f", categoría {g['presupuesto']}" if g.get("presupuesto") else ""
+        return f"El gasto {etq}: '{g['concepto']}' por ${g['monto']:,.2f} el {g['fecha']}{cat}."
+    return None
+
 async def responder_consulta_groq(texto: str, user_id: int, update, context) -> bool:
     """
     Responde una consulta en lenguaje natural con datos reales de Notion, en 2 pasos:
@@ -1218,13 +1275,21 @@ El usuario del bot de gastos pregunta: "{texto}"
 
 Devuelve SOLO JSON válido, sin markdown ni texto extra:
 {{
+  "modo": "detalle",
   "meses": ["{activo}"],
   "categoria": null,
   "comercio": null
 }}
 
 Reglas:
-- "meses": lista de códigos relevantes. "este mes"={activo}. "mes pasado"=el anterior al activo. Para comparaciones incluye todos los meses. Vacío = mes activo.
+- "modo" decide cómo se consultan los datos:
+   - "detalle" (default): totales/categorías de meses específicos. Usa "meses".
+   - "por_anio": comparar o totalizar gasto POR AÑO ("¿qué año gasté más?", "gasto por año", "cuánto gasté en 2023").
+   - "primero": el gasto MÁS ANTIGUO registrado ("mi primer gasto").
+   - "ultimo": el gasto MÁS RECIENTE.
+   - "mayor": el gasto MÁS CARO de toda la historia.
+   Si el modo no es "detalle", "meses"/"categoria"/"comercio" se ignoran.
+- "meses": lista de códigos relevantes (solo modo detalle). "este mes"={activo}. "mes pasado"=el anterior al activo. Para comparaciones incluye todos los meses. Vacío = mes activo.
 - "categoria": un nombre EXACTO de la lista de categorías válidas, o null.
 - "comercio": texto a buscar dentro del concepto del gasto (ej "costco", "uber"), o null.
 - Nombre de mes en español → código (ej: marzo 2026 → MAR26), usando el año correcto según hoy.
@@ -1238,8 +1303,15 @@ Reglas:
     if plan.get("error") == "no_finanzas":
         return False
 
-    res = await asyncio.to_thread(ejecutar_consulta_finanzas, plan)
-    datos = _formatear_datos_consulta(res)
+    modo = (plan.get("modo") or "detalle").strip().lower()
+    if modo != "detalle":
+        datos = await asyncio.to_thread(_datos_consulta_especial, modo)
+        if not datos:
+            res = await asyncio.to_thread(ejecutar_consulta_finanzas, plan)
+            datos = _formatear_datos_consulta(res)
+    else:
+        res = await asyncio.to_thread(ejecutar_consulta_finanzas, plan)
+        datos = _formatear_datos_consulta(res)
 
     prompt_resp = f"""Eres el asistente del bot de gastos de Jordi y Nani. Responde en español mexicano, claro y directo (máx 3 oraciones). Usa $ con separador de miles. Emojis con moderación.
 
