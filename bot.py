@@ -2572,22 +2572,36 @@ async def start(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return
     nombre = USUARIOS_NOMBRES.get(update.effective_user.id, "")
     await update.message.reply_text(
-        f"Hola {nombre} 👋\n\n"
-        "💸 *Cómo anotar un gasto*\n"
-        "`Concepto  Monto  [Tarjeta]  [Fecha]`\n\n"
-        "Starbucks 150\n"
-        "Gasolina 500 BBVA05\n"
-        "Walmart 350 ayer\n"
-        "Oxxo Gas 400 15-may\n\n"
-        "📸 También puedes mandar una foto del ticket\n\n"
-        "💳 *Tarjetas*\n"
-        "BBVA05 · BBVA12 · HEYB25 · BMEX04 · EFVO\n\n"
+        f"Hola {nombre} 👋 soy tu bot de gastos personal.\n\n"
+
+        "━━━━━━━━━━━━━━━━\n"
+        "💸 *Anotar un gasto*\n"
+        "Escríbelo directo, con voz 🎤 o foto del ticket 📸\n"
+        "`Starbucks 150`\n"
+        "`Gasolina 500 BBVA05 ayer`\n"
+        "`Walmart 350 15-may`\n\n"
+
+        "━━━━━━━━━━━━━━━━\n"
+        "🔍 *Pregúntame lo que quieras*\n"
+        "Entiendo lenguaje natural:\n"
+        "• _¿Cuánto gasté ayer?_\n"
+        "• _¿En qué semana del mes gasto más?_\n"
+        "• _¿Está subiendo mi gasto en Restaurantes?_\n"
+        "• _¿Cuándo fui por última vez a Costco?_\n"
+        "• _¿Cuáles son mis gastos fijos cada mes?_\n"
+        "• _¿Cuánto me ahorraría si dejo Starbucks?_\n\n"
+
+        "━━━━━━━━━━━━━━━━\n"
         "📋 *Comandos*\n"
-        "/resumen — mes activo _(también: /resumen MAY26)_\n"
+        "/resumen — resumen del mes activo\n"
         "/estadisticas — este mes vs el anterior\n"
+        "/reporte — reporte semanal o mensual\n"
+        "/top — top 5 gastos del mes\n"
+        "/buscar — buscar por concepto\n"
         "/corregir — cambiar categoría o monto\n"
-        "/eliminar — borrar el último gasto\n"
-        "/prueba — simular sin registrar",
+        "/eliminar — borrar el último gasto\n\n"
+
+        "💳 BBVA05 · BBVA12 · HEYB25 · BMEX04 · EFVO",
         parse_mode="Markdown"
     )
 
@@ -3136,6 +3150,21 @@ async def setup_webhook(app):
     info = await app.bot.get_webhook_info()
     logger.info(f"Webhook configurado: {info.url}")
 
+    from telegram import BotCommand
+    await app.bot.set_my_commands([
+        BotCommand("resumen",      "📊 Resumen del mes activo"),
+        BotCommand("estadisticas", "📈 Este mes vs el anterior"),
+        BotCommand("reporte",      "📰 Reporte semanal o mensual"),
+        BotCommand("top",          "🏆 Top 5 gastos del mes"),
+        BotCommand("buscar",       "🔍 Buscar gastos por concepto"),
+        BotCommand("corregir",     "✏️ Corregir categoría o monto"),
+        BotCommand("eliminar",     "🗑️ Eliminar el último gasto"),
+        BotCommand("prueba",       "🧪 Simular un gasto sin registrar"),
+        BotCommand("cancelar",     "❌ Cancelar acción en curso"),
+        BotCommand("start",        "👋 Ver instrucciones"),
+    ])
+    logger.info("Comandos de Telegram actualizados")
+
 def main():
     global _ptb_app
     precargar_meses()
@@ -3206,7 +3235,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_final17...")
+    logger.info("Bot corriendo v_final20...")
     server.serve_forever()
 
 if __name__ == "__main__":
