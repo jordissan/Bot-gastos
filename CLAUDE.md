@@ -54,7 +54,7 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
 
 ---
 
-## Versión actual: v_final19
+## Versión actual: v_final20
 
 > Novedades v18: voz (Whisper), desglose de productos en tickets, respaldo de presupuesto por
 > Subcategoría, consultas de agregación (por año / primer-último-mayor gasto / promedio / día de
@@ -125,9 +125,20 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
   - `promedio_mensual` (`_promedio_mensual`): promedio de gasto por mes global (rollups de Balance). **Con `categoria`**: promedio mensual de esa categoría específica (12 meses atrás).
   - `dia_semana` (`_es_finde`): entre semana vs fin de semana. **Acepta `categoria` y `meses`** para filtrar.
   - `desviacion` (`_totales_por_ciclo`): mes activo vs promedio histórico. **Con `categoria`**: compara esa categoría en el mes activo vs su promedio histórico (últimos 7 meses).
-  - `hormiga`: suma de gastos < $150. **Acepta `categoria` y `meses`** para filtrar ("¿cuánto gasto hormiga en Servicios?").
-  - Frecuencia de un comercio ("¿cuántas veces fui a Starbucks?") = `detalle` + `comercio` (usa `conteo`).
+  - `hormiga`: suma de gastos < $150. **Acepta `categoria` y `meses`**.
+  - `dia_mas_caro`: el día del mes con más gasto. Acepta `categoria` y `meses`.
+  - `semana_mes`: gasto por semana del mes (sem1=días 1-7…). Acepta `categoria` y `meses`.
+  - `ultima_visita`: última vez en un comercio + histórico del año. Requiere `comercio`. Filtra por `Fecha` directo en Notion (último año).
+  - `tendencia`: sube/baja el gasto en los últimos 6 meses. Acepta `categoria`. Calcula pendiente primera vs segunda mitad del período.
+  - `mes_mas_caro`: mes más caro de un año. Usa campo `anio` del plan + opcional `categoria`. Consulta todos los meses del año en un solo `ejecutar_consulta_finanzas`.
+  - `recurrentes`: gastos que aparecen en 3+ de los últimos 6 meses. Agrupa por concepto normalizado (primeros 18 chars).
+  - `dias_sin_gasto`: días desde el último gasto en una categoría. Requiere `categoria`.
+  - `promedio_dia`: gasto diario promedio. Para mes activo usa días transcurridos; para histórico usa 30 días/mes.
+  - `ranking_frecuencia`: top categorías por número de compras (no por monto).
+  - `proyeccion_ahorro`: total + visitas del último año en un comercio → ahorro proyectado anual. Usa filtro `Fecha` directo.
+  - Frecuencia de comercio ("¿cuántas veces fui a Starbucks?") = `detalle` + `comercio`.
   - Helpers: `_meses_recientes(n)`, `_gastos_recientes(n, categoria, meses_especificos)`.
+  - Plan JSON incluye nuevo campo `anio` (4 dígitos) para preguntas de año específico.
 - **Voz unificada** (`handle_voice`, `groq_transcribir` con `whisper-large-v3-turbo`): los mensajes de voz se
   transcriben y pasan por el MISMO clasificador que el texto (gasto/consulta/edición). Registrado como
   entry_point extra de `conv_gasto` (`filters.VOICE | filters.AUDIO`).

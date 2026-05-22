@@ -1438,6 +1438,238 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
         return (f"Gasto hormiga{cat_str}{periodo} (gastos < $150): "
                 f"${total:,.0f} en {len(chicos)} gastos chiquitos. "
                 f"Equivale a ${total/n_meses:,.0f} al mes en gastos pequeños.")
+
+    # ── NUEVOS MODOS ─────────────────────────────────────────────────────────────
+
+    if modo == "dia_mas_caro":
+        # El día del mes con más gasto total
+        meses_t = meses_plan or [mes_activo_str()]
+        items = _gastos_recientes(len(meses_t), categoria=categoria, meses_especificos=meses_t)
+        por_dia = {}
+        for c, m, f in items:
+            dia = f[:10] if f else None
+            if dia:
+                por_dia[dia] = por_dia.get(dia, 0) + m
+        if not por_dia:
+            cat_str = f" en {categoria}" if categoria else ""
+            return f"Sin gastos para analizar{cat_str}."
+        dia_max = max(por_dia, key=por_dia.get)
+        top = sorted(por_dia.items(), key=lambda x: x[1], reverse=True)[:5]
+        cat_str = f" en {categoria}" if categoria else ""
+        detalle = ", ".join(f"{d}=${v:,.0f}" for d, v in top)
+        return (f"Día con más gasto{cat_str} ({', '.join(meses_t)}): {dia_max} (${por_dia[dia_max]:,.0f}). "
+                f"Top días: {detalle}.")
+
+    if modo == "semana_mes":
+        # Gasto agrupado por semana del mes (sem1=días 1-7, sem2=8-14, sem3=15-21, sem4=22+)
+        meses_t = meses_plan or [mes_activo_str()]
+        items = _gastos_recientes(len(meses_t), categoria=categoria, meses_especificos=meses_t)
+        semanas = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
+        rangos = {1: "días 1-7", 2: "días 8-14", 3: "días 15-21", 4: "días 22-31"}
+        for c, m, f in items:
+            if not f:
+                continue
+            try:
+                dia_num = datetime.date.fromisoformat(f[:10]).day
+                s = min((dia_num - 1) // 7 + 1, 4)
+                semanas[s] += m
+            except (ValueError, TypeError):
+                pass
+        if not any(semanas.values()):
+            return "Sin gastos para analizar por semana."
+        mejor = max(semanas, key=semanas.get)
+        cat_str = f" en {categoria}" if categoria else ""
+        detalle = ", ".join(f"Sem{s} ({rangos[s]})=${v:,.0f}" for s, v in semanas.items() if v > 0)
+        return (f"Gasto por semana{cat_str} ({', '.join(meses_t)}): {detalle}. "
+                f"La semana con más gasto es la semana {mejor} ({rangos[mejor]}).")
+
+    if modo == "ultima_visita":
+        # Última vez que se gastó en un comercio específico
+        comercio_q = normalizar(plan.get("comercio") or "")
+        nombre_comercio = plan.get("comercio") or comercio_q
+        if not comercio_q:
+            return "Especifica a qué comercio te refieres."
+        hoy_local = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+        hace_un_anio = (hoy_local - datetime.timedelta(days=365)).strftime("%Y-%m-%d")
+        gastos = query_notion_db(NOTION_DATABASE_ID,
+            {"property": "Fecha", "date": {"on_or_after": hace_un_anio}})
+        encontrados = []
+        for g in gastos:
+            props = g.get("properties", {})
+            titulo = props.get("Concepto", {}).get("title", [])
+            concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+            if comercio_q not in normalizar(concepto):
+                continue
+            monto = props.get("Monto", {}).get("number", 0) or 0
+            fecha = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
+            if fecha:
+                encontrados.append((concepto, monto, fecha))
+        if not encontrados:
+            return f"No encontré gastos en '{nombre_comercio}' en el último año."
+        encontrados.sort(key=lambda x: x[2], reverse=True)
+        c, m, f = encontrados[0]
+        n = len(encontrados)
+        total = sum(x[1] for x in encontrados)
+        dias_desde = (hoy_local - datetime.date.fromisoformat(f[:10])).days
+        return (f"Última visita a {c}: {f[:10]} (hace {dias_desde} días, ${m:,.0f}). "
+                f"En el último año: {n} visitas, ${total:,.0f} total.")
+
+    if modo == "tendencia":
+        # Evolución mensual de una categoría (o total) en los últimos 6 meses
+        meses_hist = list(reversed(_meses_recientes(6)))  # orden cronológico
+        puntos = []
+        for mes in meses_hist:
+            r = ejecutar_consulta_finanzas({"meses": [mes], "categoria": categoria})
+            puntos.append((mes, r["total"]))
+        while puntos and puntos[0][1] == 0:   # quitar ceros iniciales
+            puntos.pop(0)
+        if len(puntos) < 2:
+            cat_str = f" en {categoria}" if categoria else ""
+            return f"No hay suficientes datos para ver la tendencia{cat_str}."
+        mitad = len(puntos) // 2
+        prom_antes = sum(v for _, v in puntos[:mitad]) / mitad
+        prom_despues = sum(v for _, v in puntos[mitad:]) / (len(puntos) - mitad)
+        cambio = ((prom_despues - prom_antes) / prom_antes * 100) if prom_antes else 0
+        icono = "📈" if cambio > 5 else ("📉" if cambio < -5 else "➡️")
+        cat_str = f" en {categoria}" if categoria else ""
+        detalle = ", ".join(f"{mes}=${v:,.0f}" for mes, v in puntos)
+        return (f"Tendencia{cat_str}: {detalle}. "
+                f"{icono} {cambio:+.1f}% vs primeros meses del período.")
+
+    if modo == "mes_mas_caro":
+        # El mes con más gasto en un año (con filtro opcional de categoría)
+        hoy_local = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+        anio_str = str(plan.get("anio") or hoy_local.year)
+        anio_2d  = anio_str[-2:]
+        orden    = ["ENE","FEB","MAR","ABR","MAY","JUN","JUL","AGO","SEP","OCT","NOV","DIC"]
+        meses_anio = [f"{m}{anio_2d}" for m in orden if f"{m}{anio_2d}" in _meses_cache]
+        if not meses_anio:
+            return f"No encontré meses del año {anio_str} en los registros."
+        res = ejecutar_consulta_finanzas({"meses": meses_anio, "categoria": categoria})
+        if not res["por_mes"]:
+            cat_str = f" en {categoria}" if categoria else ""
+            return f"Sin gastos{cat_str} en {anio_str}."
+        mejor = max(res["por_mes"], key=res["por_mes"].get)
+        cat_str = f" en {categoria}" if categoria else ""
+        detalle = ", ".join(f"{m}=${v:,.0f}" for m, v in
+                            sorted(res["por_mes"].items(),
+                                   key=lambda x: orden.index(x[0][:3]) if x[0][:3] in orden else 99))
+        return (f"Mes con más gasto{cat_str} en {anio_str}: {mejor} (${res['por_mes'][mejor]:,.0f}). "
+                f"Desglose: {detalle}.")
+
+    if modo == "recurrentes":
+        # Gastos que aparecen en 3+ de los últimos 6 meses (gastos fijos/recurrentes)
+        n_meses_rec = 6
+        apariciones: dict = {}
+        for mes in _meses_recientes(n_meses_rec):
+            mid = buscar_mes_id(mes)
+            if not mid:
+                continue
+            for g in query_notion_db(NOTION_DATABASE_ID,
+                                     {"property": "Mes", "relation": {"contains": mid}}):
+                props = g.get("properties", {})
+                titulo = props.get("Concepto", {}).get("title", [])
+                concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+                monto = props.get("Monto", {}).get("number", 0) or 0
+                clave = normalizar(concepto)[:18]
+                if not clave:
+                    continue
+                if clave not in apariciones:
+                    apariciones[clave] = {"concepto": concepto, "meses": set(), "total": 0.0}
+                apariciones[clave]["meses"].add(mes)
+                apariciones[clave]["total"] += monto
+        recurrentes = [
+            (d["concepto"], len(d["meses"]), d["total"] / len(d["meses"]))
+            for d in apariciones.values() if len(d["meses"]) >= 3
+        ]
+        recurrentes.sort(key=lambda x: x[1], reverse=True)
+        if not recurrentes:
+            return "No encontré gastos que se repitan en 3 o más de los últimos 6 meses."
+        detalle = "; ".join(
+            f"{c} ({n}/{n_meses_rec} meses, ~${p:,.0f}/mes)" for c, n, p in recurrentes[:10])
+        return f"Gastos recurrentes (últimos {n_meses_rec} meses): {detalle}."
+
+    if modo == "dias_sin_gasto":
+        # Cuántos días llevas sin gastar en una categoría (o en general)
+        hoy_local = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+        items = _gastos_recientes(3, categoria=categoria)
+        con_fecha = [(c, m, f) for c, m, f in items if f]
+        if not con_fecha:
+            cat_str = f" en {categoria}" if categoria else ""
+            return f"No encontré gastos{cat_str} en los últimos 3 meses."
+        ultimo = max(con_fecha, key=lambda x: x[2])
+        fecha_ult = datetime.date.fromisoformat(ultimo[2][:10])
+        dias = (hoy_local - fecha_ult).days
+        cat_str = f" en {categoria}" if categoria else ""
+        return (f"El último gasto{cat_str} fue el {ultimo[2][:10]} ({ultimo[0]}, ${ultimo[1]:,.0f}). "
+                f"Llevas {dias} día{'s' if dias != 1 else ''} sin gastar{cat_str}.")
+
+    if modo == "promedio_dia":
+        # Gasto promedio por día en el mes activo (o en meses específicos)
+        hoy_local = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+        activo    = mes_activo_str()
+        meses_t   = meses_plan or [activo]
+        res = ejecutar_consulta_finanzas({"meses": meses_t, "categoria": categoria})
+        if res["total"] == 0:
+            return "Sin gastos para calcular el promedio diario."
+        if len(meses_t) == 1 and meses_t[0] == activo:
+            dias = max(hoy_local.day, 1)
+            nota = f"{dias} días del mes en curso"
+        else:
+            dias = len(meses_t) * 30
+            nota = f"~{dias} días ({len(meses_t)} meses)"
+        promedio = res["total"] / dias
+        cat_str = f" en {categoria}" if categoria else ""
+        return (f"Gasto total{cat_str} ({', '.join(meses_t)}): ${res['total']:,.0f} ({nota}). "
+                f"Promedio diario: ${promedio:,.0f}/día.")
+
+    if modo == "ranking_frecuencia":
+        # Categorías ordenadas por número de transacciones (no por monto)
+        meses_t = meses_plan or _meses_recientes(3)
+        por_cat: dict = {}
+        for mes in meses_t:
+            mid = buscar_mes_id(mes)
+            if not mid:
+                continue
+            for g in query_notion_db(NOTION_DATABASE_ID,
+                                     {"property": "Mes", "relation": {"contains": mid}}):
+                props = g.get("properties", {})
+                pr = _presupuesto_de_props(props)
+                if pr:
+                    por_cat[pr] = por_cat.get(pr, 0) + 1
+        if not por_cat:
+            return "Sin datos para el ranking."
+        ranking = sorted(por_cat.items(), key=lambda x: x[1], reverse=True)
+        detalle = ", ".join(f"{k} ({v} compras)" for k, v in ranking[:8])
+        return f"Categorías por número de compras ({', '.join(meses_t)}): {detalle}."
+
+    if modo == "proyeccion_ahorro":
+        # Si eliminaras X comercio, ¿cuánto ahorrarías al año?
+        comercio_q = normalizar(plan.get("comercio") or "")
+        nombre_comercio = plan.get("comercio") or comercio_q
+        if not comercio_q:
+            return "Especifica qué comercio o hábito quieres analizar."
+        hoy_local = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+        hace_un_anio = (hoy_local - datetime.timedelta(days=365)).strftime("%Y-%m-%d")
+        gastos = query_notion_db(NOTION_DATABASE_ID,
+            {"property": "Fecha", "date": {"on_or_after": hace_un_anio}})
+        total, conteo = 0.0, 0
+        for g in gastos:
+            props = g.get("properties", {})
+            titulo = props.get("Concepto", {}).get("title", [])
+            concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+            if comercio_q not in normalizar(concepto):
+                continue
+            monto = props.get("Monto", {}).get("number", 0) or 0
+            total += monto
+            conteo += 1
+        if conteo == 0:
+            return f"No encontré gastos en '{nombre_comercio}' en el último año."
+        promedio_mes = total / 12
+        return (f"En el último año gastaste ${total:,.0f} en {nombre_comercio} "
+                f"({conteo} visitas, ~${promedio_mes:,.0f}/mes). "
+                f"Si lo eliminaras, ahorrarías ~${total:,.0f} al año.")
+
     return None
 
 def _es_finde(fecha_iso: str):
@@ -1471,56 +1703,57 @@ async def responder_consulta_groq(texto: str, user_id: int, update, context) -> 
     # Lunes de esta semana
     lunes_esta    = hoy - datetime.timedelta(days=hoy.weekday())
 
-    prompt_plan = f"""Hoy es {hoy.strftime('%d/%m/%Y')} ({hoy_iso}). El mes de ciclo activo es {activo}.
-Meses disponibles (formato MES+AA): {meses_disp}
+    prompt_plan = f"""Hoy es {hoy.strftime('%d/%m/%Y')} ({hoy_iso}). Mes de ciclo activo: {activo}.
+Meses disponibles: {meses_disp}
 Categorías válidas: {categorias}
 
-Fechas de referencia (ya calculadas, úsalas directamente):
-- Ayer: {ayer}
-- Esta semana (lunes): {lunes_esta.strftime('%Y-%m-%d')}
+Fechas de referencia:
+- Ayer: {ayer}  | Esta semana (lunes): {lunes_esta.strftime('%Y-%m-%d')}
 - Semana pasada: {lunes_pasado.strftime('%Y-%m-%d')} a {domingo_pasado.strftime('%Y-%m-%d')}
+- Hace 7 días: {(hoy - datetime.timedelta(days=6)).strftime('%Y-%m-%d')}
 
-El usuario del bot de gastos pregunta: "{texto}"
+El usuario pregunta: "{texto}"
 
-Devuelve SOLO JSON válido, sin markdown ni texto extra:
+Devuelve SOLO JSON válido:
 {{
   "modo": "detalle",
   "meses": ["{activo}"],
   "categoria": null,
   "comercio": null,
   "fecha_desde": null,
-  "fecha_hasta": null
+  "fecha_hasta": null,
+  "anio": null
 }}
 
-Reglas:
-- "modo" decide cómo se consultan los datos:
-   - "detalle" (default): totales por meses o por rango de fechas. También para "¿cuántas veces fui a X?".
-   - "por_anio": gasto POR AÑO ("¿qué año gasté más?", "cuánto llevo este año").
-   - "primero": el gasto MÁS ANTIGUO registrado ("mi primer gasto").
-   - "ultimo": el gasto MÁS RECIENTE (usar SOLO si el usuario pregunta literalmente por el último gasto, NO para "ayer").
-   - "mayor": el gasto MÁS CARO de toda la historia.
-   - "ranking_categorias": "¿en qué se me va el dinero?", "¿en qué gasto más?".
-   - "promedio_mensual": "¿cuánto gasto en promedio al mes?".
-   - "dia_semana": "¿cuánto gasto en fines de semana?", "entre semana vs fin de semana".
-   - "desviacion": "¿estoy gastando de más este mes?", "¿cómo voy vs mi promedio?".
-   - "hormiga": "¿cuál es mi gasto hormiga?", gastos pequeños repetidos.
-   Los modos "hormiga", "dia_semana", "desviacion" y "promedio_mensual" SÍ aceptan "categoria" y "meses".
-- "fecha_desde" / "fecha_hasta": SIEMPRE en formato YYYY-MM-DD. Usar cuando la pregunta hace referencia a un día o rango de días concretos. Cuando están presentes, "meses" se ignora.
-   - "ayer" → fecha_desde={ayer}, fecha_hasta={ayer}
-   - "hoy" → fecha_desde={hoy_iso}, fecha_hasta={hoy_iso}
-   - "la semana pasada" → fecha_desde={lunes_pasado.strftime('%Y-%m-%d')}, fecha_hasta={domingo_pasado.strftime('%Y-%m-%d')}
-   - "esta semana" → fecha_desde={lunes_esta.strftime('%Y-%m-%d')}, fecha_hasta={hoy_iso}
-   - "el lunes" / "el martes" (sin más contexto) → el día más reciente de ese nombre
-   - "los últimos 7 días" → fecha_desde={( hoy - datetime.timedelta(days=6)).strftime('%Y-%m-%d')}, fecha_hasta={hoy_iso}
-   - Si menciona un día específico (ej "el 15 de mayo") → calcúlalo exacto
-   - Para rangos por MES COMPLETO (mayo, junio...) usa "meses" en su lugar, no fecha_desde/hasta.
-- "meses": lista de códigos (MES+AA). "este mes"={activo}. "mes pasado"=el anterior. Vacío = mes activo.
-- "categoria": un nombre EXACTO de la lista de categorías válidas, o null.
-- "comercio": texto a buscar dentro del concepto (ej "starbucks", "uber"), o null.
-- Nombre de mes en español → código (ej: marzo 2026 → MAR26).
-- Si la pregunta NO es sobre finanzas/gastos, devuelve {{"error":"no_finanzas"}}."""
+MODOS disponibles:
+- "detalle": totales por meses o rango de fechas. Para "¿cuántas veces fui a X?" usa comercio.
+- "por_anio": gasto por año ("¿qué año gasté más?").
+- "primero"/"ultimo"/"mayor": gasto más antiguo/reciente/caro de la historia. "ultimo" es SOLO para "el último gasto que hice", NUNCA para "ayer".
+- "ranking_categorias": top categorías por monto ("¿en qué gasto más?").
+- "ranking_frecuencia": top categorías por número de compras ("¿dónde compro más seguido?", "¿qué categoría tiene más transacciones?").
+- "promedio_mensual": promedio de gasto por mes. Acepta "categoria".
+- "promedio_dia": cuánto gasto al día en promedio. Acepta "categoria" y "meses".
+- "dia_semana": entre semana vs fin de semana. Acepta "categoria" y "meses".
+- "dia_mas_caro": el día del mes con más gasto. Acepta "categoria" y "meses".
+- "semana_mes": gasto por semana del mes (sem1=días1-7, sem2=8-14...). Acepta "categoria" y "meses".
+- "desviacion": este mes vs promedio histórico. Acepta "categoria".
+- "tendencia": si el gasto sube o baja en los últimos 6 meses. Acepta "categoria".
+- "mes_mas_caro": qué mes fue el más caro de un año. Usa "anio" (ej "2025") y opcionalmente "categoria".
+- "hormiga": gastos pequeños (<$150). Acepta "categoria" y "meses".
+- "recurrentes": gastos que se repiten cada mes ("¿cuáles son mis gastos fijos?").
+- "dias_sin_gasto": días desde el último gasto en una categoría. Requiere "categoria".
+- "ultima_visita": última vez que fui a un comercio. Requiere "comercio".
+- "proyeccion_ahorro": cuánto ahorraría si dejara un hábito. Requiere "comercio".
 
-    raw = await asyncio.to_thread(groq_completar, prompt_plan, 150)
+CAMPOS:
+- "fecha_desde"/"fecha_hasta" (YYYY-MM-DD): para días o rangos exactos (ayer, esta semana, el 15 mayo). Cuando se usan, "meses" se ignora.
+- "meses": códigos MES+AA. "este mes"={activo}. "mes pasado"=anterior al activo. Para MES COMPLETO, no uses fecha_desde/hasta.
+- "anio": año de 4 dígitos (ej "2025"), para modo mes_mas_caro u otras preguntas anuales.
+- "categoria": nombre EXACTO de la lista, o null.
+- "comercio": texto a buscar en el concepto (ej "starbucks"), o null.
+- Si la pregunta NO es sobre finanzas/gastos → {{"error":"no_finanzas"}}."""
+
+    raw = await asyncio.to_thread(groq_completar, prompt_plan, 200)
     plan = _extraer_json(raw)
     if not plan:
         logger.warning(f"Plan de consulta inválido — raw: {(raw or '')[:120]}")
