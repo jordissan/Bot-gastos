@@ -1143,7 +1143,9 @@ def ejecutar_consulta_finanzas(plan: dict) -> dict:
     """
     Ejecuta un plan de consulta determinístico contra Notion.
     plan: {"meses": [...], "categoria": str|None, "comercio": str|None,
-           "fecha_desde": "YYYY-MM-DD"|None, "fecha_hasta": "YYYY-MM-DD"|None}
+           "fecha_desde": "YYYY-MM-DD"|None, "fecha_hasta": "YYYY-MM-DD"|None,
+           "historico": bool}
+    Si historico=True, consulta TODOS los registros desde 2020 (sin límite de meses).
     Si fecha_desde/hasta están presentes, filtra por Fecha real (no por ciclo de mes).
     Devuelve un agregado compacto. Es la ÚNICA función que toca datos para consultas NL.
     """
@@ -1151,13 +1153,42 @@ def ejecutar_consulta_finanzas(plan: dict) -> dict:
     comercio    = normalizar(plan.get("comercio") or "") or None
     fecha_desde = (plan.get("fecha_desde") or "").strip() or None
     fecha_hasta = (plan.get("fecha_hasta") or "").strip() or None
+    historico   = bool(plan.get("historico"))
 
     res = {"meses": [], "total": 0.0, "conteo": 0,
            "por_dia": {}, "por_mes": {}, "por_categoria": {}, "top": [],
-           "fecha_desde": fecha_desde, "fecha_hasta": fecha_hasta}
+           "fecha_desde": fecha_desde, "fecha_hasta": fecha_hasta,
+           "historico": historico}
     todos = []
 
-    if fecha_desde or fecha_hasta:
+    if historico:
+        # ── Ruta histórica completa ──────────────────────────────────────────
+        # Consulta todos los registros desde 2020 sin límite de ciclo de mes.
+        hoy_iso = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).strftime("%Y-%m-%d")
+        filtro_notion = {"and": [
+            {"property": "Fecha", "date": {"on_or_after": "2020-01-01"}},
+            {"property": "Fecha", "date": {"on_or_before": hoy_iso}}
+        ]}
+        gastos = query_notion_db(NOTION_DATABASE_ID, filtro_notion)
+        for g in gastos:
+            props = g.get("properties", {})
+            monto = props.get("Monto", {}).get("number", 0) or 0
+            pr    = _presupuesto_de_props(props)
+            titulo = props.get("Concepto", {}).get("title", [])
+            concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+            fecha    = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
+            if categoria and pr != categoria:
+                continue
+            if comercio and comercio not in normalizar(concepto):
+                continue
+            res["total"] += monto
+            res["conteo"] += 1
+            anio = fecha[:4] if fecha else "?"
+            res["por_mes"][anio] = res["por_mes"].get(anio, 0) + monto
+            if pr:
+                res["por_categoria"][pr] = res["por_categoria"].get(pr, 0) + monto
+            todos.append((concepto, monto, fecha, anio))
+    elif fecha_desde or fecha_hasta:
         # ── Ruta por fecha real ──────────────────────────────────────────
         # Filtra directamente por la propiedad Fecha de Notion (ignora ciclo de mes).
         filtros = []
@@ -1222,7 +1253,12 @@ def _formatear_datos_consulta(res: dict) -> str:
     partes = []
     fd = res.get("fecha_desde") or ""
     fh = res.get("fecha_hasta") or ""
-    if fd or fh:
+    if res.get("historico"):
+        partes.append("Consulta histórica completa (desde 2020 hasta hoy)")
+        if res.get("por_mes"):
+            anios = sorted(res["por_mes"].items())
+            partes.append("Por año: " + ", ".join(f"{a}=${v:,.0f}" for a, v in anios))
+    elif fd or fh:
         if fd == fh and fd:
             partes.append(f"Fecha consultada: {fd}")
         else:
@@ -1722,7 +1758,8 @@ Devuelve SOLO JSON válido:
   "comercio": null,
   "fecha_desde": null,
   "fecha_hasta": null,
-  "anio": null
+  "anio": null,
+  "historico": false
 }}
 
 MODOS disponibles:
@@ -1751,15 +1788,20 @@ CAMPOS:
 - "anio": año de 4 dígitos (ej "2025"), para modo mes_mas_caro u otras preguntas anuales.
 - "categoria": nombre EXACTO de la lista, o null.
 - "comercio": texto a buscar en el concepto (ej "starbucks"), o null.
+- "historico": true cuando la pregunta sea sobre toda la historia: "en total", "desde siempre", "cuánto llevo pagado", "cuánto he gastado en total", pagos de coche (VW Polo, mensualidades), gastos recurrentes de largo plazo. Con historico=true se consultan TODOS los registros desde 2020; "meses" se ignora.
 - Si la pregunta NO es sobre finanzas/gastos → {{"error":"no_finanzas"}}."""
 
-    raw = await asyncio.to_thread(groq_completar, prompt_plan, 200)
+    raw = await asyncio.to_thread(groq_completar, prompt_plan, 220)
     plan = _extraer_json(raw)
     if not plan:
         logger.warning(f"Plan de consulta inválido — raw: {(raw or '')[:120]}")
         return False
     if plan.get("error") == "no_finanzas":
         return False
+
+    # Aviso previo para consultas históricas (pueden tardar 15-30 s)
+    if plan.get("historico"):
+        await update.message.reply_text("🔍 Buscando en toda la historia, dame un momento…")
 
     modo = (plan.get("modo") or "detalle").strip().lower()
     res = {"conteo": 0, "total": 0.0, "meses": []}  # fallback por si no se asigna abajo
