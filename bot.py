@@ -3150,8 +3150,8 @@ async def setup_webhook(app):
     info = await app.bot.get_webhook_info()
     logger.info(f"Webhook configurado: {info.url}")
 
-    from telegram import BotCommand
-    await app.bot.set_my_commands([
+    from telegram import BotCommand, BotCommandScopeDefault, BotCommandScopeAllPrivateChats
+    CMDS = [
         BotCommand("resumen",      "📊 Resumen del mes activo"),
         BotCommand("estadisticas", "📈 Este mes vs el anterior"),
         BotCommand("reporte",      "📰 Reporte semanal o mensual"),
@@ -3162,8 +3162,17 @@ async def setup_webhook(app):
         BotCommand("prueba",       "🧪 Simular un gasto sin registrar"),
         BotCommand("cancelar",     "❌ Cancelar acción en curso"),
         BotCommand("start",        "👋 Ver instrucciones"),
-    ])
-    logger.info("Comandos de Telegram actualizados")
+    ]
+    # Limpiar TODOS los scopes para evitar conflictos de prioridad
+    for scope in (BotCommandScopeDefault(), BotCommandScopeAllPrivateChats()):
+        try:
+            await app.bot.delete_my_commands(scope=scope)
+        except Exception:
+            pass
+    # Escribir en Default y AllPrivateChats (este último tiene más prioridad en chats privados)
+    await app.bot.set_my_commands(CMDS, scope=BotCommandScopeDefault())
+    await app.bot.set_my_commands(CMDS, scope=BotCommandScopeAllPrivateChats())
+    logger.info("Comandos de Telegram actualizados en todos los scopes")
 
 def main():
     global _ptb_app
