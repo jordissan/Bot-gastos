@@ -62,9 +62,9 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
 > `Educación` y `Emergencias` creados en Notion + alias `Deudas`→`Deuda`.
 
 > Novedades v19: filtro de categoría y meses en modos especiales (hormiga, dia_semana, desviacion,
-> promedio_mensual) — "¿cuánto gasto hormiga en Servicios?" ya funciona. Asterisco `*` al final del
-> concepto cuando el ticket tiene desglose de productos. Desglose guardado como tabla Notion
-> (Producto | Precio) en vez de lista de bullets.
+> promedio_mensual). Asterisco `*` en concepto cuando el ticket tiene desglose. Desglose como tabla
+> Notion (Producto | Precio). Consultas por fecha real: "¿cuánto gasté ayer?", "¿cuánto gasté la
+> semana pasada?" — filtra por Fecha de Notion, suma todos los gastos del período exacto.
 
 ### Funcionalidades implementadas ✅
 - Registro de gastos por texto: `Concepto Monto [Tarjeta] [Fecha]`
@@ -109,10 +109,15 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
   Evita registrar gastos por accidente al preguntar. `handle_gasto` clasifica ANTES de registrar.
   (Reemplazó la heurística frágil `_parece_gasto`, ya eliminada.)
 - **Consultas en lenguaje natural** (`responder_consulta_groq`): flujo de 2 pasos —
-  (1) Groq genera un *plan de consulta* JSON `{modo, meses, categoria, comercio}`,
+  (1) Groq genera un *plan de consulta* JSON `{modo, meses, categoria, comercio, fecha_desde, fecha_hasta}`,
   (2) según el `modo` se traen los datos de Notion de forma determinística,
-  (3) Groq redacta la respuesta con esos datos. Soporta otros meses, comercios y comparaciones
-  ("¿cuánto en Costco en marzo?", "¿gasté más en restaurantes que el mes pasado?").
+  (3) Groq redacta la respuesta con esos datos. Soporta otros meses, comercios, comparaciones y
+  **rangos de fecha exactos** ("¿cuánto gasté ayer?", "¿y la semana pasada?", "¿el martes cuánto gasté?").
+  - `fecha_desde`/`fecha_hasta` (YYYY-MM-DD): cuando están presentes, `ejecutar_consulta_finanzas`
+    filtra directamente por la propiedad `Fecha` de Notion (no por ciclo de mes). Las fechas de
+    referencia (ayer, semana pasada, esta semana) se pre-calculan en Python antes de pasar al LLM,
+    para que el planner solo necesite copiarlas. `_formatear_datos_consulta` muestra el período
+    consultado y el desglose por día cuando hay varios días.
 - **Modos de agregación del plan de consulta** (`_datos_consulta_especial`): además de `detalle`:
   - `por_anio` (`_agg_por_anio`): gasto por año desde los rollups de Balance ("¿qué año gasté más?", "cuánto llevo este año").
   - `primero`/`ultimo`/`mayor` (`_gasto_extremo`): gasto más antiguo/reciente/caro (1 query con sort+limit).

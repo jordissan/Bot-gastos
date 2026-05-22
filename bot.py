@@ -1142,55 +1142,104 @@ def _presupuesto_desde_subcat(props) -> str:
 def ejecutar_consulta_finanzas(plan: dict) -> dict:
     """
     Ejecuta un plan de consulta determinístico contra Notion.
-    plan: {"meses": [...], "categoria": str|None, "comercio": str|None}
+    plan: {"meses": [...], "categoria": str|None, "comercio": str|None,
+           "fecha_desde": "YYYY-MM-DD"|None, "fecha_hasta": "YYYY-MM-DD"|None}
+    Si fecha_desde/hasta están presentes, filtra por Fecha real (no por ciclo de mes).
     Devuelve un agregado compacto. Es la ÚNICA función que toca datos para consultas NL.
     """
-    meses = plan.get("meses") or [mes_activo_str()]
-    meses = [m.upper() for m in meses][:6]  # tope defensivo
-    categoria = (plan.get("categoria") or "").strip() or None
-    comercio = normalizar(plan.get("comercio") or "") or None
+    categoria   = (plan.get("categoria")   or "").strip() or None
+    comercio    = normalizar(plan.get("comercio") or "") or None
+    fecha_desde = (plan.get("fecha_desde") or "").strip() or None
+    fecha_hasta = (plan.get("fecha_hasta") or "").strip() or None
 
-    res = {"meses": meses, "total": 0.0, "conteo": 0,
-           "por_mes": {}, "por_categoria": {}, "top": []}
+    res = {"meses": [], "total": 0.0, "conteo": 0,
+           "por_dia": {}, "por_mes": {}, "por_categoria": {}, "top": [],
+           "fecha_desde": fecha_desde, "fecha_hasta": fecha_hasta}
     todos = []
-    for mes in meses:
-        mid = buscar_mes_id(mes)
-        if not mid:
-            continue
-        gastos = query_notion_db(NOTION_DATABASE_ID,
-                                 {"property": "Mes", "relation": {"contains": mid}})
+
+    if fecha_desde or fecha_hasta:
+        # ── Ruta por fecha real ──────────────────────────────────────────
+        # Filtra directamente por la propiedad Fecha de Notion (ignora ciclo de mes).
+        filtros = []
+        if fecha_desde:
+            filtros.append({"property": "Fecha", "date": {"on_or_after":  fecha_desde}})
+        if fecha_hasta:
+            filtros.append({"property": "Fecha", "date": {"on_or_before": fecha_hasta}})
+        filtro_notion = {"and": filtros} if len(filtros) > 1 else filtros[0]
+        gastos = query_notion_db(NOTION_DATABASE_ID, filtro_notion)
         for g in gastos:
             props = g.get("properties", {})
             monto = props.get("Monto", {}).get("number", 0) or 0
-            pr = _presupuesto_de_props(props)
+            pr    = _presupuesto_de_props(props)
             titulo = props.get("Concepto", {}).get("title", [])
             concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
-            fecha = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
+            fecha    = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
             if categoria and pr != categoria:
                 continue
             if comercio and comercio not in normalizar(concepto):
                 continue
             res["total"] += monto
             res["conteo"] += 1
-            res["por_mes"][mes] = res["por_mes"].get(mes, 0) + monto
+            dia = fecha[:10] if fecha else "?"
+            res["por_dia"][dia]  = res["por_dia"].get(dia, 0) + monto
             if pr:
                 res["por_categoria"][pr] = res["por_categoria"].get(pr, 0) + monto
-            todos.append((concepto, monto, fecha, mes))
+            todos.append((concepto, monto, fecha, dia))
+    else:
+        # ── Ruta por ciclo de mes (comportamiento original) ──────────────
+        meses = [m.upper() for m in (plan.get("meses") or [])][:6] or [mes_activo_str()]
+        res["meses"] = meses
+        for mes in meses:
+            mid = buscar_mes_id(mes)
+            if not mid:
+                continue
+            gastos = query_notion_db(NOTION_DATABASE_ID,
+                                     {"property": "Mes", "relation": {"contains": mid}})
+            for g in gastos:
+                props = g.get("properties", {})
+                monto = props.get("Monto", {}).get("number", 0) or 0
+                pr    = _presupuesto_de_props(props)
+                titulo = props.get("Concepto", {}).get("title", [])
+                concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+                fecha    = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
+                if categoria and pr != categoria:
+                    continue
+                if comercio and comercio not in normalizar(concepto):
+                    continue
+                res["total"] += monto
+                res["conteo"] += 1
+                res["por_mes"][mes] = res["por_mes"].get(mes, 0) + monto
+                if pr:
+                    res["por_categoria"][pr] = res["por_categoria"].get(pr, 0) + monto
+                todos.append((concepto, monto, fecha, mes))
+
     res["top"] = sorted(todos, key=lambda x: x[1], reverse=True)[:8]
     return res
 
 def _formatear_datos_consulta(res: dict) -> str:
     if res["conteo"] == 0:
         return "Sin gastos que coincidan con la consulta."
-    partes = [f"Meses consultados: {', '.join(res['meses'])}",
-              f"Total: ${res['total']:,.0f}  ({res['conteo']} gastos)"]
-    if len(res["por_mes"]) > 1:
-        partes.append("Por mes: " + ", ".join(f"{m}=${v:,.0f}" for m, v in res["por_mes"].items()))
+    partes = []
+    fd = res.get("fecha_desde") or ""
+    fh = res.get("fecha_hasta") or ""
+    if fd or fh:
+        if fd == fh and fd:
+            partes.append(f"Fecha consultada: {fd}")
+        else:
+            partes.append(f"Período: {fd or '?'} → {fh or '?'}")
+        if len(res.get("por_dia", {})) > 1:
+            dias = sorted(res["por_dia"].items())
+            partes.append("Por día: " + ", ".join(f"{d}=${v:,.0f}" for d, v in dias))
+    else:
+        partes.append(f"Meses consultados: {', '.join(res['meses'])}")
+        if len(res["por_mes"]) > 1:
+            partes.append("Por mes: " + ", ".join(f"{m}=${v:,.0f}" for m, v in res["por_mes"].items()))
+    partes.append(f"Total: ${res['total']:,.0f}  ({res['conteo']} gastos)")
     if res["por_categoria"]:
         cats = sorted(res["por_categoria"].items(), key=lambda x: x[1], reverse=True)
         partes.append("Por categoría: " + ", ".join(f"{k}=${v:,.0f}" for k, v in cats))
     if res["top"]:
-        partes.append("Gastos más grandes: " + "; ".join(
+        partes.append("Gastos del período: " + "; ".join(
             f"{c} ${m:,.0f} ({_fecha_corta(f)})" for c, m, f, _ in res["top"]))
     return "\n".join(partes)
 
@@ -1414,9 +1463,22 @@ async def responder_consulta_groq(texto: str, user_id: int, update, context) -> 
     meses_disp = ", ".join(sorted(_meses_cache.keys())) or activo
     categorias = ", ".join(PR.keys())
 
-    prompt_plan = f"""Hoy es {hoy.strftime('%d/%m/%Y')}. El mes de ciclo activo es {activo}.
+    ayer      = (hoy - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    hoy_iso   = hoy.strftime("%Y-%m-%d")
+    # Lunes y domingo de la semana pasada
+    lunes_pasado  = hoy - datetime.timedelta(days=hoy.weekday() + 7)
+    domingo_pasado = lunes_pasado + datetime.timedelta(days=6)
+    # Lunes de esta semana
+    lunes_esta    = hoy - datetime.timedelta(days=hoy.weekday())
+
+    prompt_plan = f"""Hoy es {hoy.strftime('%d/%m/%Y')} ({hoy_iso}). El mes de ciclo activo es {activo}.
 Meses disponibles (formato MES+AA): {meses_disp}
 Categorías válidas: {categorias}
+
+Fechas de referencia (ya calculadas, úsalas directamente):
+- Ayer: {ayer}
+- Esta semana (lunes): {lunes_esta.strftime('%Y-%m-%d')}
+- Semana pasada: {lunes_pasado.strftime('%Y-%m-%d')} a {domingo_pasado.strftime('%Y-%m-%d')}
 
 El usuario del bot de gastos pregunta: "{texto}"
 
@@ -1425,26 +1487,37 @@ Devuelve SOLO JSON válido, sin markdown ni texto extra:
   "modo": "detalle",
   "meses": ["{activo}"],
   "categoria": null,
-  "comercio": null
+  "comercio": null,
+  "fecha_desde": null,
+  "fecha_hasta": null
 }}
 
 Reglas:
 - "modo" decide cómo se consultan los datos:
-   - "detalle" (default): totales/categorías de meses específicos. Usa "meses". También para "¿cuántas veces fui a X?" (pon el comercio y se cuenta la frecuencia).
-   - "por_anio": gasto POR AÑO ("¿qué año gasté más?", "gasto por año", "cuánto gasté en 2023", "cuánto llevo este año").
+   - "detalle" (default): totales por meses o por rango de fechas. También para "¿cuántas veces fui a X?".
+   - "por_anio": gasto POR AÑO ("¿qué año gasté más?", "cuánto llevo este año").
    - "primero": el gasto MÁS ANTIGUO registrado ("mi primer gasto").
-   - "ultimo": el gasto MÁS RECIENTE.
+   - "ultimo": el gasto MÁS RECIENTE (usar SOLO si el usuario pregunta literalmente por el último gasto, NO para "ayer").
    - "mayor": el gasto MÁS CARO de toda la historia.
-   - "ranking_categorias": "¿en qué se me va el dinero?", "¿en qué gasto más?" (top categorías recientes, sin mes específico).
+   - "ranking_categorias": "¿en qué se me va el dinero?", "¿en qué gasto más?".
    - "promedio_mensual": "¿cuánto gasto en promedio al mes?".
    - "dia_semana": "¿cuánto gasto en fines de semana?", "entre semana vs fin de semana".
    - "desviacion": "¿estoy gastando de más este mes?", "¿cómo voy vs mi promedio?".
    - "hormiga": "¿cuál es mi gasto hormiga?", gastos pequeños repetidos.
-   Los modos "hormiga", "dia_semana", "desviacion" y "promedio_mensual" SÍ aceptan "categoria" y "meses" como filtro opcional.
-- "meses": lista de códigos relevantes. "este mes"={activo}. "mes pasado"=el anterior al activo. Para comparaciones incluye todos los meses. Vacío = mes activo.
+   Los modos "hormiga", "dia_semana", "desviacion" y "promedio_mensual" SÍ aceptan "categoria" y "meses".
+- "fecha_desde" / "fecha_hasta": SIEMPRE en formato YYYY-MM-DD. Usar cuando la pregunta hace referencia a un día o rango de días concretos. Cuando están presentes, "meses" se ignora.
+   - "ayer" → fecha_desde={ayer}, fecha_hasta={ayer}
+   - "hoy" → fecha_desde={hoy_iso}, fecha_hasta={hoy_iso}
+   - "la semana pasada" → fecha_desde={lunes_pasado.strftime('%Y-%m-%d')}, fecha_hasta={domingo_pasado.strftime('%Y-%m-%d')}
+   - "esta semana" → fecha_desde={lunes_esta.strftime('%Y-%m-%d')}, fecha_hasta={hoy_iso}
+   - "el lunes" / "el martes" (sin más contexto) → el día más reciente de ese nombre
+   - "los últimos 7 días" → fecha_desde={( hoy - datetime.timedelta(days=6)).strftime('%Y-%m-%d')}, fecha_hasta={hoy_iso}
+   - Si menciona un día específico (ej "el 15 de mayo") → calcúlalo exacto
+   - Para rangos por MES COMPLETO (mayo, junio...) usa "meses" en su lugar, no fecha_desde/hasta.
+- "meses": lista de códigos (MES+AA). "este mes"={activo}. "mes pasado"=el anterior. Vacío = mes activo.
 - "categoria": un nombre EXACTO de la lista de categorías válidas, o null.
-- "comercio": texto a buscar dentro del concepto del gasto (ej "costco", "uber", "starbucks"), o null.
-- Nombre de mes en español → código (ej: marzo 2026 → MAR26), usando el año correcto según hoy.
+- "comercio": texto a buscar dentro del concepto (ej "starbucks", "uber"), o null.
+- Nombre de mes en español → código (ej: marzo 2026 → MAR26).
 - Si la pregunta NO es sobre finanzas/gastos, devuelve {{"error":"no_finanzas"}}."""
 
     raw = await asyncio.to_thread(groq_completar, prompt_plan, 150)
