@@ -2373,6 +2373,12 @@ async def corregir_elegir(update,context):
             "❓ Escribe el número del gasto (1-5) o usa ❌ Cancelar.",
             reply_markup=ReplyKeyboardMarkup(menu_elegir(context.user_data.get("historial_corregir",[])),one_time_keyboard=True,resize_keyboard=True))
         return CORREGIR_ELEGIR
+    # El historial puede estar viejo si el gasto ya se corrigió: releemos lo vigente de Notion.
+    nid = gasto.get("notion_id")
+    if nid:
+        actual = await asyncio.to_thread(_base_desde_notion, nid)
+        if actual:
+            gasto = {**gasto, **{k: v for k, v in actual.items() if v not in ("", None)}}
     await update.message.reply_text("✏️ Editor abierto:", reply_markup=ReplyKeyboardRemove())
     return await _abrir_panel(update, context, gasto)
 
@@ -3138,6 +3144,13 @@ async def cmd_eliminar(update, context):
         await update.message.reply_text("No hay gastos recientes para eliminar.")
         return ConversationHandler.END
     ultimo = historial[0]
+    # El Historial Bot puede estar desactualizado si el gasto se corrigió después.
+    # Releemos los valores vigentes de la BD principal para mostrar el estado real.
+    nid = ultimo.get("notion_id")
+    if nid:
+        actual = await asyncio.to_thread(_base_desde_notion, nid)
+        if actual:
+            ultimo = {**ultimo, **{k: v for k, v in actual.items() if v not in ("", None)}}
     context.user_data["gasto_eliminar"] = ultimo
     await update.message.reply_text(
         f"🗑️ ¿Eliminar este gasto?\n\n"

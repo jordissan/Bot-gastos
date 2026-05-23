@@ -300,6 +300,10 @@ ELIMINAR_CONFIRM = 50
 7. **IDs de relación Notion:** llegan con guiones — siempre hacer `.replace("-", "")` antes de comparar con los dicts `SC` y `PR`.
 8. **Emojis estrechos en resumen:** ⚡ ⛪ 💊 necesitan un espacio extra después para alinear la tabla monoespaciada. Están definidos en `EMOJI_ESTRECHO`.
 9. **Vision API:** necesita `GOOGLE_VISION_API_KEY` en Render, Cloud Vision API habilitada en GCloud, y la key sin restricciones de API (o con Vision API en la lista).
+10. **Historial Bot puede quedar desactualizado:** al corregir un gasto solo se actualiza la BD
+    principal de Gastos (vía `aplicar_edicion_contextual`), NO la copia del Historial Bot. Por eso
+    `/eliminar` y `/corregir` releen los valores vigentes desde la BD principal con
+    `_base_desde_notion(notion_id)` (1 GET) antes de mostrar el gasto, así reflejan las correcciones.
 
 ---
 
