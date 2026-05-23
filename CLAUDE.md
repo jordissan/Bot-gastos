@@ -66,6 +66,13 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
 > Notion (Producto | Precio). Consultas por fecha real: "¿cuánto gasté ayer?", "¿cuánto gasté la
 > semana pasada?" — filtra por Fecha de Notion, suma todos los gastos del período exacto.
 
+> Novedades v20: campo `historico: true` en el plan de consulta. Para preguntas de toda la historia
+> ("en total", "desde siempre", "cuánto llevo pagado del Polo", mensualidades del coche), una rama
+> nueva en `ejecutar_consulta_finanzas` consulta TODOS los registros desde 2020-01-01 hasta hoy
+> (filtro `Fecha` con `and` de on_or_after/on_or_before), ignora el ciclo de mes, y agrega por año.
+> `responder_consulta_groq` avisa "🔍 Buscando en toda la historia…" antes de la consulta lenta (15-30s).
+> `_formatear_datos_consulta` muestra "Consulta histórica completa" + desglose por año.
+
 ### Funcionalidades implementadas ✅
 - Registro de gastos por texto: `Concepto Monto [Tarjeta] [Fecha]`
 - Fecha acepta: `ayer`, `hoy`, `15-may`, `15/05`
@@ -291,9 +298,37 @@ ELIMINAR_CONFIRM = 50
 ---
 
 ## Pendientes futuros 🔲
-| Feature              | Descripción                                                       | Complejidad |
-|----------------------|-------------------------------------------------------------------|-------------|
-| Alertas presupuesto  | Avisar al acercarse al límite mensual por categoría               | Media       |
+| Feature                  | Descripción                                                       | Complejidad |
+|--------------------------|-------------------------------------------------------------------|-------------|
+| Alertas presupuesto      | Avisar al acercarse al límite mensual por categoría               | Media       |
+| Rediseño `/corregir` híbrido | Panel inline multi-campo + lenguaje natural (ver abajo)       | Media       |
+
+### Plan aprobado: `/corregir` híbrido multi-campo (pendiente de implementar)
+Decisión del usuario: interfaz **híbrida** (panel inline + texto). Objetivo: editar varios campos de
+un gasto en un solo flujo y aplicarlos juntos, en vez del flujo actual de un campo por vez.
+
+**Flujo objetivo:**
+1. `/corregir` → elegir gasto (igual que hoy).
+2. Panel con teclado **inline** mostrando los 6 valores actuales + un botón por campo:
+   `[💵 Monto] [🗓️ Fecha] [💳 Tarjeta] [🏷️ Categoría] [📝 Concepto] [🗂️ Presupuesto]`
+   + `[✅ Aplicar (N)] [❌ Cancelar]`.
+3. Tocar campo → pedir valor (texto para monto/fecha/concepto; sub-menú para tarjeta/categoría/presupuesto)
+   → el panel se **edita en sitio** mostrando el cambio apilado (`💵 $120 → $95 ✏️`).
+4. **Híbrido:** en cualquier momento aceptar una frase ("monto 95 y tarjeta BBVA05") que apila igual.
+5. **✅ Aplicar** → **un solo PATCH** con todos los cambios (reutilizar `aplicar_edicion_contextual`,
+   que ya recalcula Mes y guarda aprendizaje).
+
+**Cambios de código previstos:** `CallbackQueryHandler` con patrón `^edit:`, estado "cambios pendientes"
+en `context.user_data`, eliminar lógica "Ambas" y reducir estados de `conv_corregir`.
+
+### Hallazgos del review de optimización (refactor de bajo riesgo, no aplicado aún)
+- **A — Notificación a la pareja duplicada ~7 veces** (líneas ~1993, 2063, 2101, 2207, 2284, 2514, 2552):
+  extraer a un helper `notificar_pareja(context, uid, texto)`. Riesgo nulo.
+- **B — Tres rutas de edición**; dos son subconjuntos de la tercera: `actualizar_notion` (solo sub/pre),
+  `corregir_monto` (solo monto, sin recalcular Mes ⚠️ bug latente) y `aplicar_edicion_contextual`
+  (hace todo bien + recalcula Mes). Consolidar todo en la contextual.
+- **C — `conv_corregir`** usa 6 estados y ~200 líneas con lógica "Ambas"/"Regresar"; se simplifica con el rediseño.
+- **D (menor)** — `menu_presupuesto()` hardcodeado en vez de derivar de `PR.keys()`.
 
 ---
 
