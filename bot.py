@@ -2424,6 +2424,21 @@ def _valor_nuevo_str(campo, val):
         except Exception: return str(val)
     return str(val)
 
+def _resumen_cambios(base, cambios):
+    """Bloque de texto con los cambios pendientes (antes → después). Vacío si no hay cambios."""
+    if not cambios:
+        return ""
+    lineas = [f"📝 Cambios pendientes ({len(cambios)}):"]
+    for campo in _CAMPOS_PANEL:
+        if campo in cambios:
+            lineas.append(f"   • {_CAMPOS_LABEL[campo]}: {_valor_actual(base, campo)} → {_valor_nuevo_str(campo, cambios[campo])}")
+    return "\n".join(lineas)
+
+def _con_cambios(prompt, base, cambios):
+    """Antepone el resumen de cambios pendientes a un texto de submenú, para no perderlo de vista."""
+    resumen = _resumen_cambios(base, cambios)
+    return f"{resumen}\n\n{prompt}" if resumen else prompt
+
 def _panel_corregir(base, cambios):
     """Devuelve (texto, InlineKeyboardMarkup) del panel con los valores actuales y pendientes."""
     lineas = [f"✏️ Editando: {base.get('concepto') or 'Gasto'}", ""]
@@ -2433,6 +2448,9 @@ def _panel_corregir(base, cambios):
             lineas.append(f"{label}: {_valor_actual(base, campo)} → {_valor_nuevo_str(campo, cambios[campo])} ✏️")
         else:
             lineas.append(f"{label}: {_valor_actual(base, campo)}")
+    resumen = _resumen_cambios(base, cambios)
+    if resumen:
+        lineas += ["", "━━━━━━━━━━━━━━", resumen]
     lineas += ["", "Toca un campo para cambiarlo, o escribe el cambio (ej: \"monto 95\")."]
     n = len(cambios)
     aplicar_txt = f"✅ Aplicar ({n})" if n else "✅ Aplicar"
@@ -2499,12 +2517,12 @@ async def _abrir_campo(query, context, campo, base, cambios):
             "concepto": "📝 Envía el nuevo concepto.",
         }
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="edit:back")]])
-        await query.edit_message_text(prompts[campo], reply_markup=kb)
+        await query.edit_message_text(_con_cambios(prompts[campo], base, cambios), reply_markup=kb)
         return CORREGIR_PANEL
     if campo == "tarjeta":
         botones = [[InlineKeyboardButton(t, callback_data=f"edit:v:tarjeta:{t}")] for t in TARJETAS_VALIDAS]
         botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="edit:back")])
-        await query.edit_message_text("💳 Elige la tarjeta:", reply_markup=InlineKeyboardMarkup(botones))
+        await query.edit_message_text(_con_cambios("💳 Elige la tarjeta:", base, cambios), reply_markup=InlineKeyboardMarkup(botones))
         return CORREGIR_PANEL
     if campo == "subcategoria":
         botones, fila = [], []
@@ -2514,7 +2532,7 @@ async def _abrir_campo(query, context, campo, base, cambios):
                 botones.append(fila); fila = []
         if fila: botones.append(fila)
         botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="edit:back")])
-        await query.edit_message_text("🏷️ Elige la categoría principal:", reply_markup=InlineKeyboardMarkup(botones))
+        await query.edit_message_text(_con_cambios("🏷️ Elige la categoría principal:", base, cambios), reply_markup=InlineKeyboardMarkup(botones))
         return CORREGIR_PANEL
     if campo == "presupuesto":
         nombres = [k for k in PR.keys() if k != "Deudas"]   # evita el alias duplicado
@@ -2525,7 +2543,7 @@ async def _abrir_campo(query, context, campo, base, cambios):
                 botones.append(fila); fila = []
         if fila: botones.append(fila)
         botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="edit:back")])
-        await query.edit_message_text("🗂️ Elige el presupuesto:", reply_markup=InlineKeyboardMarkup(botones))
+        await query.edit_message_text(_con_cambios("🗂️ Elige el presupuesto:", base, cambios), reply_markup=InlineKeyboardMarkup(botones))
         return CORREGIR_PANEL
     return CORREGIR_PANEL
 
@@ -2574,7 +2592,7 @@ async def panel_callback(update, context):
             return CORREGIR_PANEL
         botones = [[InlineKeyboardButton(s, callback_data=f"edit:v:sub:{s}")] for s in subcats]
         botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="edit:f:subcategoria")])
-        await query.edit_message_text(f"🏷️ {grp} — elige la subcategoría:", reply_markup=InlineKeyboardMarkup(botones))
+        await query.edit_message_text(_con_cambios(f"🏷️ {grp} — elige la subcategoría:", base, cambios), reply_markup=InlineKeyboardMarkup(botones))
         return CORREGIR_PANEL
 
     if data.startswith("edit:v:"):
