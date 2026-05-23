@@ -2339,16 +2339,16 @@ async def confirmar_subcat(update, context):
 _NUM_EMOJI = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣"]
 
 def _lista_corregir(ultimos):
-    txt = "✏️ Elige el gasto a corregir:\n\n"
+    lineas = ["✏️ Elige el gasto (1-5):", ""]
     for i, g in enumerate(ultimos):
         num = _NUM_EMOJI[i] if i < len(_NUM_EMOJI) else f"{i+1}."
         fecha_c = " ".join(fmt(g["fecha"]).split()[:2]) if g.get("fecha") else ""
-        txt += f"{num}  {g['concepto']}  —  ${g['monto']:,.2f}\n"
-        txt += f"     🏷️ {g['subcategoria']}  ·  {g['presupuesto']}"
+        detalle = f"     🏷️ {g['subcategoria']} › {g['presupuesto']}"
         if fecha_c:
-            txt += f"  ·  🗓️ {fecha_c}"
-        txt += "\n\n"
-    return txt
+            detalle += f" · {fecha_c}"
+        lineas.append(f"{num} {g['concepto']} · ${g['monto']:,.2f}")
+        lineas.append(detalle)
+    return "\n".join(lineas)
 
 async def cmd_corregir(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
