@@ -2817,6 +2817,13 @@ def _gasto_props(page):
 def _fecha_corta(fecha):
     return " ".join(fmt(fecha).split()[:2]) if fecha else ""
 
+def _fecha_compacta(fecha):
+    """Fecha compacta dd/mmm/yy en español (ej: 18/may/26). Vacío si no hay fecha."""
+    if not fecha:
+        return ""
+    d = datetime.datetime.strptime(fecha, "%Y-%m-%d")
+    return f"{d.day:02d}/{MESES_ESP[d.month].lower()}/{str(d.year)[-2:]}"
+
 def _esc_md(s: str) -> str:
     """Escapa caracteres especiales de Markdown V1 en texto dinámico (conceptos, etc.)."""
     for ch in ("_", "*", "`", "["):
@@ -2858,7 +2865,7 @@ async def cmd_buscar(update, context):
         suma += monto
         nom = _trunc(concepto, 14).ljust(14)
         monto_s = f"${monto:,.0f}".rjust(7)
-        filas.append(f"{nom}  {monto_s}  {_fecha_corta(fecha)}")
+        filas.append(f"{nom}  {monto_s}  {_fecha_compacta(fecha)}")
     msg = (
         f"🔍 *{_esc_md(q)}* — {len(resultados)} resultado(s)\n\n"
         f"```\n\n{chr(10).join(filas)}\n```\n\n"
