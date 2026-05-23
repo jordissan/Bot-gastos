@@ -1253,7 +1253,7 @@ def _formatear_datos_consulta(res: dict) -> str:
         partes.append("Por categoría: " + ", ".join(f"{k}=${v:,.0f}" for k, v in cats))
     if res["top"]:
         partes.append("Gastos del período: " + "; ".join(
-            f"{c} ${m:,.0f} ({_fecha_corta(f)})" for c, m, f, _ in res["top"]))
+            f"{c} ${m:,.0f} ({_fecha_compacta(f)})" for c, m, f, _ in res["top"]))
     return "\n".join(partes)
 
 def _agg_por_anio() -> dict:
@@ -1926,7 +1926,7 @@ def msg_gasto(g, nombre=None, notion_id=None, header=None):
         f"{enc}\n\n"
         f"📌 {_esc_md(g['concepto'])}\n"
         f"💵 ${g['monto']:,.2f}\n"
-        f"🗓️ {fmt(g['fecha'])}\n"
+        f"🗓️ {_fecha_compacta(g['fecha'])}\n"
         f"💳 {g['tarjeta']}\n"
         f"🧾 {g['mes']}\n"
         f"🏷️ {g['subcategoria']}\n"
@@ -2134,7 +2134,7 @@ async def handle_foto(update, context):
     ]])
     await msg_espera.edit_text(
         f"📋 Resumen del ticket\n\n"
-        f"📌 {gasto['concepto']}\n💵 ${gasto['monto']:,.2f}\n🗓️ {fmt(gasto['fecha'])}\n"
+        f"📌 {gasto['concepto']}\n💵 ${gasto['monto']:,.2f}\n🗓️ {_fecha_compacta(gasto['fecha'])}\n"
         f"💳 {gasto['tarjeta']}\n🧾 {gasto['mes']}\n🏷️ {gasto['subcategoria']}\n🗂️ {gasto['presupuesto']}{aviso}"
         + _texto_desglose(productos),
         reply_markup=kb
@@ -2413,7 +2413,7 @@ def _valor_actual(base, campo):
     if campo == "monto":
         return f"${(base.get('monto') or 0):,.2f}"
     if campo == "fecha":
-        return fmt(base["fecha"]) if base.get("fecha") else "—"
+        return _fecha_compacta(base["fecha"]) if base.get("fecha") else "—"
     return base.get(campo) or "—"
 
 def _valor_nuevo_str(campo, val):
@@ -2421,7 +2421,7 @@ def _valor_nuevo_str(campo, val):
         try: return f"${float(val):,.2f}"
         except (ValueError, TypeError): return str(val)
     if campo == "fecha":
-        try: return fmt(val)
+        try: return _fecha_compacta(val)
         except Exception: return str(val)
     return str(val)
 
@@ -3154,7 +3154,7 @@ async def cmd_eliminar(update, context):
         f"🗑️ ¿Eliminar este gasto?\n\n"
         f"📌 {ultimo['concepto']}\n"
         f"💵 ${ultimo['monto']:,.2f}\n"
-        f"🗓️ {fmt(ultimo['fecha'])}\n"
+        f"🗓️ {_fecha_compacta(ultimo['fecha'])}\n"
         f"🏷️ {ultimo['subcategoria']}  •  {ultimo['presupuesto']}",
         reply_markup=ReplyKeyboardMarkup([["✅ Sí, eliminar", "❌ No"]], one_time_keyboard=True, resize_keyboard=True)
     )

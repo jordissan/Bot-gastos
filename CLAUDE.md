@@ -198,7 +198,7 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
 
 📌 Starbucks
 💵 $150.00
-🗓️ 17 may 2026
+🗓️ 17/may/26
 💳 BBVA05
 🧾 JUN26
 🏷️ Treat
@@ -304,6 +304,10 @@ ELIMINAR_CONFIRM = 50
     principal de Gastos (vía `aplicar_edicion_contextual`), NO la copia del Historial Bot. Por eso
     `/eliminar` y `/corregir` releen los valores vigentes desde la BD principal con
     `_base_desde_notion(notion_id)` (1 GET) antes de mostrar el gasto, así reflejan las correcciones.
+11. **Fecha compacta `dd/mmm/yy`:** `_fecha_compacta` (usa `MESES_ESP`, meses en español) es el formato
+    estándar en mensajes al usuario (tarjeta de gasto, preview de ticket, panel de `/corregir`,
+    confirmación de `/eliminar`, `/buscar`, datos de consulta NL). `fmt` (largo "17 may 2026") y
+    `_fecha_corta` ("17 may") solo quedan para el correo mensual detallado (mismo ciclo, sin año repetido).
 
 ---
 
