@@ -2343,10 +2343,10 @@ def _lista_corregir(ultimos):
     for i, g in enumerate(ultimos):
         num = _NUM_EMOJI[i] if i < len(_NUM_EMOJI) else f"{i+1}."
         fecha_c = " ".join(fmt(g["fecha"]).split()[:2]) if g.get("fecha") else ""
-        detalle = f"     🏷️ {g['subcategoria']} › {g['presupuesto']}"
+        detalle = f"     ${g['monto']:,.2f} · {g['subcategoria']} › {g['presupuesto']}"
         if fecha_c:
             detalle += f" · {fecha_c}"
-        lineas.append(f"{num} {g['concepto']} · ${g['monto']:,.2f}")
+        lineas.append(f"{num} {g['concepto']}")
         lineas.append(detalle)
     return "\n".join(lineas)
 
