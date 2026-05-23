@@ -134,11 +134,7 @@ CONFIRMAR_MONTO  = 1
 CONFIRMAR_CAT    = 2
 CONFIRMAR_SUBCAT = 3
 CORREGIR_ELEGIR  = 10
-CORREGIR_QUE     = 11
-CORREGIR_CAT_GRP = 12
-CORREGIR_SUBCAT  = 13
-CORREGIR_PRESU   = 14
-CORREGIR_MONTO   = 15
+CORREGIR_PANEL   = 11   # panel inline multi-campo (híbrido botones + texto)
 PRUEBA_GASTO     = 20
 FOTO_CONFIRMAR   = 30
 ELIMINAR_CONFIRM = 50
@@ -213,6 +209,12 @@ SUBCAT_PRESUPUESTO = {
     "MSI":"MSI","Deudas":"Deuda","EFI":"Deuda","DBMEX":"Deuda","PDHB25":"Deuda","PRP":"Deuda",
     "Impuestos":"Impuestos","Vacaciones":"Vacaciones","Otros":"Otros",
 }
+
+# Mapas inversos id_relacion → nombre (para leer un gasto existente desde Notion).
+# setdefault conserva el primer nombre cuando varios comparten id (alias como Deuda/Deudas).
+SC_INV, PR_INV = {}, {}
+for _k, _v in SC.items(): SC_INV.setdefault(_v, _k)
+for _k, _v in PR.items(): PR_INV.setdefault(_v, _k)
 
 # Emojis que ocupan 1 celda en monoespaciado (en vez de 2) — necesitan espacio extra
 EMOJI_ESTRECHO = {"⛪"}  # Servicios cambió a 💡 (full-width); solo ⛪ sigue siendo angosto
@@ -451,28 +453,6 @@ def menu_grupos():
         [BTN_REGRESAR,     BTN_CANCELAR],
     ]
 
-def menu_presupuesto():
-    return [
-        ["🛒 Despensa",        "🎉 Diversión"],
-        ["⚡ Servicios",       "🚗 Automovil"],
-        ["🍽️ Restaurantes",   "💊 Salud"],
-        ["🏦 Deuda",           "💳 MSI"],
-        ["🏠 Renta",           "👶 Ezra"],
-        ["💆 Cuidado personal","🏖️ Vacaciones"],
-        ["📊 Impuestos",       "🎭 Entretenimiento"],
-        ["🤝 Generosidad",     "⛪ Iglesia"],
-        ["👤 Personal",        "🏡 Departamento"],
-        ["📦 Otros"],
-        [BTN_REGRESAR,         BTN_CANCELAR],
-    ]
-
-def menu_que_corregir():
-    return [
-        ["🏷️ Subcategoría", "💰 Presupuesto"],
-        ["✏️ Ambas",        "💵 Monto"],
-        [BTN_REGRESAR,      BTN_CANCELAR],
-    ]
-
 def menu_elegir(ultimos):
     filas = [[f"{i+1}"] for i in range(len(ultimos))]
     filas.append([BTN_CANCELAR])
@@ -491,9 +471,6 @@ def grupo_key(texto):
         if t == grp: return grp
         if limpiar_emoji(t) == limpiar_emoji(grp): return grp
     return t
-
-def presu_limpio(texto):
-    return limpiar_emoji(texto.strip())
 
 REGLAS_CONCEPTO = [
     # ── DESPENSA: super / carniceria ──
@@ -1939,18 +1916,6 @@ def _bloques_productos(productos):
         "children": filas,
     }]
 
-def actualizar_notion(page_id,sub=None,pre=None):
-    props={}
-    if sub:
-        sid=SC.get(sub)
-        if sid: props["Subcategoria"]={"relation":[{"id":sid}]}
-    if pre:
-        pid=PR.get(pre)
-        if pid: props["Presupuesto"]={"relation":[{"id":pid}]}
-    r=notion_request("PATCH",f"{NOTION_API_BASE}/pages/{page_id}",
-        headers=nh(),json={"properties":props},timeout=NOTION_T_DEFAULT)
-    return r is not None and r.status_code==200
-
 # ── MENSAJES ─────────────────────────────────────────────────────────────────
 def fmt(f):
     return datetime.datetime.strptime(f,"%Y-%m-%d").strftime("%d %b %Y").lower()
@@ -2000,11 +1965,24 @@ async def registrar_y_notificar(update, context, gasto):
         )
 
 # ── EDICIÓN CONTEXTUAL ("cámbialo a 400", "ponlo en restaurantes") ─────────────
+async def _responder(update, context, text, **kw):
+    """Responde al usuario funcione el update por mensaje (reply) o por callback (sin message)."""
+    if getattr(update, "message", None):
+        await update.message.reply_text(text, **kw)
+    else:
+        await context.bot.send_message(update.effective_chat.id, text, **kw)
+
+async def notificar_pareja(context, uid, texto, **kw):
+    """Envía una notificación al otro usuario (cónyuge), si está configurado. Helper único."""
+    notif = USUARIOS_NOTIFICAR.get(uid)
+    if notif:
+        await context.bot.send_message(chat_id=notif, text=texto, **kw)
+
 async def aplicar_edicion_contextual(update, context, campos: dict, base: dict):
     uid = update.effective_user.id
     nid = base.get("notion_id")
     if not nid:
-        await update.message.reply_text("🤔 No tengo un gasto reciente para editar. Usa /corregir.")
+        await _responder(update, context, "🤔 No tengo un gasto reciente para editar. Usa /corregir.")
         return
     g = dict(base)
     props, recompute_mes = {}, False
@@ -2044,29 +2022,26 @@ async def aplicar_edicion_contextual(update, context, campos: dict, base: dict):
         props["Subcategoria"] = {"relation": [{"id": SC[g["subcategoria"]]}]}; cat_cambio = True
 
     if not props:
-        await update.message.reply_text("🤔 No entendí qué cambiar del último gasto.")
+        await _responder(update, context, "🤔 No entendí qué cambiar del último gasto.")
         return
 
     r = notion_request("PATCH", f"{NOTION_API_BASE}/pages/{nid}",
                        headers=nh(), json={"properties": props}, timeout=NOTION_T_DEFAULT)
     if not (r and r.status_code == 200):
-        await update.message.reply_text("❌ No pude actualizar el gasto en Notion.")
+        await _responder(update, context, "❌ No pude actualizar el gasto en Notion.")
         return
 
     g["seguro"] = True
     guardar_contexto(uid, g)
     if cat_cambio:
         guardar_aprendizaje(g["concepto"].lower(), g["subcategoria"], g["presupuesto"])
-    await update.message.reply_text(
+    await _responder(update, context,
         msg_gasto(g, notion_id=nid, header="✏️ Gasto actualizado"),
         reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
-    notif = USUARIOS_NOTIFICAR.get(uid)
     nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
-    if notif:
-        await context.bot.send_message(
-            chat_id=notif,
-            text=msg_gasto(g, notion_id=nid, header=f"✏️ {nombre} editó un gasto"),
-            parse_mode="Markdown")
+    await notificar_pareja(context, uid,
+        msg_gasto(g, notion_id=nid, header=f"✏️ {nombre} editó un gasto"),
+        parse_mode="Markdown")
 
 # ── REGISTRAR VIA SHORTCUT (iOS) ─────────────────────────────────────────────
 async def registrar_via_shortcut(texto: str, user_id: int):
@@ -2393,183 +2368,276 @@ async def corregir_elegir(update,context):
         idx=int(txt)-1
         if idx < 0: raise IndexError
         gasto=context.user_data["historial_corregir"][idx]
-        context.user_data["gasto_corregir"]=gasto
     except (ValueError, IndexError, KeyError):
         await update.message.reply_text(
             "❓ Escribe el número del gasto (1-5) o usa ❌ Cancelar.",
             reply_markup=ReplyKeyboardMarkup(menu_elegir(context.user_data.get("historial_corregir",[])),one_time_keyboard=True,resize_keyboard=True))
         return CORREGIR_ELEGIR
-    await update.message.reply_text(
-        f"📌 {gasto['concepto']}\n🏷️ {gasto['subcategoria']}  •  {gasto['presupuesto']}\n\n¿Qué quieres corregir?",
-        reply_markup=ReplyKeyboardMarkup(menu_que_corregir(),one_time_keyboard=True,resize_keyboard=True))
-    return CORREGIR_QUE
+    await update.message.reply_text("✏️ Editor abierto:", reply_markup=ReplyKeyboardRemove())
+    return await _abrir_panel(update, context, gasto)
 
-async def corregir_que(update,context):
-    txt=update.message.text.strip()
-    if txt==BTN_CANCELAR:
-        return await _cancelar_conv(update, context)
-    if txt==BTN_REGRESAR:
-        ultimos=context.user_data.get("historial_corregir",[])
-        await update.message.reply_text(_lista_corregir(ultimos),reply_markup=ReplyKeyboardMarkup(menu_elegir(ultimos),one_time_keyboard=True,resize_keyboard=True))
-        return CORREGIR_ELEGIR
-    context.user_data["que_corregir"]=txt
-    if "Monto" in txt or "💵" in txt:
-        await update.message.reply_text(
-            "💵 ¿Cuál es el monto correcto?",
-            reply_markup=ReplyKeyboardMarkup([[BTN_CANCELAR]], one_time_keyboard=True, resize_keyboard=True)
-        )
-        return CORREGIR_MONTO
-    if "Presupuesto" in txt and "Subcategoría" not in txt and "Ambas" not in txt:
-        await update.message.reply_text("💰 Elige el nuevo presupuesto:",reply_markup=ReplyKeyboardMarkup(menu_presupuesto(),one_time_keyboard=True,resize_keyboard=True))
-        return CORREGIR_PRESU
-    await update.message.reply_text("🏷️ Paso 1: Elige la categoría principal:",reply_markup=ReplyKeyboardMarkup(menu_grupos(),one_time_keyboard=True,resize_keyboard=True))
-    return CORREGIR_CAT_GRP
+# ── PANEL DE EDICIÓN MULTI-CAMPO (híbrido botones + texto) ────────────────────
+GRUPOS_LISTA = list(GRUPOS_CAT.keys())
+_CAMPOS_PANEL = ("monto", "fecha", "tarjeta", "subcategoria", "presupuesto", "concepto")
+_CAMPOS_LABEL = {
+    "monto": "💵 Monto", "fecha": "🗓️ Fecha", "tarjeta": "💳 Tarjeta",
+    "subcategoria": "🏷️ Categoría", "presupuesto": "🗂️ Presupuesto", "concepto": "📝 Concepto",
+}
 
-async def corregir_cat_grp(update,context):
-    txt=update.message.text.strip()
-    if txt==BTN_CANCELAR:
-        return await _cancelar_conv(update, context)
-    if txt==BTN_REGRESAR:
-        gasto=context.user_data.get("gasto_corregir",{})
-        await update.message.reply_text(f"📌 {gasto.get('concepto','')}\n\n¿Qué quieres corregir?",
-            reply_markup=ReplyKeyboardMarkup(menu_que_corregir(),one_time_keyboard=True,resize_keyboard=True))
-        return CORREGIR_QUE
-    grp=grupo_key(txt); context.user_data["grupo_elegido"]=grp
-    subcats=GRUPOS_CAT.get(grp,[grp])
-    if len(subcats)==1:
-        context.user_data["nueva_sub"]=subcats[0]
-        que=context.user_data.get("que_corregir","")
-        if "Ambas" in que:
-            await update.message.reply_text(f"Subcategoria: {subcats[0]}\n\n💰 Elige el presupuesto:",
-                reply_markup=ReplyKeyboardMarkup(menu_presupuesto(),one_time_keyboard=True,resize_keyboard=True))
-            return CORREGIR_PRESU
-        return await aplicar_correccion(update,context,sub=subcats[0])
-    menu=[[s] for s in subcats]+[[BTN_REGRESAR,BTN_CANCELAR]]
-    await update.message.reply_text("🏷️ Elige la subcategoria:",reply_markup=ReplyKeyboardMarkup(menu,one_time_keyboard=True,resize_keyboard=True))
-    return CORREGIR_SUBCAT
+def _nombre_relacion(props, campo, inv):
+    rel = props.get(campo, {}).get("relation", [])
+    if not rel:
+        return ""
+    rid = rel[0].get("id", "").replace("-", "")
+    return inv.get(rid, "")
 
-async def corregir_subcat(update,context):
-    txt=update.message.text.strip()
-    if txt==BTN_CANCELAR:
-        return await _cancelar_conv(update, context)
-    if txt==BTN_REGRESAR:
-        await update.message.reply_text("🏷️ Paso 1: Elige la categoría principal:",
-            reply_markup=ReplyKeyboardMarkup(menu_grupos(),one_time_keyboard=True,resize_keyboard=True))
-        return CORREGIR_CAT_GRP
-    context.user_data["nueva_sub"]=txt
-    que=context.user_data.get("que_corregir","")
-    if "Ambas" in que:
-        await update.message.reply_text("💰 Elige el presupuesto:",
-            reply_markup=ReplyKeyboardMarkup(menu_presupuesto(),one_time_keyboard=True,resize_keyboard=True))
-        return CORREGIR_PRESU
-    return await aplicar_correccion(update,context,sub=txt)
+def _base_desde_notion(nid):
+    """Lee un gasto existente de Notion para poblar el panel (entrada desde notificación)."""
+    r = notion_request("GET", f"{NOTION_API_BASE}/pages/{nid}", headers=nh(), timeout=NOTION_T_DEFAULT)
+    if not r or r.status_code != 200:
+        return None
+    p = r.json().get("properties", {})
+    titulo = p.get("Concepto", {}).get("title", [])
+    concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+    monto = p.get("Monto", {}).get("number", 0) or 0
+    fecha = (p.get("Fecha", {}).get("date", {}) or {}).get("start", "")
+    pago = p.get("Pago", {}).get("select")
+    tarjeta = (pago.get("name") if pago else "") or notion_rich_text(p, "Estado de Cuenta")
+    return {"notion_id": nid, "concepto": concepto, "monto": monto, "fecha": fecha,
+            "tarjeta": tarjeta, "mes": "",
+            "subcategoria": _nombre_relacion(p, "Subcategoria", SC_INV),
+            "presupuesto":  _nombre_relacion(p, "Presupuesto", PR_INV)}
 
-async def corregir_presu(update,context):
-    txt=update.message.text.strip()
-    if txt==BTN_CANCELAR:
-        return await _cancelar_conv(update, context)
-    if txt==BTN_REGRESAR:
-        que=context.user_data.get("que_corregir","")
-        if "Ambas" in que:
-            grp=context.user_data.get("grupo_elegido","")
-            subcats=GRUPOS_CAT.get(grp,[grp])
-            if len(subcats)>1:
-                menu=[[s] for s in subcats]+[[BTN_REGRESAR,BTN_CANCELAR]]
-                await update.message.reply_text("🏷️ Elige la subcategoria:",
-                    reply_markup=ReplyKeyboardMarkup(menu,one_time_keyboard=True,resize_keyboard=True))
-                return CORREGIR_SUBCAT
-            await update.message.reply_text("🏷️ Paso 1: Elige la categoría principal:",
-                reply_markup=ReplyKeyboardMarkup(menu_grupos(),one_time_keyboard=True,resize_keyboard=True))
-            return CORREGIR_CAT_GRP
-        gasto=context.user_data.get("gasto_corregir",{})
-        await update.message.reply_text(f"📌 {gasto.get('concepto','')}\n\n¿Qué quieres corregir?",
-            reply_markup=ReplyKeyboardMarkup(menu_que_corregir(),one_time_keyboard=True,resize_keyboard=True))
-        return CORREGIR_QUE
-    return await aplicar_correccion(update,context,pre=presu_limpio(txt))
+def _valor_actual(base, campo):
+    if campo == "monto":
+        return f"${(base.get('monto') or 0):,.2f}"
+    if campo == "fecha":
+        return fmt(base["fecha"]) if base.get("fecha") else "—"
+    return base.get(campo) or "—"
 
-async def corregir_monto(update, context):
-    txt = update.message.text.strip()
-    if txt == BTN_CANCELAR:
-        return await _cancelar_conv(update, context)
+def _valor_nuevo_str(campo, val):
+    if campo == "monto":
+        try: return f"${float(val):,.2f}"
+        except (ValueError, TypeError): return str(val)
+    if campo == "fecha":
+        try: return fmt(val)
+        except Exception: return str(val)
+    return str(val)
+
+def _panel_corregir(base, cambios):
+    """Devuelve (texto, InlineKeyboardMarkup) del panel con los valores actuales y pendientes."""
+    lineas = [f"✏️ Editando: {base.get('concepto') or 'Gasto'}", ""]
+    for campo in _CAMPOS_PANEL:
+        label = _CAMPOS_LABEL[campo]
+        if campo in cambios:
+            lineas.append(f"{label}: {_valor_actual(base, campo)} → {_valor_nuevo_str(campo, cambios[campo])} ✏️")
+        else:
+            lineas.append(f"{label}: {_valor_actual(base, campo)}")
+    lineas += ["", "Toca un campo para cambiarlo, o escribe el cambio (ej: \"monto 95\")."]
+    n = len(cambios)
+    aplicar_txt = f"✅ Aplicar ({n})" if n else "✅ Aplicar"
+    botones = [
+        [InlineKeyboardButton("💵 Monto", callback_data="edit:f:monto"),
+         InlineKeyboardButton("🗓️ Fecha", callback_data="edit:f:fecha")],
+        [InlineKeyboardButton("💳 Tarjeta", callback_data="edit:f:tarjeta"),
+         InlineKeyboardButton("🏷️ Categoría", callback_data="edit:f:subcategoria")],
+        [InlineKeyboardButton("🗂️ Presupuesto", callback_data="edit:f:presupuesto"),
+         InlineKeyboardButton("📝 Concepto", callback_data="edit:f:concepto")],
+        [InlineKeyboardButton(aplicar_txt, callback_data="edit:apply"),
+         InlineKeyboardButton("❌ Cancelar", callback_data="edit:cancel")],
+    ]
+    return "\n".join(lineas), InlineKeyboardMarkup(botones)
+
+async def _abrir_panel(update, context, base):
+    context.user_data["corr_base"] = base
+    context.user_data["corr_cambios"] = {}
+    context.user_data["corr_esperando"] = None
+    chat_id = update.effective_chat.id
+    texto, kb = _panel_corregir(base, {})
+    msg = await context.bot.send_message(chat_id, texto, reply_markup=kb)
+    context.user_data["corr_msg_id"] = msg.message_id
+    context.user_data["corr_chat_id"] = chat_id
+    return CORREGIR_PANEL
+
+async def _editar_panel(query, base, cambios):
+    texto, kb = _panel_corregir(base, cambios)
     try:
-        monto = float(txt.replace("$", "").replace(",", ""))
-        if monto <= 0:
-            raise ValueError()
-    except ValueError:
-        await update.message.reply_text("❓ Escribe un monto válido (ej: 150).")
-        return CORREGIR_MONTO
-    gasto = context.user_data.get("gasto_corregir")
-    if not gasto:
-        await update.message.reply_text("Error.", reply_markup=ReplyKeyboardRemove())
-        return ConversationHandler.END
-    r = notion_request("PATCH", f"{NOTION_API_BASE}/pages/{gasto['notion_id']}",
-        headers=nh(), json={"properties": {"Monto": {"number": monto}}}, timeout=NOTION_T_DEFAULT)
-    if r and r.status_code == 200:
-        nid  = gasto.get("notion_id", "")
-        link = f"\n[🔗 Ver en Notion]({notion_deep_link(nid)})" if nid else ""
-        await update.message.reply_text(
-            f"✅ Monto corregido\n\n📌 {_esc_md(gasto['concepto'])}\n💵 ${monto:,.2f}{link}",
-            reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown"
-        )
-        notif  = USUARIOS_NOTIFICAR.get(update.effective_user.id)
-        nombre = USUARIOS_NOMBRES.get(update.effective_user.id, "Alguien")
-        if notif:
-            await context.bot.send_message(
-                chat_id=notif,
-                text=f"✏️ {nombre} corrigió un gasto\n\n📌 {_esc_md(gasto['concepto'])}\n💵 ${monto:,.2f}{link}",
-                parse_mode="Markdown"
-            )
-    else:
-        await update.message.reply_text("❌ Error al actualizar Notion.", reply_markup=ReplyKeyboardRemove())
-    context.user_data.clear()
-    return ConversationHandler.END
+        await query.edit_message_text(texto, reply_markup=kb)
+    except Exception:
+        pass  # "message is not modified" u otros — ignorable
 
-async def aplicar_correccion(update, context, sub=None, pre=None):
-    gasto     = context.user_data.get("gasto_corregir")
-    nueva_sub = sub or context.user_data.get("nueva_sub")
-    nuevo_pre = pre
-    if not gasto:
-        await update.message.reply_text("Error.", reply_markup=ReplyKeyboardRemove())
-        return ConversationHandler.END
-    ok = actualizar_notion(gasto["notion_id"], sub=nueva_sub, pre=nuevo_pre)
-    if ok:
-        guardar_aprendizaje(
-            gasto["concepto"].lower(),
-            nueva_sub or gasto.get("subcategoria",""),
-            nuevo_pre or gasto.get("presupuesto","")
-        )
-        resumen = f"📌 {_esc_md(gasto['concepto'])}\n"
-        if nueva_sub: resumen += f"🏷️ {nueva_sub}\n"
-        if nuevo_pre: resumen += f"🗂️ {nuevo_pre}\n"
-        nid  = gasto.get("notion_id","")
-        link = f"\n[🔗 Ver en Notion]({notion_deep_link(nid)})" if nid else ""
-        await update.message.reply_text(
-            f"✅ Corregido\n\n{resumen}{link}",
-            reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown"
-        )
-        uid    = update.effective_user.id
-        nombre = USUARIOS_NOMBRES.get(uid,"Alguien")
-        notif  = USUARIOS_NOTIFICAR.get(uid)
-        if notif:
-            await context.bot.send_message(
-                chat_id=notif, text=f"✏️ {nombre} corrigió un gasto\n\n{resumen}{link}",
-                parse_mode="Markdown"
-            )
-    else:
-        await update.message.reply_text("❌ Error al actualizar Notion.", reply_markup=ReplyKeyboardRemove())
-    context.user_data.clear()
-    return ConversationHandler.END
+def _parse_valor_campo(campo, txt):
+    """Valida un valor escrito a mano. Devuelve (ok, valor, mensaje_error)."""
+    if campo == "monto":
+        try:
+            v = float(txt.replace("$", "").replace(",", ""))
+            if v <= 0:
+                raise ValueError
+            return True, v, ""
+        except ValueError:
+            return False, None, "❓ Escribe un monto válido (ej: 150)."
+    if campo == "fecha":
+        try:
+            return True, datetime.date.fromisoformat(txt).strftime("%Y-%m-%d"), ""
+        except ValueError:
+            pass
+        f, leftover = parsear_fecha([txt.lower()])
+        if not leftover:   # parsear_fecha consumió el token → entendió la fecha
+            return True, f.strftime("%Y-%m-%d"), ""
+        return False, None, "❓ Fecha no válida. Usa: ayer, 15-may o 2026-05-15."
+    if campo == "concepto":
+        return (True, txt.title(), "") if txt else (False, None, "❓ Concepto vacío.")
+    return False, None, "❓ Campo desconocido."
 
-async def callback_corregir(update,context):
-    query=update.callback_query; await query.answer()
-    if query.from_user.id not in USUARIOS_AUTORIZADOS: return
-    partes=query.data.split(":",2)
-    nid=partes[1]; concepto=partes[2] if len(partes)>2 else "Gasto"
-    context.user_data["gasto_corregir"]={"notion_id":nid,"concepto":concepto}
-    await query.message.reply_text(
-        f"📌 {concepto}\n\n¿Qué quieres corregir?",
-        reply_markup=ReplyKeyboardMarkup(menu_que_corregir(),one_time_keyboard=True,resize_keyboard=True))
-    return CORREGIR_QUE
+async def _abrir_campo(query, context, campo, base, cambios):
+    """Despliega el sub-editor del campo: texto libre o botones según el campo."""
+    if campo in ("monto", "fecha", "concepto"):
+        context.user_data["corr_esperando"] = campo
+        prompts = {
+            "monto":    "💵 Envía el nuevo monto (ej: 150).",
+            "fecha":    "🗓️ Envía la nueva fecha (ej: ayer, 15-may, 2026-05-15).",
+            "concepto": "📝 Envía el nuevo concepto.",
+        }
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="edit:back")]])
+        await query.edit_message_text(prompts[campo], reply_markup=kb)
+        return CORREGIR_PANEL
+    if campo == "tarjeta":
+        botones = [[InlineKeyboardButton(t, callback_data=f"edit:v:tarjeta:{t}")] for t in TARJETAS_VALIDAS]
+        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="edit:back")])
+        await query.edit_message_text("💳 Elige la tarjeta:", reply_markup=InlineKeyboardMarkup(botones))
+        return CORREGIR_PANEL
+    if campo == "subcategoria":
+        botones, fila = [], []
+        for i, grp in enumerate(GRUPOS_LISTA):
+            fila.append(InlineKeyboardButton(grp, callback_data=f"edit:g:{i}"))
+            if len(fila) == 2:
+                botones.append(fila); fila = []
+        if fila: botones.append(fila)
+        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="edit:back")])
+        await query.edit_message_text("🏷️ Elige la categoría principal:", reply_markup=InlineKeyboardMarkup(botones))
+        return CORREGIR_PANEL
+    if campo == "presupuesto":
+        nombres = [k for k in PR.keys() if k != "Deudas"]   # evita el alias duplicado
+        botones, fila = [], []
+        for nombre in nombres:
+            fila.append(InlineKeyboardButton(nombre, callback_data=f"edit:v:pre:{nombre}"))
+            if len(fila) == 2:
+                botones.append(fila); fila = []
+        if fila: botones.append(fila)
+        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="edit:back")])
+        await query.edit_message_text("🗂️ Elige el presupuesto:", reply_markup=InlineKeyboardMarkup(botones))
+        return CORREGIR_PANEL
+    return CORREGIR_PANEL
+
+async def panel_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id not in USUARIOS_AUTORIZADOS:
+        return CORREGIR_PANEL
+    base = context.user_data.get("corr_base")
+    cambios = context.user_data.get("corr_cambios", {})
+    if base is None:
+        await query.edit_message_text("⚠️ Sesión expirada. Usa /corregir de nuevo.")
+        return ConversationHandler.END
+    data = query.data
+    context.user_data["corr_esperando"] = None
+
+    if data == "edit:cancel":
+        context.user_data.clear()
+        await query.edit_message_text("❌ Cancelado.")
+        return ConversationHandler.END
+
+    if data == "edit:back":
+        await _editar_panel(query, base, cambios)
+        return CORREGIR_PANEL
+
+    if data == "edit:apply":
+        if not cambios:
+            await context.bot.send_message(update.effective_chat.id,
+                "ℹ️ Aún no has cambiado nada. Toca un campo primero.")
+            return CORREGIR_PANEL
+        await query.edit_message_text("⏳ Aplicando cambios…")
+        await aplicar_edicion_contextual(update, context, dict(cambios), base)
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    if data.startswith("edit:f:"):
+        return await _abrir_campo(query, context, data.split(":", 2)[2], base, cambios)
+
+    if data.startswith("edit:g:"):
+        grp = GRUPOS_LISTA[int(data.split(":", 2)[2])]
+        subcats = GRUPOS_CAT.get(grp, [grp])
+        if len(subcats) == 1:
+            cambios["subcategoria"] = subcats[0]
+            context.user_data["corr_cambios"] = cambios
+            await _editar_panel(query, base, cambios)
+            return CORREGIR_PANEL
+        botones = [[InlineKeyboardButton(s, callback_data=f"edit:v:sub:{s}")] for s in subcats]
+        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="edit:f:subcategoria")])
+        await query.edit_message_text(f"🏷️ {grp} — elige la subcategoría:", reply_markup=InlineKeyboardMarkup(botones))
+        return CORREGIR_PANEL
+
+    if data.startswith("edit:v:"):
+        _, _, tipo, val = data.split(":", 3)
+        if   tipo == "tarjeta": cambios["tarjeta"] = val
+        elif tipo == "pre":     cambios["presupuesto"] = val
+        elif tipo == "sub":     cambios["subcategoria"] = val
+        context.user_data["corr_cambios"] = cambios
+        await _editar_panel(query, base, cambios)
+        return CORREGIR_PANEL
+
+    return CORREGIR_PANEL
+
+async def panel_texto(update, context):
+    """Texto durante el panel: o el valor de un campo pedido, o una frase libre (híbrido)."""
+    base = context.user_data.get("corr_base")
+    if base is None:
+        return ConversationHandler.END
+    cambios = context.user_data.get("corr_cambios", {})
+    txt = update.message.text.strip()
+    esperando = context.user_data.get("corr_esperando")
+
+    if esperando:
+        ok, valor, err = _parse_valor_campo(esperando, txt)
+        if not ok:
+            await update.message.reply_text(err)
+            return CORREGIR_PANEL
+        cambios[esperando] = valor
+        context.user_data["corr_esperando"] = None
+    else:
+        tipo, payload = (await asyncio.to_thread(clasificar_mensaje_groq, txt, base)) if GROQ_API_KEY else (None, None)
+        if tipo == "edicion" and payload:
+            cambios.update(payload)
+        else:
+            await update.message.reply_text(
+                "🤔 No entendí. Toca un botón del panel o escribe algo como \"monto 95\".")
+            return CORREGIR_PANEL
+
+    context.user_data["corr_cambios"] = cambios
+    texto, kb = _panel_corregir(base, cambios)
+    chat_id = context.user_data.get("corr_chat_id", update.effective_chat.id)
+    msg_id  = context.user_data.get("corr_msg_id")
+    try:
+        await context.bot.edit_message_text(texto, chat_id=chat_id, message_id=msg_id, reply_markup=kb)
+    except Exception:
+        msg = await context.bot.send_message(chat_id, texto, reply_markup=kb)
+        context.user_data["corr_msg_id"] = msg.message_id
+    return CORREGIR_PANEL
+
+async def callback_corregir(update, context):
+    """Entrada al panel desde el botón ✏️ Corregir de una notificación."""
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id not in USUARIOS_AUTORIZADOS:
+        return ConversationHandler.END
+    partes = query.data.split(":", 2)
+    nid = partes[1]
+    base = await asyncio.to_thread(_base_desde_notion, nid)
+    if not base:
+        base = {"notion_id": nid, "concepto": (partes[2] if len(partes) > 2 else "Gasto"),
+                "monto": 0, "fecha": "", "tarjeta": "", "mes": "",
+                "subcategoria": "", "presupuesto": ""}
+    return await _abrir_panel(update, context, base)
 
 async def cmd_prueba(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
@@ -3248,12 +3316,11 @@ def main():
     conv_corregir = ConversationHandler(
         entry_points=[CommandHandler("corregir", cmd_corregir), CallbackQueryHandler(callback_corregir, pattern="^cor:")],
         states={
-            CORREGIR_ELEGIR:  [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_elegir)],
-            CORREGIR_QUE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_que)],
-            CORREGIR_CAT_GRP: [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_cat_grp)],
-            CORREGIR_SUBCAT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_subcat)],
-            CORREGIR_PRESU:   [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_presu)],
-            CORREGIR_MONTO:   [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_monto)],
+            CORREGIR_ELEGIR: [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_elegir)],
+            CORREGIR_PANEL: [
+                CallbackQueryHandler(panel_callback, pattern="^edit:"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, panel_texto),
+            ],
         },
         fallbacks=[CommandHandler("cancelar", cancelar)], allow_reentry=True,
     )

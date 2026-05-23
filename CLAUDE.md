@@ -54,7 +54,7 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
 
 ---
 
-## Versión actual: v_final20
+## Versión actual: v_final21
 
 > Novedades v18: voz (Whisper), desglose de productos en tickets, respaldo de presupuesto por
 > Subcategoría, consultas de agregación (por año / primer-último-mayor gasto / promedio / día de
@@ -73,6 +73,15 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
 > `responder_consulta_groq` avisa "🔍 Buscando en toda la historia…" antes de la consulta lenta (15-30s).
 > `_formatear_datos_consulta` muestra "Consulta histórica completa" + desglose por año.
 
+> Novedades v21: `/corregir` rediseñado a **panel inline multi-campo híbrido**. Tras elegir el gasto,
+> se abre un panel (teclado en línea) con los 6 campos editables (monto, fecha, tarjeta, categoría,
+> presupuesto, concepto). Se apilan varios cambios y se aplican TODOS en un solo PATCH al tocar
+> "✅ Aplicar". Híbrido: también se acepta una frase ("monto 95 y tarjeta BBVA05") que apila igual.
+> Consolidación: se eliminaron `actualizar_notion`, `aplicar_correccion`, `corregir_monto` y los
+> estados `CORREGIR_QUE/CAT_GRP/SUBCAT/PRESU/MONTO`; toda escritura pasa por `aplicar_edicion_contextual`
+> (única ruta, recalcula Mes al cambiar fecha/tarjeta). Helper único `notificar_pareja` para avisos al
+> cónyuge. Menús muertos `menu_que_corregir`/`menu_presupuesto`/`presu_limpio` eliminados.
+
 ### Funcionalidades implementadas ✅
 - Registro de gastos por texto: `Concepto Monto [Tarjeta] [Fecha]`
 - Fecha acepta: `ayer`, `hoy`, `15-may`, `15/05`
@@ -82,8 +91,8 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
 - Categorización automática (reglas → aprendizaje → similitud → Maps)
 - Sistema de aprendizaje en Notion con limpieza automática
 - Historial persistente en Notion (últimos 5 por usuario)
-- `/corregir` con navegación completa (Regresar/Cancelar en cada paso)
-- `/corregir` ahora incluye opción para corregir el monto (💵 Monto)
+- `/corregir` con **panel inline multi-campo** (monto/fecha/tarjeta/categoría/presupuesto/concepto):
+  apila varios cambios y aplica todo de una vez en un solo PATCH; acepta también frases de texto
 - `/prueba` — simula parseo sin guardar, muestra origen de inferencia
 - `/resumen` — resumen del mes activo con porcentajes, monoespaciado
 - `/resumen MAY26` — resumen de un mes específico
@@ -247,7 +256,8 @@ Si hoy < día 5, mes activo = mes actual. (misma lógica que BBVA05)
 ### ConversationHandlers (orden de registro importante)
 1. `conv_prueba` — entry: `/prueba`
 2. `conv_foto` — entry: `filters.PHOTO` ← debe ir ANTES que conv_gasto
-3. `conv_corregir` — entry: `/corregir` + CallbackQuery `^cor:`
+3. `conv_corregir` — entry: `/corregir` + CallbackQuery `^cor:`; estado `CORREGIR_PANEL` maneja
+   CallbackQuery `^edit:` (botones del panel) y texto (valor de campo o frase híbrida)
 4. `conv_eliminar` — entry: `/eliminar`
 5. `conv_gasto` — entry: `filters.TEXT`
 
@@ -257,11 +267,7 @@ CONFIRMAR_MONTO  = 1   # monto >= 5000
 CONFIRMAR_CAT    = 2   # concepto desconocido
 CONFIRMAR_SUBCAT = 3   # subcategoría cuando grupo tiene varias
 CORREGIR_ELEGIR  = 10
-CORREGIR_QUE     = 11
-CORREGIR_CAT_GRP = 12
-CORREGIR_SUBCAT  = 13
-CORREGIR_PRESU   = 14
-CORREGIR_MONTO   = 15
+CORREGIR_PANEL   = 11   # panel inline multi-campo (botones ^edit: + texto híbrido)
 PRUEBA_GASTO     = 20
 FOTO_CONFIRMAR   = 30
 ELIMINAR_CONFIRM = 50
@@ -301,34 +307,15 @@ ELIMINAR_CONFIRM = 50
 | Feature                  | Descripción                                                       | Complejidad |
 |--------------------------|-------------------------------------------------------------------|-------------|
 | Alertas presupuesto      | Avisar al acercarse al límite mensual por categoría               | Media       |
-| Rediseño `/corregir` híbrido | Panel inline multi-campo + lenguaje natural (ver abajo)       | Media       |
 
-### Plan aprobado: `/corregir` híbrido multi-campo (pendiente de implementar)
-Decisión del usuario: interfaz **híbrida** (panel inline + texto). Objetivo: editar varios campos de
-un gasto en un solo flujo y aplicarlos juntos, en vez del flujo actual de un campo por vez.
-
-**Flujo objetivo:**
-1. `/corregir` → elegir gasto (igual que hoy).
-2. Panel con teclado **inline** mostrando los 6 valores actuales + un botón por campo:
-   `[💵 Monto] [🗓️ Fecha] [💳 Tarjeta] [🏷️ Categoría] [📝 Concepto] [🗂️ Presupuesto]`
-   + `[✅ Aplicar (N)] [❌ Cancelar]`.
-3. Tocar campo → pedir valor (texto para monto/fecha/concepto; sub-menú para tarjeta/categoría/presupuesto)
-   → el panel se **edita en sitio** mostrando el cambio apilado (`💵 $120 → $95 ✏️`).
-4. **Híbrido:** en cualquier momento aceptar una frase ("monto 95 y tarjeta BBVA05") que apila igual.
-5. **✅ Aplicar** → **un solo PATCH** con todos los cambios (reutilizar `aplicar_edicion_contextual`,
-   que ya recalcula Mes y guarda aprendizaje).
-
-**Cambios de código previstos:** `CallbackQueryHandler` con patrón `^edit:`, estado "cambios pendientes"
-en `context.user_data`, eliminar lógica "Ambas" y reducir estados de `conv_corregir`.
-
-### Hallazgos del review de optimización (refactor de bajo riesgo, no aplicado aún)
-- **A — Notificación a la pareja duplicada ~7 veces** (líneas ~1993, 2063, 2101, 2207, 2284, 2514, 2552):
-  extraer a un helper `notificar_pareja(context, uid, texto)`. Riesgo nulo.
-- **B — Tres rutas de edición**; dos son subconjuntos de la tercera: `actualizar_notion` (solo sub/pre),
-  `corregir_monto` (solo monto, sin recalcular Mes ⚠️ bug latente) y `aplicar_edicion_contextual`
-  (hace todo bien + recalcula Mes). Consolidar todo en la contextual.
-- **C — `conv_corregir`** usa 6 estados y ~200 líneas con lógica "Ambas"/"Regresar"; se simplifica con el rediseño.
-- **D (menor)** — `menu_presupuesto()` hardcodeado en vez de derivar de `PR.keys()`.
+### Review de optimización — estado (v21)
+- **A — Notificación a la pareja duplicada** → ✅ resuelto con helper único `notificar_pareja(context, uid, texto)`
+  (aplicado en `aplicar_edicion_contextual`; otros call-sites pueden migrarse después).
+- **B — Tres rutas de edición** → ✅ consolidado: `actualizar_notion`, `aplicar_correccion` y `corregir_monto`
+  eliminados; toda escritura pasa por `aplicar_edicion_contextual` (recalcula Mes; arregla el bug latente
+  de que corregir el monto no recalculaba el ciclo de mes).
+- **C — `conv_corregir` con 6 estados** → ✅ reducido a 2 (`CORREGIR_ELEGIR`, `CORREGIR_PANEL`); lógica "Ambas"/"Regresar" eliminada.
+- **D — `menu_presupuesto()` hardcodeado** → ✅ eliminado; el panel inline deriva los presupuestos de `PR.keys()`.
 
 ---
 
