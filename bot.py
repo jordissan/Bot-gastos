@@ -2823,6 +2823,11 @@ def _esc_md(s: str) -> str:
         s = s.replace(ch, "\\" + ch)
     return s
 
+def _trunc(s: str, n: int) -> str:
+    """Recorta un texto a n caracteres con … final para mantener columnas alineadas."""
+    s = s.strip()
+    return s if len(s) <= n else s[:n-1] + "…"
+
 async def cmd_buscar(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return
@@ -2851,11 +2856,13 @@ async def cmd_buscar(update, context):
     for page in resultados:
         concepto, monto, fecha = _gasto_props(page)
         suma += monto
-        filas.append(f"• {_esc_md(concepto)} · ${monto:,.2f}")
+        nom = _trunc(concepto, 14).ljust(14)
+        monto_s = f"${monto:,.0f}".rjust(7)
+        filas.append(f"{nom}  {monto_s}  {_fecha_corta(fecha)}")
     msg = (
         f"🔍 *{_esc_md(q)}* — {len(resultados)} resultado(s)\n\n"
-        + "\n".join(filas)
-        + f"\n\n💰 *Suma mostrada* ${suma:,.2f}"
+        f"```\n\n{chr(10).join(filas)}\n```\n\n"
+        f"💰 *Suma mostrada*   ${suma:,.0f}"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
