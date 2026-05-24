@@ -1939,7 +1939,7 @@ async def registrar_y_notificar(update, context, gasto):
     ok, nid, err = guardar_notion(gasto)
     if not ok:
         logger.error(f"Error guardando en Notion: {err}")
-        await update.message.reply_text("❌ Error al guardar en Notion. Intenta de nuevo.", reply_markup=ReplyKeyboardRemove())
+        await _responder(update, context, "❌ Error al guardar en Notion. Intenta de nuevo.", reply_markup=ReplyKeyboardRemove())
         return
     gasto_completo = {**gasto, "notion_id": nid}
     uid = update.effective_user.id
@@ -1949,7 +1949,7 @@ async def registrar_y_notificar(update, context, gasto):
     import random
     if random.randint(1,50)==1:
         threading.Thread(target=limpiar_aprendizaje, daemon=True).start()
-    await update.message.reply_text(
+    await _responder(update, context,
         msg_gasto(gasto, notion_id=nid),
         reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown"
     )
@@ -2270,9 +2270,13 @@ async def _procesar_conversacion(update, context, texto, uid):
         gasto = gasto_groq or parsear_mensaje(texto)
         if gasto["monto"]>=MONTO_INUSUAL:
             context.user_data["gasto_pendiente"]=gasto
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Confirmar", callback_data="monto_si"),
+                InlineKeyboardButton("❌ Cancelar",  callback_data="monto_no"),
+            ]])
             await update.message.reply_text(
                 f"⚠️ El monto ${gasto['monto']:,.2f} es inusual.\n¿Confirmas '{gasto['concepto']}'?",
-                reply_markup=ReplyKeyboardMarkup([["✅ SI","❌ NO"]],one_time_keyboard=True,resize_keyboard=True))
+                reply_markup=kb)
             return CONFIRMAR_MONTO
         if not gasto["seguro"]:
             context.user_data["gasto_pendiente"]=gasto
@@ -2285,10 +2289,17 @@ async def _procesar_conversacion(update, context, texto, uid):
     except Exception as e: await update.message.reply_text(f"❌ Error: {e}")
     return ConversationHandler.END
 
-async def confirmar_monto(update,context):
-    gasto=context.user_data.pop("gasto_pendiente",None)
-    if "SI" in update.message.text.strip().upper() and gasto: await registrar_y_notificar(update,context,gasto)
-    else: await update.message.reply_text("❌ Gasto cancelado.",reply_markup=ReplyKeyboardRemove())
+async def callback_confirmar_monto(update, context):
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id not in USUARIOS_AUTORIZADOS:
+        return ConversationHandler.END
+    gasto = context.user_data.pop("gasto_pendiente", None)
+    if query.data == "monto_si" and gasto:
+        await query.edit_message_text(f"✅ Confirmado: {gasto['concepto']} ${gasto['monto']:,.2f}")
+        await registrar_y_notificar(update, context, gasto)
+    else:
+        await query.edit_message_text("❌ Gasto cancelado.")
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -3340,7 +3351,7 @@ def main():
             MessageHandler(filters.VOICE | filters.AUDIO, handle_voice),
         ],
         states={
-            CONFIRMAR_MONTO:  [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_monto)],
+            CONFIRMAR_MONTO:  [CallbackQueryHandler(callback_confirmar_monto, pattern="^monto_")],
             CONFIRMAR_CAT:    [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_cat)],
             CONFIRMAR_SUBCAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_subcat)],
         },
