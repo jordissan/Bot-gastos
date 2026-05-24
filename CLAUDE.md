@@ -81,10 +81,20 @@ Todas terminan en el mismo "cerebro" (`_procesar_conversacion`) y se guardan en 
 Detalles del registro:
 - Fechas aceptadas: `ayer`, `hoy`, `15-may`, `15/05`. Sin fecha = hoy. Zona: America/Mexico_City.
 - Tarjetas: BBVA05, BBVA12, HEYB25, BMEX04, EFVO.
-- Si el monto ≥ $5,000 → pide confirmación (puede ser un error de dedo).
+- Si el monto ≥ $5,000 → pide confirmación con **botones inline** ✅ Confirmar / ❌ Cancelar.
 - Si no reconoce el concepto → pregunta la categoría (menú de grupos → subcategoría).
-- Varios gastos en un mensaje separados por coma se registran de corrido.
+- **Varios gastos en un mensaje** se registran de corrido, tanto por coma en formato estricto
+  (`super 350, gasolina 500`) como en **lenguaje natural** ("fui al súper 350 y cargué gasolina 500" →
+  el clasificador devuelve `multi_gasto`). Confirmación agrupada "✅ N gastos registrados".
 - Cada confirmación incluye deep link `🔗 Ver en Notion`.
+
+### Alertas inteligentes al registrar (en background, solo al que registró)
+- **Insight de categoría** (`generar_insight_groq`): si la categoría supera ~$3,000 acumulado, comenta.
+- **Gasto hormiga** (`verificar_hormiga`): gasto < $150 en Treat/Abarrotes/Restaurantes/Gasolina y ya van
+  3+ en esa categoría esta semana → "☕ Llevas N gastos en X esta semana ($total)".
+- **Anomalía** (`detectar_anomalia`, matemática pura sin Groq): si el monto supera
+  `max(2.5·media, media+2·std)` sobre 5+ registros del mismo concepto → "⚠️ X por $Y parece inusual…".
+- Las tres corren vía `asyncio.create_task` y nunca bloquean la confirmación.
 
 ## 2. El "cerebro": cómo entiende cada mensaje
 `_procesar_conversacion` (lo comparten texto y voz) decide qué hacer:
@@ -96,6 +106,10 @@ Detalles del registro:
    - **edición** → `aplicar_edicion_contextual` sobre el último gasto (ver §5).
    - **gasto** → se registra.
 3. Si Groq no aplica (formato estricto o sin API), usa el parser clásico `parsear_mensaje`.
+
+**Memoria conversacional** (`_historial_chat`, últimos 4 turnos por usuario en RAM): el clasificador y
+el planner de consultas reciben el contexto reciente para resolver referencias como "¿y ayer?",
+"¿y en esa misma categoría?". Se limpia con `/cancelar`. No persiste entre reinicios.
 
 ## 3. Consultas en lenguaje natural
 Flujo de 2 pasos que evita que el LLM invente cifras:
@@ -195,7 +209,7 @@ La voz **no es un camino aparte**: se transcribe y se reusa todo el cerebro del 
 | Comando | Qué hace |
 |---------|----------|
 | `/start` | Mensaje de bienvenida e instrucciones |
-| `/resumen [MES]` | Resumen del mes activo (o de un mes específico), tabla con % |
+| `/resumen [MES]` | Resumen con tabla por categoría + **proyección de cierre** + **narrativa** del mes (Groq) |
 | `/estadisticas` | Compara mes anterior vs mes activo |
 | `/top [MES]` | Top 5 gastos más caros del mes |
 | `/buscar <texto>` | Busca gastos por concepto (Notion `contains`), últimos 12, con suma |
@@ -265,6 +279,12 @@ que el botón `</>` de Telegram no tape la primera fila). Emojis estrechos (⛪)
 - `precargar_meses()` — carga la BD Balance al cache al arrancar (evita timeouts).
 - `notificar_pareja(context, uid, texto)` — aviso al otro usuario (helper único).
 - `_base_desde_notion(nid)` — relee un gasto vigente desde la BD principal (usa `SC_INV`/`PR_INV`).
+- `_construir_gasto_desde_data(data, hoy)` — arma un gasto completo desde el JSON del LLM (single y multi).
+- `_registrar_multiples(...)` — guarda una lista de gastos y manda confirmación agrupada.
+- `calcular_proyeccion(...)` / `_dias_en_ciclo()` — proyección de cierre del ciclo en `/resumen`.
+- `generar_narrativa_resumen(...)` — 2-3 líneas de insight del mes (Groq).
+- `verificar_hormiga(...)` / `detectar_anomalia(...)` — alertas en background al registrar.
+- `agregar_historial`/`obtener_historial`/`limpiar_historial` — memoria conversacional (RAM).
 
 ### ConversationHandlers (el orden de registro importa)
 1. `conv_prueba` — `/prueba`
@@ -276,7 +296,7 @@ que el botón `</>` de Telegram no tape la primera fila). Emojis estrechos (⛪)
 
 ### Estados de conversación
 ```python
-CONFIRMAR_MONTO  = 1   # monto >= 5000
+CONFIRMAR_MONTO  = 1   # monto >= 5000 (botones inline ^monto_)
 CONFIRMAR_CAT    = 2   # concepto desconocido
 CONFIRMAR_SUBCAT = 3   # subcategoría cuando el grupo tiene varias
 CORREGIR_ELEGIR  = 10
