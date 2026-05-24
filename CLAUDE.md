@@ -1,7 +1,7 @@
 # Bot Gastos — Contexto para Claude Code
 
 > Documento de estado actual del bot (no es un changelog). Describe **lo que el bot hace hoy**
-> y cómo está construido. Versión: **v_final21**.
+> y cómo está construido. Versión: **v_final22**.
 
 ## Resumen del proyecto
 Bot de Telegram personal para registrar los gastos de Jordi y Nane, conectado a Notion como base
@@ -267,7 +267,8 @@ que el botón `</>` de Telegram no tape la primera fila). Emojis estrechos (⛪)
 
 ### Funciones clave
 - `_procesar_conversacion(update, context, texto, uid)` — cerebro compartido de texto y voz.
-- `clasificar_mensaje_groq(texto, ultimo)` — clasifica intención (gasto/consulta/edición/otro).
+- `clasificar_mensaje_groq(texto, ultimo, historial)` — clasifica intención
+  (gasto / multi_gasto / consulta / edición / otro); recibe la memoria conversacional.
 - `responder_consulta_groq(...)` — consultas NL en 2 pasos (plan → datos → redacción).
 - `ejecutar_consulta_finanzas(plan)` — ÚNICA función que trae datos para consultas (rutas: histórico / fecha real / ciclo de mes).
 - `_datos_consulta_especial(modo, plan)` — modos de agregación (ranking, tendencia, hormiga…).

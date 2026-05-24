@@ -3622,7 +3622,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_final21…")
+    logger.info("Bot corriendo v_final22…")
     server.serve_forever()
 
 if __name__ == "__main__":
