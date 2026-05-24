@@ -360,7 +360,7 @@ async def cmd_resumen(update, context):
         await update.message.reply_text(f"❌ No encontré el mes {mes} en Notion.")
         return
 
-    await update.message.reply_text(f"⏳ Calculando resumen de {mes}...")
+    await update.message.reply_text(f"⏳ Calculando resumen de {mes}…")
 
     gastos = query_notion_db(NOTION_DATABASE_ID,
                              {"property": "Mes", "relation": {"contains": mid}})
@@ -1917,8 +1917,6 @@ def _bloques_productos(productos):
     }]
 
 # ── MENSAJES ─────────────────────────────────────────────────────────────────
-def fmt(f):
-    return datetime.datetime.strptime(f,"%Y-%m-%d").strftime("%d %b %Y").lower()
 
 def msg_gasto(g, nombre=None, notion_id=None, header=None):
     enc = header or (f"🔔 Nuevo gasto de {nombre}" if nombre else "✅ Gasto guardado")
@@ -2095,7 +2093,7 @@ async def handle_foto(update, context):
     if not GROQ_API_KEY and not GOOGLE_VISION_API_KEY:
         await update.message.reply_text("❌ No hay servicio de lectura de tickets configurado.")
         return ConversationHandler.END
-    msg_espera = await update.message.reply_text("📸 Analizando ticket...")
+    msg_espera = await update.message.reply_text("📸 Analizando ticket…")
     photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
     image_bytes = await file.download_as_bytearray()
@@ -2205,7 +2203,7 @@ async def handle_voice(update, context):
     voz = update.message.voice or update.message.audio
     if not voz:
         return ConversationHandler.END
-    msg_espera = await update.message.reply_text("🎤 Escuchando...")
+    msg_espera = await update.message.reply_text("🎤 Escuchando…")
     try:
         file = await context.bot.get_file(voz.file_id)
         audio_bytes = await file.download_as_bytearray()
@@ -2747,7 +2745,7 @@ async def cmd_estadisticas(update, context):
         mes_ant_num, anio_ant = mes_num - 1, anio
     mes_ant = f"{MESES_ESP[mes_ant_num]}{str(anio_ant)[-2:]}"
 
-    await update.message.reply_text(f"⏳ Comparando {mes_ant} vs {mes_act}...")
+    await update.message.reply_text(f"⏳ Comparando {mes_ant} vs {mes_act}…")
 
     def get_totales(mes):
         mid = buscar_mes_id(mes)
@@ -2814,15 +2812,22 @@ def _gasto_props(page):
     fecha = (p.get("Fecha", {}).get("date", {}) or {}).get("start", "")
     return concepto, monto, fecha
 
-def _fecha_corta(fecha):
-    return " ".join(fmt(fecha).split()[:2]) if fecha else ""
-
 def _fecha_compacta(fecha):
-    """Fecha compacta dd/mmm/yy en español (ej: 18/may/26). Vacío si no hay fecha."""
+    """Fecha compacta dd/MMM/yy en español (ej: 18/MAY/26). Vacío si no hay fecha."""
     if not fecha:
         return ""
     d = datetime.datetime.strptime(fecha, "%Y-%m-%d")
-    return f"{d.day:02d}/{MESES_ESP[d.month].lower()}/{str(d.year)[-2:]}"
+    return f"{d.day:02d}/{MESES_ESP[d.month]}/{str(d.year)[-2:]}"
+
+MESES_ESP_LARGO = {1:"enero",2:"febrero",3:"marzo",4:"abril",5:"mayo",6:"junio",
+                   7:"julio",8:"agosto",9:"septiembre",10:"octubre",11:"noviembre",12:"diciembre"}
+
+def _fecha_larga(fecha):
+    """Fecha estilizada en español (ej: 18 de mayo, 2026). Para el correo mensual."""
+    if not fecha:
+        return ""
+    d = datetime.datetime.strptime(fecha, "%Y-%m-%d")
+    return f"{d.day} de {MESES_ESP_LARGO[d.month]}, {d.year}"
 
 def _esc_md(s: str) -> str:
     """Escapa caracteres especiales de Markdown V1 en texto dinámico (conceptos, etc.)."""
@@ -2842,7 +2847,7 @@ async def cmd_buscar(update, context):
     if not q:
         await update.message.reply_text("🔍 Uso: /buscar <texto>\nEjemplo: /buscar uber")
         return
-    await update.message.reply_text(f"🔍 Buscando \"{q}\"...")
+    await update.message.reply_text(f"🔍 Buscando \"{q}\"…")
 
     def _buscar():
         r = notion_request("POST", f"{NOTION_API_BASE}/databases/{NOTION_DATABASE_ID}/query",
@@ -2881,7 +2886,7 @@ async def cmd_top(update, context):
     if not mid:
         await update.message.reply_text(f"❌ No encontré el mes {mes} en Notion.")
         return
-    await update.message.reply_text(f"⏳ Top gastos de {mes}...")
+    await update.message.reply_text(f"⏳ Top gastos de {mes}…")
 
     def _top():
         gastos = query_notion_db(NOTION_DATABASE_ID, {"property": "Mes", "relation": {"contains": mid}})
@@ -3058,7 +3063,7 @@ def _html_reporte_mensual(d: dict, recom_html: str = "") -> str:
             f'</tr>')
     tops = "".join(
         f'<li style="margin:6px 0;font:14px -apple-system,Arial,sans-serif;color:#111;">{c} — '
-        f'<b>${m:,.0f}</b> <span style="color:#9ca3af;">· {_fecha_corta(f)}</span></li>'
+        f'<b>${m:,.0f}</b> <span style="color:#9ca3af;">· {_fecha_larga(f)}</span></li>'
         for c, m, f in d["top"])
     msi_html = ""
     if d["msi"]:
@@ -3126,7 +3131,7 @@ async def cmd_reporte(update, context):
         return
     texto_cmd = (update.message.text or "").lower()
     tipo = "mensual" if ("mensual" in texto_cmd or (context.args and "mes" in context.args[0].lower())) else "semanal"
-    await update.message.reply_text(f"📊 Generando reporte {tipo}...")
+    await update.message.reply_text(f"📊 Generando reporte {tipo}…")
     await enviar_reporte(tipo, solo_a=update.effective_user.id)
     if tipo == "mensual":
         ok = await enviar_reporte_email_mensual()
@@ -3382,7 +3387,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_final20...")
+    logger.info("Bot corriendo v_final21…")
     server.serve_forever()
 
 if __name__ == "__main__":
