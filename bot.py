@@ -125,6 +125,21 @@ def guardar_contexto(user_id: int, gasto: dict):
 def obtener_contexto(user_id: int):
     return _ultimo_gasto_usuario.get(user_id)
 
+# Memoria conversacional: últimos 4 turnos por usuario (RAM, no persiste). Tarea 2.
+_historial_chat = {}
+
+def agregar_historial(uid: int, role: str, content: str):
+    h = _historial_chat.setdefault(uid, [])
+    h.append({"role": role, "content": content})
+    if len(h) > 4:
+        del h[0]
+
+def obtener_historial(uid: int) -> list:
+    return _historial_chat.get(uid, [])
+
+def limpiar_historial(uid: int):
+    _historial_chat.pop(uid, None)
+
 USUARIOS_AUTORIZADOS = {8663298433, 8093171397}
 USUARIOS_NOMBRES     = {8663298433: "Jordi", 8093171397: "Nani"}
 USUARIOS_NOTIFICAR   = {8663298433: 8093171397, 8093171397: 8663298433}
@@ -348,6 +363,47 @@ def fila_tabla(nombre: str, monto: float, nom_pad: int, extra: str = "") -> str:
     return f"{e_str} {nombre.ljust(nom_pad)}  {monto_s}{extra}"
 
 # ── RESUMEN ───────────────────────────────────────────────────────────────────
+def _dias_en_ciclo() -> int:
+    """Días transcurridos del ciclo de facturación en curso (ancla el día 5 = día 1 del ciclo)."""
+    hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+    if hoy.day >= 5:
+        return hoy.day - 4
+    import calendar
+    prev = hoy.replace(day=1) - datetime.timedelta(days=1)
+    dias_prev = calendar.monthrange(prev.year, prev.month)[1]
+    return (dias_prev - 4) + hoy.day
+
+def calcular_proyeccion(total_actual, meses_anteriores):
+    """(proyeccion, delta_pct) proyectando el cierre del ciclo, o None si faltan datos (<2 meses)."""
+    historicos = [t for t in meses_anteriores if t and t > 0]
+    if len(historicos) < 2:
+        return None
+    promedio = sum(historicos) / len(historicos)
+    dias = max(1, _dias_en_ciclo())
+    proyeccion = total_actual / dias * 30
+    delta_pct = round((proyeccion - promedio) / promedio * 100) if promedio else 0
+    return proyeccion, delta_pct
+
+def generar_narrativa_resumen(mes, totales_dict, total, proyeccion):
+    """2-3 líneas de insight del mes redactadas por Groq. None si falla o no hay API."""
+    if not GROQ_API_KEY:
+        return None
+    try:
+        cats = ", ".join(f"{k} ${v:,.0f}" for k, v in
+                         sorted(totales_dict.items(), key=lambda x: x[1], reverse=True))
+        ctx_proy = f"\nProyección de cierre: {proyeccion}" if proyeccion else ""
+        prompt = (
+            f"Eres el asistente financiero de Jordi y Nani. Mes {mes}. "
+            f"Gasto total ${total:,.0f}. Desglose por categoría: {cats}.{ctx_proy}\n\n"
+            "Escribe 2-3 líneas en español mexicano, tono directo, SIN saludos ni preámbulo, "
+            "con los insights más relevantes (qué categoría pesa más, si algo destaca, si el ritmo "
+            "es alto o normal). No repitas el total tal cual; aporta interpretación. Sin markdown."
+        )
+        return (groq_completar(prompt, max_tokens=80) or "").strip() or None
+    except Exception as e:
+        logger.warning(f"narrativa resumen error: {e}")
+        return None
+
 async def cmd_resumen(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return
@@ -403,6 +459,25 @@ async def cmd_resumen(update, context):
         f"```\n\n{chr(10).join(tabla)}\n```\n\n"
         f"💰 *Total*   ${total_general:,.0f}"
     )
+
+    # Proyección de cierre (solo para el mes activo en curso) — Tarea 3
+    proy_txt = None
+    if mes == mes_activo_str():
+        totales_ciclo = _totales_por_ciclo()
+        prev = _meses_recientes(4)[1:]   # los 3 ciclos anteriores al activo
+        meses_ant = [totales_ciclo.get(m, 0) for m in prev]
+        proy = calcular_proyeccion(total_general, meses_ant)
+        if proy:
+            p, d = proy
+            signo = "+" if d >= 0 else ""
+            proy_txt = f"~${p:,.0f} al cierre ({signo}{d}% vs promedio)"
+            msg += f"\n📈 Proyección: {proy_txt}"
+
+    # Narrativa del mes generada por Groq — Tarea 6
+    narrativa = await asyncio.to_thread(generar_narrativa_resumen, mes, dict(ordenados), total_general, proy_txt)
+    if narrativa:
+        msg += f"\n\n{_esc_md(narrativa)}"
+
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 # ── CONCEPTOS UNIVOCOS ────────────────────────────────────────────────────────
@@ -993,20 +1068,30 @@ def parsear_mensaje(texto):
 # ── CLASIFICACIÓN + PARSEO CON GROQ (LLM) ─────────────────────────────────────
 TARJETAS_VALIDAS = ["BBVA05", "BBVA12", "HEYB25", "BMEX04", "EFVO"]
 
-def clasificar_mensaje_groq(texto: str, ultimo: dict = None):
+def clasificar_mensaje_groq(texto: str, ultimo: dict = None, historial: list = None):
     """
     Clasifica un mensaje con Groq/Llama 3.3 70B. Devuelve (tipo, payload):
-      - ("gasto", gasto_dict)     → registrar un gasto nuevo
-      - ("consulta", None)        → pregunta sobre finanzas/gastos
-      - ("edicion", campos_dict)  → modificar el último gasto (solo si `ultimo` existe)
-      - ("otro", None)            → saludo/charla
-      - (None, None)              → Groq falló / no parseable
+      - ("gasto", gasto_dict)        → registrar un gasto nuevo
+      - ("multi_gasto", [gastos])    → registrar varios gastos
+      - ("consulta", None)           → pregunta sobre finanzas/gastos
+      - ("edicion", campos_dict)     → modificar el último gasto (solo si `ultimo` existe)
+      - ("otro", None)               → saludo/charla
+      - (None, None)                 → Groq falló / no parseable
     `ultimo`: último gasto del usuario (para habilitar la opción de edición).
+    `historial`: últimos turnos de la conversación (para resolver referencias como "¿y ayer?").
     """
     if not GROQ_API_KEY:
         return (None, None)
 
     hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+
+    bloque_historial = ""
+    if historial:
+        ctx = "\n".join(f"{m['role']}: {m['content']}" for m in historial[-4:])
+        bloque_historial = (
+            f"\nContexto reciente de la conversación (úsalo para resolver referencias como "
+            f"\"¿y ayer?\", \"¿y en esa categoría?\", \"¿cuánto fue?\"):\n{ctx}\n"
+        )
 
     bloque_edicion = ""
     if ultimo:
@@ -1020,7 +1105,7 @@ def clasificar_mensaje_groq(texto: str, ultimo: dict = None):
 """
 
     prompt = f"""Eres el clasificador de un bot de gastos en español mexicano. Hoy es {hoy.strftime('%d/%m/%Y')}.
-
+{bloque_historial}
 Mensaje del usuario: "{texto}"
 
 Decide la intención y responde SOLO con JSON válido, sin texto adicional ni markdown:
@@ -1738,6 +1823,13 @@ async def responder_consulta_groq(texto: str, user_id: int, update, context) -> 
     # Lunes de esta semana
     lunes_esta    = hoy - datetime.timedelta(days=hoy.weekday())
 
+    hist = obtener_historial(user_id)
+    bloque_hist = ""
+    if hist:
+        ctx = "\n".join(f"{m['role']}: {m['content']}" for m in hist[-4:])
+        bloque_hist = (f"\nContexto reciente de la conversación (úsalo para resolver referencias como "
+                       f"\"¿y ayer?\", \"¿y en esa categoría?\"):\n{ctx}\n")
+
     prompt_plan = f"""Hoy es {hoy.strftime('%d/%m/%Y')} ({hoy_iso}). Mes de ciclo activo: {activo}.
 Meses disponibles: {meses_disp}
 Categorías válidas: {categorias}
@@ -1746,7 +1838,7 @@ Fechas de referencia:
 - Ayer: {ayer}  | Esta semana (lunes): {lunes_esta.strftime('%Y-%m-%d')}
 - Semana pasada: {lunes_pasado.strftime('%Y-%m-%d')} a {domingo_pasado.strftime('%Y-%m-%d')}
 - Hace 7 días: {(hoy - datetime.timedelta(days=6)).strftime('%Y-%m-%d')}
-
+{bloque_hist}
 El usuario pregunta: "{texto}"
 
 Devuelve SOLO JSON válido:
@@ -1824,6 +1916,8 @@ Responde la pregunta usando SOLO estos datos. No inventes cifras. Si los datos e
 
     respuesta = await asyncio.to_thread(groq_completar, prompt_resp, 200)
     if respuesta:
+        agregar_historial(user_id, "user", texto)
+        agregar_historial(user_id, "assistant", respuesta)
         await update.message.reply_text(respuesta)
         return True
     # Fallback: si el segundo LLM falla pero sí hubo datos, responde lo básico
@@ -1831,6 +1925,82 @@ Responde la pregunta usando SOLO estos datos. No inventes cifras. Si los datos e
         await update.message.reply_text(f"💰 Total: ${res['total']:,.0f} en {res['conteo']} gastos ({', '.join(res['meses'])})")
         return True
     return False
+
+HORMIGA_SUBCATS = ("Treat", "Abarrotes", "Restaurantes", "Gasolina")
+
+async def verificar_hormiga(gasto: dict, uid: int, context) -> None:
+    """Alerta de gasto hormiga: gasto pequeño (<$150) en categoría de consumo frecuente
+    cuando ya van 3+ en la misma categoría esta semana. Background, solo al que registró. Tarea 8."""
+    if (gasto.get("monto") or 0) >= 150:
+        return
+    if gasto.get("subcategoria") not in HORMIGA_SUBCATS:
+        return
+    presupuesto = gasto.get("presupuesto")
+    if not presupuesto:
+        return
+    try:
+        hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+        desde = (hoy - datetime.timedelta(days=7)).isoformat()
+        def _contar():
+            gastos = query_notion_db(NOTION_DATABASE_ID,
+                                     {"property": "Fecha", "date": {"on_or_after": desde}})
+            n, total = 0, 0.0
+            for g in gastos:
+                props = g.get("properties", {})
+                if _presupuesto_de_props(props) == presupuesto:
+                    n += 1
+                    total += props.get("Monto", {}).get("number", 0) or 0
+            return n, total
+        n, total = await asyncio.to_thread(_contar)
+        if n >= 3:
+            await context.bot.send_message(
+                chat_id=uid,
+                text=f"☕ Llevas {n} gastos en {presupuesto} esta semana (${total:,.0f} en total).")
+    except Exception as e:
+        logger.warning(f"verificar_hormiga error: {e}")
+
+async def detectar_anomalia(gasto: dict, uid: int, context) -> None:
+    """Avisa si un gasto es inusualmente alto vs el historial del MISMO concepto.
+    Matemática pura (sin Groq). Background, solo al que registró. Tarea 9."""
+    concepto = gasto.get("concepto", "")
+    monto = gasto.get("monto", 0) or 0
+    if not concepto or monto <= 0:
+        return
+    try:
+        objetivo = normalizar(concepto)
+        def _montos():
+            r = notion_request("POST", f"{NOTION_API_BASE}/databases/{NOTION_DATABASE_ID}/query",
+                headers=nh(), json={
+                    "filter": {"property": "Concepto", "title": {"contains": concepto}},
+                    "sorts": [{"property": "Fecha", "direction": "descending"}],
+                    "page_size": 20,
+                }, timeout=NOTION_T_DEFAULT)
+            out = []
+            if r and r.status_code == 200:
+                for g in r.json().get("results", []):
+                    props = g.get("properties", {})
+                    t = props.get("Concepto", {}).get("title", [])
+                    c = t[0].get("text", {}).get("content", "") if t else ""
+                    if normalizar(c) == objetivo:
+                        m = props.get("Monto", {}).get("number", 0) or 0
+                        if m > 0:
+                            out.append(m)
+            return out
+        montos = await asyncio.to_thread(_montos)
+        if monto in montos:          # quita una ocurrencia del gasto recién registrado
+            montos.remove(monto)
+        if len(montos) < 5:
+            return
+        import statistics
+        media = statistics.mean(montos)
+        std = statistics.pstdev(montos)
+        umbral = max(2.5 * media, media + 2 * std)   # el más estricto, evita falsos positivos
+        if monto > umbral:
+            await context.bot.send_message(
+                chat_id=uid,
+                text=f"⚠️ {concepto} por ${monto:,.0f} parece inusual (tu promedio es ${media:,.0f}).")
+    except Exception as e:
+        logger.warning(f"detectar_anomalia error: {e}")
 
 async def generar_insight_groq(gasto: dict, user_id: int, context) -> None:
     """
@@ -1968,6 +2138,8 @@ async def registrar_y_notificar(update, context, gasto):
     threading.Thread(target=guardar_historial_notion, args=(gasto_completo, uid), daemon=True).start()
     guardar_contexto(uid, gasto_completo)
     asyncio.create_task(generar_insight_groq(gasto_completo, uid, context))
+    asyncio.create_task(verificar_hormiga(gasto_completo, uid, context))
+    asyncio.create_task(detectar_anomalia(gasto_completo, uid, context))
     import random
     if random.randint(1,50)==1:
         threading.Thread(target=limpiar_aprendizaje, daemon=True).start()
@@ -2105,6 +2277,7 @@ async def registrar_via_shortcut(texto: str, user_id: int):
 
 async def _cancelar_conv(update, context):
     context.user_data.clear()
+    limpiar_historial(update.effective_user.id)
     await update.message.reply_text("❌ Cancelado.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
@@ -2270,7 +2443,7 @@ async def _procesar_conversacion(update, context, texto, uid):
     gasto_groq = None
     if GROQ_API_KEY and not _parece_gasto_estricto(texto):
         ultimo = obtener_contexto(uid)
-        tipo, payload = clasificar_mensaje_groq(texto, ultimo)
+        tipo, payload = clasificar_mensaje_groq(texto, ultimo, obtener_historial(uid))
         if tipo == "consulta":
             if await responder_consulta_groq(texto, uid, update, context):
                 return ConversationHandler.END
@@ -2753,6 +2926,7 @@ async def handle_prueba(update,context):
 
 async def cancelar(update,context):
     context.user_data.clear()
+    limpiar_historial(update.effective_user.id)
     await update.message.reply_text("❌ Cancelado.",reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
