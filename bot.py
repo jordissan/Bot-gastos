@@ -1028,6 +1028,10 @@ Decide la intención y responde SOLO con JSON válido, sin texto adicional ni ma
 - Si el usuario quiere REGISTRAR un gasto NUEVO (afirma haber gastado/comprado/pagado algo):
 {{"tipo": "gasto", "concepto": "comercio o descripción corta en Title Case", "monto": número sin $, "fecha": "YYYY-MM-DD", "tarjeta": "{'/'.join(TARJETAS_VALIDAS)} o null"}}
 
+- Si el usuario menciona DOS O MÁS gastos DISTINTOS en el mismo mensaje (ej. "fui al super 350 y cargué gasolina 500"):
+{{"tipo": "multi_gasto", "gastos": [{{"concepto": "...", "monto": número, "fecha": "YYYY-MM-DD", "tarjeta": "{'/'.join(TARJETAS_VALIDAS)} o null"}}, ...]}}
+  (un objeto por gasto, máximo 5; cada uno con su concepto y monto propios)
+
 - Si el usuario PREGUNTA o CONSULTA sobre sus gastos/finanzas (cuánto, cuándo, en qué, comparar, totales, presupuestos), aunque mencione cantidades o categorías:
 {{"tipo": "consulta"}}
 {bloque_edicion}
@@ -1037,10 +1041,11 @@ Decide la intención y responde SOLO con JSON válido, sin texto adicional ni ma
 Reglas para "gasto":
 - Concepto conciso: "Starbucks", "Super", "Comida", "Gasolina".
 - "ayer" resta 1 día a hoy. Sin fecha = hoy.
-- Montos aproximados ("como 350", "unos 400") → usa ese número. Dos montos → el mayor.
-IMPORTANTE: si hay duda y el mensaje tiene forma de pregunta, elige "consulta". Nunca registres un gasto cuando el usuario está preguntando."""
+- Montos aproximados ("como 350", "unos 400") → usa ese número. Dos montos del MISMO gasto → el mayor.
+IMPORTANTE: si hay duda y el mensaje tiene forma de pregunta, elige "consulta". Nunca registres un gasto cuando el usuario está preguntando.
+IMPORTANTE: usa "multi_gasto" SOLO si hay 2+ gastos claramente distintos. Si es un solo gasto (aunque mencione varios montos o productos), usa "gasto"."""
 
-    raw = groq_completar(prompt, max_tokens=160)
+    raw = groq_completar(prompt, max_tokens=250)
     data = _extraer_json(raw)
     if not data:
         return (None, None)
@@ -1055,29 +1060,46 @@ IMPORTANTE: si hay duda y el mensaje tiene forma de pregunta, elige "consulta". 
                       ("monto", "concepto", "tarjeta", "fecha", "presupuesto", "subcategoria")
                       if data.get(k) not in (None, "", "null")}
             return ("edicion", campos) if campos else ("otro", None)
+        if tipo == "multi_gasto":
+            items = data.get("gastos") or []
+            gastos = [g for g in (_construir_gasto_desde_data(it, hoy) for it in items[:5]) if g]
+            if len(gastos) >= 2:
+                return ("multi_gasto", gastos)
+            if len(gastos) == 1:
+                return ("gasto", gastos[0])
+            return (None, None)
         if tipo != "gasto":
             return ("otro", None)
 
-        concepto = (data.get("concepto") or "").strip()
-        monto = data.get("monto")
-        if not concepto or monto is None:
-            return (None, None)
-        try:
-            fecha = datetime.date.fromisoformat(data.get("fecha") or hoy.strftime("%Y-%m-%d"))
-        except (ValueError, TypeError):
-            fecha = hoy
-        tarjeta_raw = data.get("tarjeta")
-        tarjeta = calcular_tarjeta(fecha, tarjeta_raw if tarjeta_raw in TARJETAS_VALIDAS else None)
-        mes = calcular_mes(fecha, tarjeta)
-        sub, pre, seguro = inferir_categoria(concepto)
-        return ("gasto", {
-            "concepto": concepto.title(), "monto": float(monto),
-            "fecha": fecha.strftime("%Y-%m-%d"), "tarjeta": tarjeta, "mes": mes,
-            "subcategoria": sub, "presupuesto": pre, "seguro": seguro,
-        })
+        g = _construir_gasto_desde_data(data, hoy)
+        return ("gasto", g) if g else (None, None)
     except Exception as e:
         logger.warning(f"Groq clasificación fallida: {e} — texto: {texto[:80]}")
         return (None, None)
+
+def _construir_gasto_desde_data(data: dict, hoy) -> dict | None:
+    """Arma un gasto completo desde {concepto, monto, fecha, tarjeta} del LLM. None si inválido."""
+    concepto = (data.get("concepto") or "").strip()
+    monto = data.get("monto")
+    if not concepto or monto is None:
+        return None
+    try:
+        monto = float(monto)
+    except (ValueError, TypeError):
+        return None
+    try:
+        fecha = datetime.date.fromisoformat(data.get("fecha") or hoy.strftime("%Y-%m-%d"))
+    except (ValueError, TypeError):
+        fecha = hoy
+    tarjeta_raw = data.get("tarjeta")
+    tarjeta = calcular_tarjeta(fecha, tarjeta_raw if tarjeta_raw in TARJETAS_VALIDAS else None)
+    mes = calcular_mes(fecha, tarjeta)
+    sub, pre, seguro = inferir_categoria(concepto)
+    return {
+        "concepto": concepto.title(), "monto": monto,
+        "fecha": fecha.strftime("%Y-%m-%d"), "tarjeta": tarjeta, "mes": mes,
+        "subcategoria": sub, "presupuesto": pre, "seguro": seguro,
+    }
 
 def _parece_gasto_estricto(texto: str) -> bool:
     """
@@ -2217,6 +2239,31 @@ async def handle_voice(update, context):
     await msg_espera.edit_text(f"🎤 Entendí: {texto}")
     return await _procesar_conversacion(update, context, texto, uid)
 
+async def _registrar_multiples(update, context, gastos, uid):
+    """Registra una lista de gastos ya construidos (de Groq) y manda confirmación agrupada."""
+    lineas, ok_list = [], []
+    for g in gastos[:5]:
+        ok, nid, err = guardar_notion(g)
+        if ok:
+            gc = {**g, "notion_id": nid}
+            threading.Thread(target=guardar_historial_notion, args=(gc, uid), daemon=True).start()
+            guardar_contexto(uid, gc)
+            lineas.append(f"📌 {g['concepto']} ${g['monto']:,.2f}")
+            ok_list.append(gc)
+        else:
+            lineas.append(f"❌ {g['concepto']} (error Notion)")
+    encabezado = f"✅ {len(ok_list)} gastos registrados" if len(ok_list) != 1 else "✅ 1 gasto registrado"
+    await update.message.reply_text(encabezado + "\n" + "\n".join(lineas), reply_markup=ReplyKeyboardRemove())
+    nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
+    notif  = USUARIOS_NOTIFICAR.get(uid)
+    if notif and ok_list:
+        for g in ok_list:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Corregir categoría", callback_data=f"cor:{g['notion_id']}:{g['concepto']}")]])
+            await context.bot.send_message(
+                chat_id=notif, text=msg_gasto(g, nombre=nombre, notion_id=g["notion_id"]),
+                reply_markup=kb, parse_mode="Markdown"
+            )
+
 async def _procesar_conversacion(update, context, texto, uid):
     # 1) Clasificar con Groq cuando el mensaje NO tiene formato estricto.
     #    Distingue gasto / consulta / edición → evita registrar gastos al preguntar.
@@ -2231,6 +2278,9 @@ async def _procesar_conversacion(update, context, texto, uid):
             return ConversationHandler.END
         if tipo == "edicion" and ultimo:
             await aplicar_edicion_contextual(update, context, payload, ultimo)
+            return ConversationHandler.END
+        if tipo == "multi_gasto" and payload:
+            await _registrar_multiples(update, context, payload, uid)
             return ConversationHandler.END
         if tipo == "gasto":
             gasto_groq = payload
