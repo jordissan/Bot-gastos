@@ -1,7 +1,7 @@
 # Bot Gastos — Contexto para Claude Code
 
 > Documento de estado actual del bot (no es un changelog). Describe **lo que el bot hace hoy**
-> y cómo está construido. Versión: **v_final23**.
+> y cómo está construido. Versión: **v_final24**.
 
 ## Resumen del proyecto
 Bot de Telegram personal para registrar los gastos de Jordi y Nane, conectado a Notion como base
@@ -63,6 +63,8 @@ Cada gasto/edición que hace uno se le notifica al otro.
 | Aprendizaje Bot | `3ba6f37c717948a1a6aeac3b384ff33c`  | Diccionario de categorías aprendidas |
 | Historial Bot   | `35f7eb0cbb9280ae8f02f69b4f242298`  | Últimos 5 gastos por usuario (snapshot)|
 | Balance         | via `NOTION_BALANCE_ID` env var      | Meses dinámicos (ENE26, FEB26…) + rollups |
+| Metas Bot       | `cf7906bcccfd4690b7ef8c1e996a8e17`  | Metas de gasto por ciclo y presupuesto (por usuario) |
+| Alias Bot       | `9000583a97204e6db41994ec96bf5a71`  | Alias personales aprendidos por conversación |
 
 ---
 
@@ -299,6 +301,11 @@ que el botón `</>` de Telegram no tape la primera fila). Emojis estrechos (⛪)
 - `agregar_historial`/`obtener_historial`/`limpiar_historial` — memoria conversacional (RAM).
 - `cargar_historial_compartido()` — últimos MAX_HISTORIAL gastos de ambos usuarios (sin filtro UsuarioID); usado por `/corregir`.
 - `cargar_historial_notion(uid)` — últimos MAX_HISTORIAL gastos de un usuario; usado por `/eliminar`.
+- `guardar_meta(uid, presupuesto, limite, ciclo)` — upsert en Metas Bot (busca y reemplaza si ya existe).
+- `cargar_meta(uid, presupuesto, ciclo)` — lee un límite específico; None si no existe.
+- `cargar_metas_ciclo(uid, ciclo)` — todas las metas del usuario para un ciclo.
+- `enviar_propuesta_mes(datos)` — corrutina async; envía el mensaje de apertura de ciclo con botones a ambos usuarios.
+- `callback_propuesta` — maneja `^propuesta_`: confirma/salta meta, muestra desglose.
 
 ### ConversationHandlers (el orden de registro importa)
 1. `conv_prueba` — `/prueba`
@@ -318,6 +325,7 @@ CORREGIR_PANEL   = 11  # panel inline multi-campo (botones ^edit: + texto híbri
 PRUEBA_GASTO     = 20
 FOTO_CONFIRMAR   = 30
 ELIMINAR_CONFIRM = 50
+PROPUESTA_META   = 60  # reservado para ajuste de meta en apertura de ciclo (Feature 3)
 ```
 
 ### Endpoints HTTP
@@ -325,6 +333,7 @@ ELIMINAR_CONFIRM = 50
 - `POST /webhook` — updates de Telegram
 - `POST /log` — gastos del iOS Shortcut/Siri (`{text, user_id, secret}`)
 - `GET /reporte?secret=<SHORTCUT_SECRET>&tipo=semanal|mensual` — dispara el reporte a ambos usuarios
+- `POST /propuesta_mes` — recibe datos de la rutina "Nuevo mes" y envía mensaje de apertura de ciclo con botones inline (`{secret, ciclo_nuevo, ciclo_anterior, total_anterior, promedio_3m, delta_pct, recurrentes_registrados, recurrentes_total, limite_propuesto, desglose}`)
 
 ---
 
@@ -350,10 +359,39 @@ ELIMINAR_CONFIRM = 50
 
 ---
 
-## Pendientes futuros 🔲
-| Feature | Descripción | Complejidad |
-|---------|-------------|-------------|
-| Alertas de presupuesto | Avisar al acercarse al límite mensual por categoría | Media |
+## Features en construcción / pendientes 🔲
+
+### Feature 2 — Memoria semántica (Alias Bot) 🔲
+El bot aprende alias personales de la conversación normal. Si el usuario dice
+"recuerda que el café de siempre es Starbucks BBVA05", Groq detecta el patrón,
+llama a `guardar_alias(uid, trigger, resolved)` y la próxima vez expande el texto
+antes de clasificar (`expandir_aliases(uid, texto)`).
+- BD: Alias Bot (personal, no compartida entre usuarios)
+- Aprendizaje: detección automática en `clasificar_mensaje_groq`
+- Expansión: antes de `clasificar_mensaje_groq` en `_procesar_conversacion`
+
+### Feature 3 — Metas de gasto (Metas Bot) 🔲
+El usuario fija metas por ciclo y presupuesto en lenguaje natural.
+"Quiero gastar máximo $10,000 en Diversión este ciclo" → Groq detecta intent `meta`,
+llama a `guardar_meta(uid, presupuesto, limite, ciclo)`.
+- Alertas: al 80% y al 100% del límite, tras cada registro (`verificar_metas` en background)
+- Progreso en `/resumen`: muestra meta y % usado si existe meta para ese ciclo
+- BD: Metas Bot (personal, presupuesto TOTAL para meta global)
+
+### Feature 4 — Multi-agente apertura de ciclo ✅ IMPLEMENTADO
+La rutina "Nuevo mes [Notion]" (v7) ahora:
+1. Registra todos los recurrentes en Notion (igual que antes)
+2. Calcula total del ciclo anterior + promedio 3 meses
+3. POST a `/propuesta_mes` → bot envía mensaje a ambos usuarios con:
+   - Resumen del ciclo cerrado ($X, Δ% vs promedio)
+   - Recurrentes registrados y su total
+   - Meta sugerida para el nuevo ciclo
+   - Botones: ✅ Meta $XX,XXX · ❌ Sin meta · 📋 Ver desglose
+4. `callback_propuesta` guarda la meta confirmada en Metas Bot (presupuesto="TOTAL")
+
+### Email BBVA (reconciliación automática) 🔲 v2
+Conectar Gmail API, parsear PDF del estado de cuenta y cruzar con Notion.
+Alta complejidad — pendiente para versión futura.
 
 ---
 

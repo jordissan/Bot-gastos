@@ -12,6 +12,8 @@ NOTION_TOKEN          = os.environ["NOTION_TOKEN"]
 NOTION_DATABASE_ID    = os.environ["NOTION_DATABASE_ID"]
 NOTION_APRENDIZAJE_ID = "3ba6f37c717948a1a6aeac3b384ff33c"
 NOTION_HISTORIAL_ID   = "35f7eb0cbb9280ae8f02f69b4f242298"
+NOTION_METAS_ID       = "cf7906bcccfd4690b7ef8c1e996a8e17"
+NOTION_ALIAS_ID       = "9000583a97204e6db41994ec96bf5a71"
 GOOGLE_MAPS_API_KEY   = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 GOOGLE_VISION_API_KEY = os.environ.get("GOOGLE_VISION_API_KEY", "")
 WEBHOOK_SECRET        = os.environ.get("WEBHOOK_SECRET", "")
@@ -153,6 +155,7 @@ CORREGIR_PANEL   = 11   # panel inline multi-campo (híbrido botones + texto)
 PRUEBA_GASTO     = 20
 FOTO_CONFIRMAR   = 30
 ELIMINAR_CONFIRM = 50
+PROPUESTA_META   = 60   # estado para ajustar la meta de apertura de ciclo
 
 SC = {
     "Super":"bf7d4b7d0445441ab89b53eec946d028","Abarrotes":"3587eb0cbb9280c58919c55b065c1e19",
@@ -974,6 +977,176 @@ def cargar_historial_compartido():
     except Exception as ex:
         logger.error(f"Error cargando historial compartido: {ex}")
     return []
+
+# ── METAS ────────────────────────────────────────────────────────────────────
+
+def _buscar_meta_page(uid: int, presupuesto: str, ciclo: str) -> str | None:
+    """Retorna el page_id de una meta existente (uid/presupuesto/ciclo), o None."""
+    try:
+        r = notion_request("POST",
+            f"{NOTION_API_BASE}/databases/{NOTION_METAS_ID}/query",
+            headers=nh(),
+            json={"filter": {"and": [
+                {"property": "UsuarioID", "number":    {"equals": uid}},
+                {"property": "Presupuesto", "rich_text": {"equals": presupuesto}},
+                {"property": "Ciclo",       "rich_text": {"equals": ciclo}},
+            ]}, "page_size": 1},
+            timeout=NOTION_T_SHORT)
+        if r and r.status_code == 200:
+            results = r.json().get("results", [])
+            if results:
+                return results[0]["id"].replace("-", "")
+    except Exception as ex:
+        logger.error(f"Error buscando meta: {ex}")
+    return None
+
+def guardar_meta(uid: int, presupuesto: str, limite: float, ciclo: str) -> bool:
+    """Guarda o actualiza una meta en Metas Bot. Upsert por uid/presupuesto/ciclo."""
+    props = {
+        "Titulo":      {"title":     [{"text": {"content": f"Meta {presupuesto} {ciclo}"}}]},
+        "Presupuesto": {"rich_text": [{"text": {"content": presupuesto}}]},
+        "Limite":      {"number": limite},
+        "Ciclo":       {"rich_text": [{"text": {"content": ciclo}}]},
+        "UsuarioID":   {"number": uid},
+    }
+    try:
+        pid = _buscar_meta_page(uid, presupuesto, ciclo)
+        if pid:
+            r = notion_request("PATCH", f"{NOTION_API_BASE}/pages/{pid}",
+                               headers=nh(), json={"properties": props}, timeout=NOTION_T_SHORT)
+        else:
+            r = notion_request("POST", f"{NOTION_API_BASE}/pages",
+                               headers=nh(),
+                               json={"parent": {"database_id": NOTION_METAS_ID}, "properties": props},
+                               timeout=NOTION_T_SHORT)
+        return bool(r and r.status_code in (200, 201))
+    except Exception as ex:
+        logger.error(f"Error guardando meta: {ex}")
+        return False
+
+def cargar_meta(uid: int, presupuesto: str, ciclo: str) -> float | None:
+    """Carga el límite de una meta específica. None si no existe."""
+    try:
+        r = notion_request("POST",
+            f"{NOTION_API_BASE}/databases/{NOTION_METAS_ID}/query",
+            headers=nh(),
+            json={"filter": {"and": [
+                {"property": "UsuarioID",   "number":    {"equals": uid}},
+                {"property": "Presupuesto", "rich_text": {"equals": presupuesto}},
+                {"property": "Ciclo",       "rich_text": {"equals": ciclo}},
+            ]}, "page_size": 1},
+            timeout=NOTION_T_SHORT)
+        if r and r.status_code == 200:
+            results = r.json().get("results", [])
+            if results:
+                return results[0]["properties"].get("Limite", {}).get("number")
+    except Exception as ex:
+        logger.error(f"Error cargando meta: {ex}")
+    return None
+
+def cargar_metas_ciclo(uid: int, ciclo: str) -> list:
+    """Carga todas las metas del usuario para un ciclo dado."""
+    try:
+        r = notion_request("POST",
+            f"{NOTION_API_BASE}/databases/{NOTION_METAS_ID}/query",
+            headers=nh(),
+            json={"filter": {"and": [
+                {"property": "UsuarioID", "number":    {"equals": uid}},
+                {"property": "Ciclo",     "rich_text": {"equals": ciclo}},
+            ]}},
+            timeout=NOTION_T_SHORT)
+        if r and r.status_code == 200:
+            return [{"presupuesto": notion_rich_text(e["properties"], "Presupuesto"),
+                     "limite":      e["properties"].get("Limite", {}).get("number", 0) or 0}
+                    for e in r.json().get("results", [])]
+    except Exception as ex:
+        logger.error(f"Error cargando metas ciclo: {ex}")
+    return []
+
+# RAM: desglose de recurrentes de la última apertura (para el botón "Ver desglose")
+_desglose_apertura: dict = {}
+
+async def enviar_propuesta_mes(datos: dict):
+    """Envía el mensaje de apertura de ciclo a ambos usuarios con botones de aprobación."""
+    app = get_app()
+    if not app:
+        return
+
+    ciclo_nuevo     = datos.get("ciclo_nuevo", "")
+    ciclo_anterior  = datos.get("ciclo_anterior", "")
+    total_anterior  = float(datos.get("total_anterior", 0))
+    promedio_3m     = float(datos.get("promedio_3m", total_anterior))
+    delta_pct       = float(datos.get("delta_pct", 0))
+    recurrentes_n   = int(datos.get("recurrentes_registrados", 0))
+    recurrentes_t   = float(datos.get("recurrentes_total", 0))
+    limite_prop     = float(datos.get("limite_propuesto", promedio_3m))
+    desglose        = datos.get("desglose", "")
+
+    signo = "+" if delta_pct >= 0 else ""
+    texto = (
+        f"🆕 *{ciclo_nuevo} abierto*\n\n"
+        f"📊 *{ciclo_anterior}* cerró en *${total_anterior:,.0f}*\n"
+        f"   Promedio 3 meses: ${promedio_3m:,.0f} ({signo}{delta_pct:.1f}%)\n\n"
+        f"🔁 Recurrentes registrados: {recurrentes_n} · ${recurrentes_t:,.0f}\n\n"
+        f"🎯 Meta sugerida para *{ciclo_nuevo}*: *${limite_prop:,.0f}*\n\n"
+        f"¿La confirmamos?"
+    )
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"✅ Meta ${limite_prop:,.0f}", callback_data=f"propuesta_ok:{ciclo_nuevo}:{limite_prop:.0f}"),
+        InlineKeyboardButton("❌ Sin meta",                  callback_data="propuesta_skip"),
+    ], [
+        InlineKeyboardButton("📋 Ver desglose",              callback_data=f"propuesta_ver:{ciclo_anterior}"),
+    ]])
+
+    if desglose:
+        _desglose_apertura[ciclo_anterior] = desglose
+
+    for uid in USUARIOS_AUTORIZADOS:
+        try:
+            await app.bot.send_message(chat_id=uid, text=texto, reply_markup=kb, parse_mode="Markdown")
+        except Exception as ex:
+            logger.error(f"Error enviando propuesta a {uid}: {ex}")
+
+async def callback_propuesta(update, context):
+    """Maneja los botones de la propuesta de apertura de ciclo."""
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+    if uid not in USUARIOS_AUTORIZADOS:
+        return
+
+    data = query.data
+
+    if data.startswith("propuesta_ok:"):
+        partes = data.split(":")
+        ciclo  = partes[1] if len(partes) > 1 else ""
+        try:
+            limite = float(partes[2]) if len(partes) > 2 else 0.0
+        except ValueError:
+            limite = 0.0
+        ok = await asyncio.get_event_loop().run_in_executor(None, guardar_meta, uid, "TOTAL", limite, ciclo)
+        if ok:
+            await query.edit_message_text(
+                f"✅ *Meta guardada: ${limite:,.0f}* para {ciclo}\n\n"
+                f"Te aviso cuando llegues al 80% y al 100%.",
+                parse_mode="Markdown"
+            )
+        else:
+            await query.edit_message_text("❌ No pude guardar la meta. Intenta más tarde.")
+
+    elif data == "propuesta_skip":
+        await query.edit_message_text(
+            "👌 Sin meta este ciclo. Puedes fijar una en cualquier momento diciendo\n"
+            "\"quiero gastar máximo $X\" o \"meta Diversión 10000\"."
+        )
+
+    elif data.startswith("propuesta_ver:"):
+        ciclo_ant = data.split(":", 1)[1]
+        desglose  = _desglose_apertura.get(ciclo_ant)
+        if desglose:
+            await query.answer(text=desglose[:200], show_alert=True)
+        else:
+            await query.answer(text="Sin desglose disponible.", show_alert=True)
 
 # ── MAPS ─────────────────────────────────────────────────────────────────────
 def buscar_maps(concepto):
@@ -3484,6 +3657,32 @@ class WebhookHandler(BaseHTTPRequestHandler):
         import asyncio
         path = self.path.split("?")[0]
 
+        if path == "/propuesta_mes":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body   = self.rfile.read(length)
+                data   = json.loads(body.decode("utf-8"))
+                SC_SECRET = os.environ.get("SHORTCUT_SECRET", "")
+                if SC_SECRET and data.get("secret") != SC_SECRET:
+                    self.send_response(403); self.send_header("Content-Type","application/json"); self.end_headers()
+                    self.wfile.write(b'{"ok":false,"error":"unauthorized"}'); return
+                app  = get_app()
+                loop = getattr(getattr(app, "update_processor", None), "_loop", None)
+                if loop:
+                    asyncio.run_coroutine_threadsafe(enviar_propuesta_mes(data), loop)
+                    logger.info(f"/propuesta_mes ciclo={data.get('ciclo_nuevo','?')}")
+                resp = b'{"ok":true}'
+                self.send_response(200); self.send_header("Content-Type","application/json")
+                self.send_header("Content-Length", str(len(resp))); self.end_headers()
+                self.wfile.write(resp)
+            except Exception as e:
+                logger.error(f"Error en /propuesta_mes: {e}")
+                resp = json.dumps({"ok": False, "error": str(e)}).encode()
+                self.send_response(500); self.send_header("Content-Type","application/json")
+                self.send_header("Content-Length", str(len(resp))); self.end_headers()
+                self.wfile.write(resp)
+            return
+
         if path == "/log":
             logger.info(f"/log recibido desde {self.client_address}")
             try:
@@ -3622,6 +3821,7 @@ def main():
         fallbacks=[CommandHandler("cancelar", cancelar)], allow_reentry=True,
     )
 
+    app.add_handler(CallbackQueryHandler(callback_propuesta, pattern="^propuesta_"))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("resumen", cmd_resumen))
     app.add_handler(CommandHandler("estadisticas", cmd_estadisticas))
