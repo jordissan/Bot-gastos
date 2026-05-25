@@ -1,7 +1,7 @@
 # Bot Gastos — Contexto para Claude Code
 
 > Documento de estado actual del bot (no es un changelog). Describe **lo que el bot hace hoy**
-> y cómo está construido. Versión: **v_final22**.
+> y cómo está construido. Versión: **v_final23**.
 
 ## Resumen del proyecto
 Bot de Telegram personal para registrar los gastos de Jordi y Nane, conectado a Notion como base
@@ -54,7 +54,7 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
 | Jordi  | 8663298433  | Nane       |
 | Nane   | 8093171397  | Jordi      |
 
-Cada gasto/edición que hace uno se le notifica al otro (con botón ✏️ Corregir).
+Cada gasto/edición que hace uno se le notifica al otro.
 
 ## Bases de datos Notion
 | BD              | ID                                   | Propósito                            |
@@ -105,7 +105,15 @@ Detalles del registro:
    - **consulta** → `responder_consulta_groq` (ver §3).
    - **edición** → `aplicar_edicion_contextual` sobre el último gasto (ver §5).
    - **gasto** → se registra.
+   - **otro** (saludo, charla) → responde "🤔 No entendí…" y termina. No cae al parser.
 3. Si Groq no aplica (formato estricto o sin API), usa el parser clásico `parsear_mensaje`.
+4. **Multi-gasto por coma** (`super 350, gasolina 500`) solo se intenta cuando **Groq no intervino**
+   (`groq_fue_llamado = False`). Si Groq procesó el mensaje, el comma-split se omite para no
+   trocear texto de lenguaje natural que contenga comas.
+
+**`_parece_gasto_estricto`:** devuelve `True` (salta Groq) solo si el mensaje tiene **≤ 9 tokens**
+y alguno de los últimos 3 es un número. Mensajes más largos (voz, frases naturales) siempre van
+a Groq aunque terminen en un número ("…de 150 pesos").
 
 **Memoria conversacional** (`_historial_chat`, últimos 4 turnos por usuario en RAM): el clasificador y
 el planner de consultas reciben el contexto reciente para resolver referencias como "¿y ayer?",
@@ -163,10 +171,13 @@ pasar al LLM, para que no tenga que hacer aritmética de fechas.
 - Tras confirmar, queda como "último gasto" → se puede editar por frase ("cámbialo a 400").
 
 ## 5. Editar y borrar
-- **`/corregir` — panel inline multi-campo (híbrido):** eliges el gasto (lista minimalista 1-5) y se
-  abre un panel con teclado en línea y los 6 campos editables: **monto, fecha, tarjeta, categoría,
-  presupuesto, concepto**. Apilas varios cambios (se ve un resumen "Cambios pendientes") y se aplican
-  **todos en un solo PATCH** al tocar ✅ Aplicar. También acepta frases ("monto 95 y tarjeta BBVA05").
+- **`/corregir` — panel inline multi-campo (híbrido):** muestra los **últimos 5 gastos de ambos
+  usuarios combinados** (sin importar quién los registró) para que cualquiera pueda corregir el gasto
+  del otro. Eliges el número (1-5) y se abre un panel con teclado en línea y los 6 campos editables:
+  **monto, fecha, tarjeta, categoría, presupuesto, concepto**. Apilas varios cambios (se ve un resumen
+  "Cambios pendientes") y se aplican **todos en un solo PATCH** al tocar ✅ Aplicar.
+  También acepta frases ("monto 95 y tarjeta BBVA05").
+  Usa `cargar_historial_compartido()` (sin filtro por UsuarioID).
 - **Edición contextual por frase:** justo después de registrar, "cámbialo a 400", "ponlo en
   restaurantes", "fue con BBVA05" editan el último gasto (guardado en RAM).
 - Ambas rutas usan la **única** función de escritura `aplicar_edicion_contextual`, que recalcula el
@@ -286,11 +297,13 @@ que el botón `</>` de Telegram no tape la primera fila). Emojis estrechos (⛪)
 - `generar_narrativa_resumen(...)` — 2-3 líneas de insight del mes (Groq).
 - `verificar_hormiga(...)` / `detectar_anomalia(...)` — alertas en background al registrar.
 - `agregar_historial`/`obtener_historial`/`limpiar_historial` — memoria conversacional (RAM).
+- `cargar_historial_compartido()` — últimos MAX_HISTORIAL gastos de ambos usuarios (sin filtro UsuarioID); usado por `/corregir`.
+- `cargar_historial_notion(uid)` — últimos MAX_HISTORIAL gastos de un usuario; usado por `/eliminar`.
 
 ### ConversationHandlers (el orden de registro importa)
 1. `conv_prueba` — `/prueba`
 2. `conv_foto` — `filters.PHOTO` ← debe ir ANTES que conv_gasto
-3. `conv_corregir` — `/corregir` + CallbackQuery `^cor:`; estado `CORREGIR_PANEL` maneja
+3. `conv_corregir` — `/corregir`; estado `CORREGIR_PANEL` maneja
    CallbackQuery `^edit:` (botones del panel) y texto (valor de campo o frase híbrida)
 4. `conv_eliminar` — `/eliminar`
 5. `conv_gasto` — `filters.TEXT` + `filters.VOICE | filters.AUDIO` (voz)
