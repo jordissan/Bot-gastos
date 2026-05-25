@@ -945,6 +945,36 @@ def cargar_historial_notion(usuario_id):
         logger.error(f"Error cargando historial: {ex}")
     return []
 
+def cargar_historial_compartido():
+    """Carga los últimos MAX_HISTORIAL gastos de ambos usuarios (sin filtrar por UsuarioID).
+    Usado por /corregir para que cualquier usuario pueda ver y corregir los gastos recientes."""
+    try:
+        r = notion_request("POST",
+            f"{NOTION_API_BASE}/databases/{NOTION_HISTORIAL_ID}/query",
+            headers=nh(),
+            json={
+                "sorts":[{"timestamp":"created_time","direction":"descending"}],
+                "page_size": MAX_HISTORIAL,
+            }, timeout=NOTION_T_SHORT)
+        if r and r.status_code == 200:
+            resultado = []
+            for e in r.json().get("results",[]):
+                p = e["properties"]
+                resultado.append({
+                    "concepto":    (p.get("Concepto",{}).get("title",[{}])[0].get("text",{}).get("content","") if p.get("Concepto",{}).get("title") else ""),
+                    "monto":       p.get("Monto",{}).get("number",0) or 0,
+                    "fecha":       (p.get("Fecha",{}).get("date",{}) or {}).get("start",""),
+                    "tarjeta":     notion_rich_text(p, "Tarjeta"),
+                    "mes":         notion_rich_text(p, "Mes"),
+                    "subcategoria":notion_rich_text(p, "Subcategoria"),
+                    "presupuesto": notion_rich_text(p, "Presupuesto"),
+                    "notion_id":   notion_rich_text(p, "NotionID"),
+                })
+            return resultado
+    except Exception as ex:
+        logger.error(f"Error cargando historial compartido: {ex}")
+    return []
+
 # ── MAPS ─────────────────────────────────────────────────────────────────────
 def buscar_maps(concepto):
     if not GOOGLE_MAPS_API_KEY: return None
@@ -1191,9 +1221,12 @@ def _parece_gasto_estricto(texto: str) -> bool:
     Retorna True si el texto ya tiene formato estricto (Concepto Monto [opcional])
     y NO necesita LLM. Ahorra llamadas a la API.
     Ejemplos estrictos: "Oxxo 45", "Starbucks 150 BBVA05", "Super 350 ayer"
+    Mensajes naturales largos (voz, NL) siempre van a Groq aunque terminen en número.
     """
     tokens = texto.strip().split()
     if len(tokens) < 2:
+        return False
+    if len(tokens) > 9:   # mensaje largo → casi seguro es lenguaje natural
         return False
     for t in tokens[-3:]:
         try:
@@ -2150,10 +2183,9 @@ async def registrar_y_notificar(update, context, gasto):
     notif = USUARIOS_NOTIFICAR.get(uid)
     nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
     if notif:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Corregir categoría", callback_data=f"cor:{nid}:{gasto['concepto']}")]])
         await context.bot.send_message(
             chat_id=notif, text=msg_gasto(gasto, nombre=nombre, notion_id=nid),
-            reply_markup=kb, parse_mode="Markdown"
+            parse_mode="Markdown"
         )
 
 # ── EDICIÓN CONTEXTUAL ("cámbialo a 400", "ponlo en restaurantes") ─────────────
@@ -2268,10 +2300,9 @@ async def registrar_via_shortcut(texto: str, user_id: int):
     notif = USUARIOS_NOTIFICAR.get(user_id)
     nombre = USUARIOS_NOMBRES.get(user_id, "Alguien")
     if notif:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Corregir categoría", callback_data=f"cor:{nid}:{gasto['concepto']}")]])
         await app.bot.send_message(
             chat_id=notif, text=msg_gasto(gasto, nombre=nombre, notion_id=nid),
-            reply_markup=kb, parse_mode="Markdown"
+            parse_mode="Markdown"
         )
     return True, msg
 
@@ -2375,10 +2406,9 @@ async def callback_foto(update, context):
     notif  = USUARIOS_NOTIFICAR.get(uid)
     nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
     if notif:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Corregir categoría", callback_data=f"cor:{nid}:{gasto['concepto']}")]])
         await context.bot.send_message(
             chat_id=notif, text=msg_gasto(gasto, nombre=nombre, notion_id=nid),
-            reply_markup=kb, parse_mode="Markdown"
+            parse_mode="Markdown"
         )
     return ConversationHandler.END
 
@@ -2431,17 +2461,18 @@ async def _registrar_multiples(update, context, gastos, uid):
     notif  = USUARIOS_NOTIFICAR.get(uid)
     if notif and ok_list:
         for g in ok_list:
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Corregir categoría", callback_data=f"cor:{g['notion_id']}:{g['concepto']}")]])
             await context.bot.send_message(
                 chat_id=notif, text=msg_gasto(g, nombre=nombre, notion_id=g["notion_id"]),
-                reply_markup=kb, parse_mode="Markdown"
+                parse_mode="Markdown"
             )
 
 async def _procesar_conversacion(update, context, texto, uid):
     # 1) Clasificar con Groq cuando el mensaje NO tiene formato estricto.
     #    Distingue gasto / consulta / edición → evita registrar gastos al preguntar.
     gasto_groq = None
+    groq_fue_llamado = False
     if GROQ_API_KEY and not _parece_gasto_estricto(texto):
+        groq_fue_llamado = True
         ultimo = obtener_contexto(uid)
         tipo, payload = clasificar_mensaje_groq(texto, ultimo, obtener_historial(uid))
         if tipo == "consulta":
@@ -2457,10 +2488,14 @@ async def _procesar_conversacion(update, context, texto, uid):
             return ConversationHandler.END
         if tipo == "gasto":
             gasto_groq = payload
+        elif tipo == "otro":
+            await update.message.reply_text("🤔 No entendí. ¿Quieres registrar un gasto?\nEjemplo: Starbucks 150")
+            return ConversationHandler.END
 
-    # 2) Múltiples gastos separados por coma (solo si Groq no lo tomó como gasto único)
+    # 2) Múltiples gastos separados por coma (solo si Groq no intervino y hay comas)
+    #    Cuando Groq procesó el mensaje no usamos comma-split (evita parsear NL con comas).
     partes = [p.strip() for p in texto.split(",") if p.strip()]
-    if gasto_groq is None and len(partes) > 1:
+    if not groq_fue_llamado and gasto_groq is None and len(partes) > 1:
         lineas = []
         gastos_ok = []
         for parte in partes:
@@ -2481,10 +2516,9 @@ async def _procesar_conversacion(update, context, texto, uid):
         nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
         if notif and gastos_ok:
             for g in gastos_ok:
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Corregir categoría", callback_data=f"cor:{g['notion_id']}:{g['concepto']}")]])
                 await context.bot.send_message(
                     chat_id=notif, text=msg_gasto(g, nombre=nombre, notion_id=g["notion_id"]),
-                    reply_markup=kb, parse_mode="Markdown"
+                    parse_mode="Markdown"
                 )
         return ConversationHandler.END
 
@@ -2508,7 +2542,11 @@ async def _procesar_conversacion(update, context, texto, uid):
                 reply_markup=ReplyKeyboardMarkup(menu_grupos(),one_time_keyboard=True,resize_keyboard=True))
             return CONFIRMAR_CAT
         await registrar_y_notificar(update,context,gasto)
-    except ValueError as e: await update.message.reply_text(f"❓ {e}\n\nEjemplo: Starbucks 150")
+    except ValueError as e:
+        if groq_fue_llamado:
+            await update.message.reply_text("❓ No pude registrar ese gasto.\n\nEjemplo: Starbucks 150")
+        else:
+            await update.message.reply_text(f"❓ {e}\n\nEjemplo: Starbucks 150")
     except Exception as e: await update.message.reply_text(f"❌ Error: {e}")
     return ConversationHandler.END
 
@@ -2580,7 +2618,7 @@ def _lista_corregir(ultimos):
 async def cmd_corregir(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
     uid = update.effective_user.id
-    ultimos = cargar_historial_notion(uid)
+    ultimos = cargar_historial_compartido()
     if not ultimos:
         await update.message.reply_text("No hay gastos recientes para corregir."); return ConversationHandler.END
     context.user_data["historial_corregir"]=ultimos
@@ -2874,21 +2912,6 @@ async def panel_texto(update, context):
         msg = await context.bot.send_message(chat_id, texto, reply_markup=kb)
         context.user_data["corr_msg_id"] = msg.message_id
     return CORREGIR_PANEL
-
-async def callback_corregir(update, context):
-    """Entrada al panel desde el botón ✏️ Corregir de una notificación."""
-    query = update.callback_query
-    await query.answer()
-    if query.from_user.id not in USUARIOS_AUTORIZADOS:
-        return ConversationHandler.END
-    partes = query.data.split(":", 2)
-    nid = partes[1]
-    base = await asyncio.to_thread(_base_desde_notion, nid)
-    if not base:
-        base = {"notion_id": nid, "concepto": (partes[2] if len(partes) > 2 else "Gasto"),
-                "monto": 0, "fecha": "", "tarjeta": "", "mes": "",
-                "subcategoria": "", "presupuesto": ""}
-    return await _abrir_panel(update, context, base)
 
 async def cmd_prueba(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
@@ -3583,7 +3606,7 @@ def main():
         allow_reentry=True,
     )
     conv_corregir = ConversationHandler(
-        entry_points=[CommandHandler("corregir", cmd_corregir), CallbackQueryHandler(callback_corregir, pattern="^cor:")],
+        entry_points=[CommandHandler("corregir", cmd_corregir)],
         states={
             CORREGIR_ELEGIR: [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_elegir)],
             CORREGIR_PANEL: [
