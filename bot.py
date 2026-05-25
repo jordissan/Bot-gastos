@@ -1148,6 +1148,81 @@ async def callback_propuesta(update, context):
         else:
             await query.answer(text="Sin desglose disponible.", show_alert=True)
 
+# ── ALIASES ──────────────────────────────────────────────────────────────────
+
+_alias_cache: dict[int, list] = {}
+_ALIAS_DEF_RE = re.compile(
+    r'recuerda\s+que|cuando\s+digo|de\s+ahora\s+en\s+adelante|guarda\s+que|sabe\s+que',
+    re.IGNORECASE
+)
+
+def _cargar_aliases_uid(uid: int) -> list:
+    """Carga aliases del usuario desde Notion, con caché en RAM (invalidada al guardar)."""
+    if uid in _alias_cache:
+        return _alias_cache[uid]
+    try:
+        r = notion_request("POST",
+            f"{NOTION_API_BASE}/databases/{NOTION_ALIAS_ID}/query",
+            headers=nh(),
+            json={"filter": {"property": "UsuarioID", "number": {"equals": uid}}},
+            timeout=NOTION_T_SHORT)
+        if r and r.status_code == 200:
+            result = []
+            for e in r.json().get("results", []):
+                p = e["properties"]
+                titulo = p.get("Trigger", {}).get("title", [])
+                trigger = titulo[0].get("text", {}).get("content", "").lower() if titulo else ""
+                resolved = notion_rich_text(p, "Resolved")
+                if trigger and resolved:
+                    result.append({"trigger": trigger, "resolved": resolved,
+                                   "id": e["id"].replace("-", "")})
+            _alias_cache[uid] = result
+            return result
+    except Exception as ex:
+        logger.error(f"Error cargando aliases: {ex}")
+    _alias_cache[uid] = []
+    return []
+
+def guardar_alias(uid: int, trigger: str, resolved: str) -> bool:
+    """Upsert de alias en Notion (por trigger normalizado). Invalida la caché."""
+    trigger_norm = trigger.lower().strip()
+    existing_id  = next((a["id"] for a in _cargar_aliases_uid(uid)
+                         if a["trigger"] == trigger_norm), None)
+    props = {
+        "Trigger":   {"title":     [{"text": {"content": trigger_norm}}]},
+        "Resolved":  {"rich_text": [{"text": {"content": resolved.strip()}}]},
+        "UsuarioID": {"number": uid},
+    }
+    try:
+        if existing_id:
+            r = notion_request("PATCH", f"{NOTION_API_BASE}/pages/{existing_id}",
+                               headers=nh(), json={"properties": props}, timeout=NOTION_T_SHORT)
+        else:
+            r = notion_request("POST", f"{NOTION_API_BASE}/pages",
+                               headers=nh(),
+                               json={"parent": {"database_id": NOTION_ALIAS_ID}, "properties": props},
+                               timeout=NOTION_T_SHORT)
+        ok = bool(r and r.status_code in (200, 201))
+        if ok:
+            _alias_cache.pop(uid, None)  # invalidar caché para que recargue el siguiente uso
+        return ok
+    except Exception as ex:
+        logger.error(f"Error guardando alias: {ex}")
+        return False
+
+def expandir_aliases(uid: int, texto: str) -> str:
+    """Reemplaza triggers conocidos del usuario en el texto antes de procesar.
+    No expande si el mensaje ES una definición de alias (evita sustituciones recursivas)."""
+    if _ALIAS_DEF_RE.search(texto):
+        return texto
+    aliases = _cargar_aliases_uid(uid)
+    if not aliases:
+        return texto
+    # Sustituir de más largo a más corto para evitar reemplazos parciales
+    for a in sorted(aliases, key=lambda x: len(x["trigger"]), reverse=True):
+        texto = re.sub(re.escape(a["trigger"]), a["resolved"], texto, flags=re.IGNORECASE)
+    return texto
+
 # ── MAPS ─────────────────────────────────────────────────────────────────────
 def buscar_maps(concepto):
     if not GOOGLE_MAPS_API_KEY: return None
@@ -1323,6 +1398,12 @@ Decide la intención y responde SOLO con JSON válido, sin texto adicional ni ma
 - Si el usuario PREGUNTA o CONSULTA sobre sus gastos/finanzas (cuánto, cuándo, en qué, comparar, totales, presupuestos), aunque mencione cantidades o categorías:
 {{"tipo": "consulta"}}
 {bloque_edicion}
+- Si el usuario quiere GUARDAR un atajo o alias personal (usa "recuerda que", "cuando digo", "de ahora en adelante", "guarda que"):
+{{"tipo": "alias", "trigger": "frase que dice el usuario", "resolved": "lo que significa"}}
+  Ej: "recuerda que el café de siempre es Starbucks BBVA05" → {{"tipo": "alias", "trigger": "el café de siempre", "resolved": "Starbucks BBVA05"}}
+  Ej: "cuando digo el super es HEB" → {{"tipo": "alias", "trigger": "el super", "resolved": "HEB"}}
+  Ej: "guarda que gasolina full = 700 BBVA12" → {{"tipo": "alias", "trigger": "gasolina full", "resolved": "700 BBVA12"}}
+
 - Si es un saludo, charla o algo no relacionado:
 {{"tipo": "otro"}}
 
@@ -1343,6 +1424,10 @@ IMPORTANTE: usa "multi_gasto" SOLO si hay 2+ gastos claramente distintos. Si es 
 
         if tipo == "consulta":
             return ("consulta", None)
+        if tipo == "alias":
+            trigger  = (data.get("trigger")  or "").strip()
+            resolved = (data.get("resolved") or "").strip()
+            return ("alias", {"trigger": trigger, "resolved": resolved}) if (trigger and resolved) else ("otro", None)
         if tipo == "edicion" and ultimo:
             campos = {k: data.get(k) for k in
                       ("monto", "concepto", "tarjeta", "fecha", "presupuesto", "subcategoria")
@@ -2644,6 +2729,8 @@ async def _procesar_conversacion(update, context, texto, uid):
     #    Distingue gasto / consulta / edición → evita registrar gastos al preguntar.
     gasto_groq = None
     groq_fue_llamado = False
+    # Expandir aliases ANTES de clasificar (solo si no es una definición de alias)
+    texto = expandir_aliases(uid, texto)
     if GROQ_API_KEY and not _parece_gasto_estricto(texto):
         groq_fue_llamado = True
         ultimo = obtener_contexto(uid)
@@ -2658,6 +2745,19 @@ async def _procesar_conversacion(update, context, texto, uid):
             return ConversationHandler.END
         if tipo == "multi_gasto" and payload:
             await _registrar_multiples(update, context, payload, uid)
+            return ConversationHandler.END
+        if tipo == "alias" and payload:
+            trigger  = payload.get("trigger", "")
+            resolved = payload.get("resolved", "")
+            ok = await asyncio.get_event_loop().run_in_executor(None, guardar_alias, uid, trigger, resolved)
+            if ok:
+                agregar_historial(uid, "assistant", f"Guardé alias: '{trigger}' → '{resolved}'.")
+                await update.message.reply_text(
+                    f"✅ Guardado. Cuando digas *{trigger}* entiendo _{resolved}_.",
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text("❌ No pude guardar el alias. Intenta de nuevo.")
             return ConversationHandler.END
         if tipo == "gasto":
             gasto_groq = payload
