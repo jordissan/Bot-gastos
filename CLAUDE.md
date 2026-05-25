@@ -1,7 +1,7 @@
 # Bot Gastos — Contexto para Claude Code
 
 > Documento de estado actual del bot (no es un changelog). Describe **lo que el bot hace hoy**
-> y cómo está construido. Versión: **v_final24**.
+> y cómo está construido. Versión: **v_final25**.
 
 ## Resumen del proyecto
 Bot de Telegram personal para registrar los gastos de Jordi y Nane, conectado a Notion como base
@@ -361,7 +361,7 @@ PROPUESTA_META   = 60  # reservado para ajuste de meta en apertura de ciclo (Fea
 
 ## Features en construcción / pendientes 🔲
 
-### Feature 2 — Memoria semántica (Alias Bot) 🔲
+### Feature 2 — Memoria semántica (Alias Bot) ✅ IMPLEMENTADO
 El bot aprende alias personales de la conversación normal. Si el usuario dice
 "recuerda que el café de siempre es Starbucks BBVA05", Groq detecta el patrón,
 llama a `guardar_alias(uid, trigger, resolved)` y la próxima vez expande el texto
@@ -370,7 +370,7 @@ antes de clasificar (`expandir_aliases(uid, texto)`).
 - Aprendizaje: detección automática en `clasificar_mensaje_groq`
 - Expansión: antes de `clasificar_mensaje_groq` en `_procesar_conversacion`
 
-### Feature 3 — Metas de gasto (Metas Bot) 🔲
+### Feature 3 — Metas de gasto (Metas Bot) ✅ IMPLEMENTADO
 El usuario fija metas por ciclo y presupuesto en lenguaje natural.
 "Quiero gastar máximo $10,000 en Diversión este ciclo" → Groq detecta intent `meta`,
 llama a `guardar_meta(uid, presupuesto, limite, ciclo)`.
