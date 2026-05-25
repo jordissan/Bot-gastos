@@ -463,6 +463,24 @@ async def cmd_resumen(update, context):
         f"💰 *Total*   ${total_general:,.0f}"
     )
 
+    # Metas del ciclo (Feature 3)
+    uid_resumen = update.effective_user.id
+    metas_ciclo = await asyncio.to_thread(cargar_metas_ciclo, uid_resumen, mes)
+    for meta in metas_ciclo:
+        presupuesto = meta.get("presupuesto", "")
+        limite      = float(meta.get("limite") or 0)
+        if not presupuesto or not limite:
+            continue
+        if presupuesto == "TOTAL":
+            usado = total_general
+        else:
+            usado = totales.get(presupuesto, 0)
+        pct   = min((usado / limite) * 100, 999)
+        barras = min(int(pct / 10), 10)
+        barra  = "█" * barras + "░" * (10 - barras)
+        label  = "Total ciclo" if presupuesto == "TOTAL" else presupuesto
+        msg   += f"\n🎯 Meta *{label}*: ${usado:,.0f} / ${limite:,.0f} [{barra}] {pct:.0f}%"
+
     # Proyección de cierre (solo para el mes activo en curso) — Tarea 3
     proy_txt = None
     if mes == mes_activo_str():
@@ -1398,6 +1416,13 @@ Decide la intención y responde SOLO con JSON válido, sin texto adicional ni ma
 - Si el usuario PREGUNTA o CONSULTA sobre sus gastos/finanzas (cuánto, cuándo, en qué, comparar, totales, presupuestos), aunque mencione cantidades o categorías:
 {{"tipo": "consulta"}}
 {bloque_edicion}
+- Si el usuario quiere FIJAR una META de gasto (usa "quiero gastar máximo", "meta de", "límite de", "no gastar más de", "meta 30000", "pon meta"):
+{{"tipo": "meta", "presupuesto": "nombre exacto del presupuesto o TOTAL para meta global del ciclo", "limite": número}}
+  Ej: "quiero gastar máximo 10000 en Diversión" → {{"tipo": "meta", "presupuesto": "Diversión", "limite": 10000}}
+  Ej: "meta total 35000" → {{"tipo": "meta", "presupuesto": "TOTAL", "limite": 35000}}
+  Ej: "pon meta Restaurantes 8000" → {{"tipo": "meta", "presupuesto": "Restaurantes", "limite": 8000}}
+  Presupuestos válidos: {', '.join(PR.keys())} o TOTAL
+
 - Si el usuario quiere GUARDAR un atajo o alias personal (usa "recuerda que", "cuando digo", "de ahora en adelante", "guarda que"):
 {{"tipo": "alias", "trigger": "frase que dice el usuario", "resolved": "lo que significa"}}
   Ej: "recuerda que el café de siempre es Starbucks BBVA05" → {{"tipo": "alias", "trigger": "el café de siempre", "resolved": "Starbucks BBVA05"}}
@@ -1424,6 +1449,13 @@ IMPORTANTE: usa "multi_gasto" SOLO si hay 2+ gastos claramente distintos. Si es 
 
         if tipo == "consulta":
             return ("consulta", None)
+        if tipo == "meta":
+            presupuesto = (data.get("presupuesto") or "TOTAL").strip()
+            try:
+                limite = float(data.get("limite") or 0)
+            except (ValueError, TypeError):
+                return ("otro", None)
+            return ("meta", {"presupuesto": presupuesto, "limite": limite}) if limite > 0 else ("otro", None)
         if tipo == "alias":
             trigger  = (data.get("trigger")  or "").strip()
             resolved = (data.get("resolved") or "").strip()
@@ -2293,6 +2325,54 @@ async def detectar_anomalia(gasto: dict, uid: int, context) -> None:
     except Exception as e:
         logger.warning(f"detectar_anomalia error: {e}")
 
+async def verificar_metas(gasto: dict, uid: int, context) -> None:
+    """Revisa si el nuevo gasto cruza el 80% o 100% de alguna meta del ciclo. Solo avisa al cruzar."""
+    try:
+        ciclo = gasto.get("mes", "")
+        if not ciclo:
+            return
+        metas = await asyncio.get_event_loop().run_in_executor(None, cargar_metas_ciclo, uid, ciclo)
+        if not metas:
+            return
+        mid = buscar_mes_id(ciclo)
+        if not mid:
+            return
+        gastos_mes = await asyncio.to_thread(query_notion_db, NOTION_DATABASE_ID,
+                                             {"property": "Mes", "relation": {"contains": mid}})
+        for meta in metas:
+            presupuesto = meta.get("presupuesto", "")
+            limite      = float(meta.get("limite") or 0)
+            if not presupuesto or not limite:
+                continue
+            total = 0.0
+            for g in gastos_mes:
+                props = g.get("properties", {})
+                monto = props.get("Monto", {}).get("number", 0) or 0
+                if presupuesto == "TOTAL":
+                    total += monto
+                else:
+                    rel_pre = props.get("Presupuesto", {}).get("relation", [])
+                    if rel_pre:
+                        pr_id    = rel_pre[0].get("id", "").replace("-", "")
+                        pr_nom   = next((k for k, v in PR.items() if v == pr_id), None)
+                        if pr_nom == presupuesto:
+                            total += monto
+            prev_total = max(0.0, total - gasto.get("monto", 0))
+            pct        = (total      / limite) * 100
+            prev_pct   = (prev_total / limite) * 100
+            label = "total del ciclo" if presupuesto == "TOTAL" else presupuesto
+            if pct >= 100 and prev_pct < 100:
+                await context.bot.send_message(chat_id=uid,
+                    text=f"🚨 *Meta alcanzada:* {label}\n${total:,.0f} de ${limite:,.0f} ({pct:.0f}%)",
+                    parse_mode="Markdown")
+            elif pct >= 80 and prev_pct < 80:
+                restante = limite - total
+                await context.bot.send_message(chat_id=uid,
+                    text=f"⚠️ *80% de meta:* {label}\n${total:,.0f} de ${limite:,.0f} — quedan ${restante:,.0f}",
+                    parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"verificar_metas error: {e}")
+
 async def generar_insight_groq(gasto: dict, user_id: int, context) -> None:
     """
     Después de guardar un gasto, verifica si la categoría supera su promedio.
@@ -2431,6 +2511,7 @@ async def registrar_y_notificar(update, context, gasto):
     asyncio.create_task(generar_insight_groq(gasto_completo, uid, context))
     asyncio.create_task(verificar_hormiga(gasto_completo, uid, context))
     asyncio.create_task(detectar_anomalia(gasto_completo, uid, context))
+    asyncio.create_task(verificar_metas(gasto_completo, uid, context))
     import random
     if random.randint(1,50)==1:
         threading.Thread(target=limpiar_aprendizaje, daemon=True).start()
@@ -2745,6 +2826,21 @@ async def _procesar_conversacion(update, context, texto, uid):
             return ConversationHandler.END
         if tipo == "multi_gasto" and payload:
             await _registrar_multiples(update, context, payload, uid)
+            return ConversationHandler.END
+        if tipo == "meta" and payload:
+            presupuesto = payload.get("presupuesto", "TOTAL")
+            limite      = payload.get("limite", 0)
+            ciclo       = mes_activo_str()
+            ok = await asyncio.get_event_loop().run_in_executor(None, guardar_meta, uid, presupuesto, limite, ciclo)
+            label = "total del ciclo" if presupuesto == "TOTAL" else presupuesto
+            if ok:
+                agregar_historial(uid, "assistant", f"Guardé meta: {label} ${limite:,.0f} para {ciclo}.")
+                await update.message.reply_text(
+                    f"🎯 Meta guardada: *{label}* ≤ ${limite:,.0f} en {ciclo}\n\nTe aviso cuando llegues al 80% y al 100%.",
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text("❌ No pude guardar la meta. Intenta de nuevo.")
             return ConversationHandler.END
         if tipo == "alias" and payload:
             trigger  = payload.get("trigger", "")
