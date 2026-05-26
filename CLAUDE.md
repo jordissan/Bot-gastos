@@ -1,7 +1,7 @@
 # Bot Gastos — Contexto para Claude Code
 
 > Documento de estado actual del bot (no es un changelog). Describe **lo que el bot hace hoy**
-> y cómo está construido. Versión: **26.1.1**
+> y cómo está construido. Versión: **26.2.0**
 
 > **Esquema de versiones** — `MAJOR.MINOR.PATCH`
 > - **MAJOR**: feature set nuevo o cambio de dominio (nueva BD, nueva modalidad, capacidad estructural nueva). Ej: APScheduler, voz, metas.
@@ -60,16 +60,16 @@ REPORTE_EMAIL         (destino del reporte mensual; default jor.jorwww@gmail.com
 | Jordi  | 8663298433  | Nane       |
 | Nane   | 8093171397  | Jordi      |
 
-Cada gasto/edición que hace uno se le notifica al otro.
+Cada gasto/edición que hace uno se le notifica al otro. **Las finanzas son conjuntas** — no hay separación de gastos por usuario en las consultas (todo se consulta como unidad familiar).
 
 ## Bases de datos Notion
 | BD              | ID                                   | Propósito                            |
 |-----------------|--------------------------------------|--------------------------------------|
 | Gastos          | `9c66972a98e74d5b80df8a7e6569e3ca`  | Registro principal (fuente de verdad)|
 | Aprendizaje Bot | `3ba6f37c717948a1a6aeac3b384ff33c`  | Diccionario de categorías aprendidas |
-| Historial Bot   | `35f7eb0cbb9280ae8f02f69b4f242298`  | Últimos 5 gastos por usuario (snapshot)|
+| Historial Bot   | `35f7eb0cbb9280ae8f02f69b4f242298`  | Últimos 5 gastos por usuario (snapshot) + filas `MEM_{uid}` (UsuarioID=0) para memoria persistente |
 | Balance         | via `NOTION_BALANCE_ID` env var      | Meses dinámicos (ENE26, FEB26…) + rollups |
-| Metas Bot       | `cf7906bcccfd4690b7ef8c1e996a8e17`  | Metas de gasto por ciclo y presupuesto (por usuario) |
+| Metas Bot       | `cf7906bcccfd4690b7ef8c1e996a8e17`  | Metas de gasto por ciclo y presupuesto (por usuario). Presupuesto="INGRESO" = ingreso estimado del ciclo |
 | Alias Bot       | `9000583a97204e6db41994ec96bf5a71`  | Alias personales aprendidos por conversación |
 
 ---
@@ -107,21 +107,19 @@ Detalles del registro:
 ## 2. El "cerebro": cómo entiende cada mensaje
 `_procesar_conversacion` (lo comparten texto y voz) decide qué hacer:
 1. Si el texto **no** tiene formato estricto y hay `GROQ_API_KEY`, `clasificar_mensaje_groq`
-   (Llama 3.3 70B) clasifica la intención en **gasto / consulta / edición / otro**.
-   Esto evita registrar un gasto por error cuando en realidad estás preguntando algo.
+   (Llama 3.3 70B) clasifica la intención en **gasto / multi_gasto / consulta / edición / meta / ingreso / alias / otro**.
 2. Según la intención:
    - **consulta** → `responder_consulta_groq` (ver §3).
    - **edición** → `aplicar_edicion_contextual` sobre el último gasto (ver §5).
    - **gasto** → se registra.
-   - **otro** (saludo, charla) → responde "🤔 No entendí…" y termina. No cae al parser.
+   - **meta** → `guardar_meta(uid, presupuesto, limite, ciclo)`.
+   - **ingreso** → `guardar_meta(uid, "INGRESO", monto, ciclo)` + muestra posición financiera inmediata.
+   - **alias** → `guardar_alias(uid, trigger, resolved)`.
+   - **otro** (saludo, charla) → responde "🤔 No entendí…" y termina.
 3. Si Groq no aplica (formato estricto o sin API), usa el parser clásico `parsear_mensaje`.
-4. **Multi-gasto por coma** (`super 350, gasolina 500`) solo se intenta cuando **Groq no intervino**
-   (`groq_fue_llamado = False`). Si Groq procesó el mensaje, el comma-split se omite para no
-   trocear texto de lenguaje natural que contenga comas.
 
 **`_parece_gasto_estricto`:** devuelve `True` (salta Groq) solo si el mensaje tiene **≤ 9 tokens**
-y alguno de los últimos 3 es un número. Mensajes más largos (voz, frases naturales) siempre van
-a Groq aunque terminen en un número ("…de 150 pesos").
+y alguno de los últimos 3 es un número.
 
 **Memoria conversacional persistente** (`_memoria_ram` + Notion):
 - **RAM**: cache activo por sesión — `turns` (últimos 8), `last_results`, `last_query`, `last_gasto`.
@@ -130,103 +128,106 @@ a Groq aunque terminen en un número ("…de 150 pesos").
 - `mem_guardar(uid)`: persiste RAM → Notion en background tras cada acción relevante. TTL de 2h para `last_results`.
 - `_manejar_referencia()`: intercepta antes de Groq mensajes como "dame el link", "elimínalo", "el más caro" y los resuelve contra el contexto en memoria.
 - `ejecutar_consulta_finanzas` devuelve `gastos_raw` (con notion_ids) que se guarda en `last_results`.
+- **Plan carryover**: el planner recibe los filtros del plan anterior (`last_query`) para resolver referencias como "¿y la semana pasada?", "¿y en esa subcategoría?".
 
-## 3. Consultas en lenguaje natural
+## 3. Consultas en lenguaje natural (Hub Financiero)
 Flujo de 2 pasos que evita que el LLM invente cifras:
-1. Groq genera un **plan de consulta** (JSON): `{modo, meses, categoria, comercio, fecha_desde, fecha_hasta, anio, historico}`.
+1. Groq genera un **plan de consulta** (JSON): `{modo, meses, categoria, subcategoria, tarjeta, comercio, fecha_desde, fecha_hasta, anio, historico}`.
 2. `ejecutar_consulta_finanzas` / `_datos_consulta_especial` traen los datos **de forma determinística** de Notion.
 3. Groq **redacta** la respuesta solo con esos datos reales.
 
-Las fechas de referencia (ayer, semana pasada, esta semana) se **pre-calculan en Python** antes de
-pasar al LLM, para que no tenga que hacer aritmética de fechas.
+**Filtros disponibles en cualquier modo:**
+- `categoria` — bolsa de presupuesto (Despensa, Restaurantes, Automovil…)
+- `subcategoria` — tipo específico de gasto (Abarrotes, Gasolina, Treat…). NOTA: "Restaurantes" es tanto subcategoría como categoría — el planner usa `subcategoria` por defecto cuando hay ambigüedad.
+- `tarjeta` — BBVA05 / BBVA12 / HEYB25 / BMEX04 / EFVO
+- `comercio` — búsqueda de texto en concepto
+- `fecha_desde` / `fecha_hasta` — rango de fecha exacta
+- `meses` — códigos de ciclo (JUN26, MAY26…)
+- `historico: true` — toda la historia desde 2020
 
 **Tipos de pregunta que responde** (cada uno = un `modo` interno):
 | Pregunta de ejemplo | modo |
 |---------------------|------|
-| "¿cuánto gasté ayer / la semana pasada / el martes?" | `detalle` + `fecha_desde/hasta` (filtra por Fecha real) |
-| "¿cuánto gasté este mes / en MAY26 / en restaurantes?" | `detalle` (por ciclo de mes / categoría) |
-| "¿cuántas veces fui a Starbucks?" | `detalle` + `comercio` |
-| "¿cuánto llevo pagado del Polo / en total / desde siempre?" | `historico: true` (TODA la historia desde 2020) |
-| "¿qué año gasté más? / ¿cuánto llevo este año?" | `por_anio` |
-| "el gasto más antiguo / más reciente / más caro" | `primero` / `ultimo` / `mayor` |
+| "¿cuánto gasté ayer / la semana pasada?" | `detalle` + `fecha_desde/hasta` |
+| "¿cuánto gasté este mes en Abarrotes?" | `detalle` + `subcategoria` |
+| "¿cuánto gasté con BBVA12 este mes?" | `detalle` + `tarjeta` |
+| "¿cuánto gasté con HEYB25 en Gasolina?" | `detalle` + `tarjeta` + `subcategoria` |
+| "¿cuánto llevo pagado del Polo / en total?" | `historico: true` |
+| "¿qué año gasté más?" | `por_anio` |
+| "el gasto más antiguo / más caro" | `primero` / `mayor` |
 | "¿en qué se me va el dinero?" | `ranking_categorias` |
-| "¿dónde compro más seguido?" | `ranking_frecuencia` (por nº de compras, no monto) |
+| "¿dónde compro más seguido?" | `ranking_frecuencia` |
 | "¿cuánto gasto al mes / al día en promedio?" | `promedio_mensual` / `promedio_dia` |
 | "¿gasto más entre semana o en fin?" | `dia_semana` |
 | "¿qué día del mes gasto más?" | `dia_mas_caro` |
 | "¿cómo se reparte mi gasto por semana del mes?" | `semana_mes` |
 | "¿voy por encima de mi promedio este mes?" | `desviacion` |
-| "¿mi gasto sube o baja últimamente?" | `tendencia` (6 meses) |
-| "¿qué mes de 2025 fue el más caro?" | `mes_mas_caro` (usa `anio`) |
-| "¿cuáles son mis gastos fijos / recurrentes?" | `recurrentes` (en 3+ de los últimos 6 meses) |
-| "¿cuánto llevo sin gastar en X?" | `dias_sin_gasto` (requiere categoría) |
-| "¿cuál es mi gasto hormiga?" | `hormiga` (gastos < $150) |
-| "¿cuándo fui por última vez a X?" | `ultima_visita` (requiere comercio) |
-| "¿cuánto ahorraría si dejara X?" | `proyeccion_ahorro` (requiere comercio) |
+| "¿está subiendo mi gasto en Abarrotes?" | `tendencia` + `subcategoria` |
+| "¿qué mes de 2025 fue el más caro?" | `mes_mas_caro` |
+| "¿cuáles son mis gastos fijos?" | `recurrentes` |
+| "¿cuánto llevo sin gastar en X?" | `dias_sin_gasto` |
+| "¿cuál es mi gasto hormiga?" | `hormiga` |
+| "¿cuándo fui por última vez a Costco?" | `ultima_visita` |
+| "¿cuánto ahorraría si dejo Starbucks?" | `proyeccion_ahorro` |
+| "¿qué MSIs tengo activos? ¿cuánto debo?" | `msi_tracker` |
+| "¿dónde puedo ahorrar? ¿en qué gasto de más?" | `oportunidades_ahorro` |
+| "¿cómo voy este mes? ¿cuánto me queda?" | `posicion_financiera` |
+| "¿cuánto hemos ganado vs gastado históricamente?" | `tendencia_ingresos` |
 
-- Muchos modos aceptan filtros opcionales `categoria` y/o `meses`.
 - Consulta **histórica** (`historico: true`): avisa "🔍 Buscando en toda la historia…" porque
-  puede tardar 15-30 s (recorre TODOS los registros desde 2020-01-01); agrega por año.
-- Respaldo de presupuesto: si un gasto no tiene relación `Presupuesto` (la columna se borra cada mes
-  para resetear la tabla dinámica), el bot deriva la categoría desde la `Subcategoria`
-  (`SUBCAT_PRESUPUESTO`), así las consultas por categoría funcionan en cualquier mes histórico.
+  puede tardar 15-30 s; agrega por año.
+- Respaldo de presupuesto: si un gasto no tiene relación `Presupuesto`, el bot deriva la categoría
+  desde la `Subcategoria` (`SUBCAT_PRESUPUESTO`).
 
-## 4. Tickets por foto (OCR)
+## 4. Ingresos estimados (finanzas freelance)
+Jordi y Nane son freelancers con ingresos variables. El bot maneja esto con **ingresos estimados por ciclo**:
+- **Declarar:** "Este mes esperamos ganar $45,000" → se guarda en Metas Bot con `presupuesto="INGRESO"`.
+- **Actualizar:** en cualquier momento con el mismo mensaje.
+- **Consultar posición:** "¿Cómo voy este mes?" → `posicion_financiera` — muestra gastado/estimado, saldo libre, proyección de ahorro.
+- **Historial:** "¿Cuánto hemos ganado vs gastado?" → `tendencia_ingresos` — últimos 6 ciclos.
+- El ingreso es compartido (finanzas conjuntas); cualquier usuario puede declararlo.
+- Si no hay ingreso declarado, las consultas de posición financiera lo indican y piden declararlo.
+
+## 5. MSI Tracker
+Los MSIs se registran con formato `"Concepto X/Total"` (ej. "MacBook Pro 4/18").
+- `msi_tracker` detecta todos los MSIs históricos vía subcategoría=MSI, encuentra el pago más reciente de cada uno, y calcula restantes y compromiso mensual total.
+- El correo mensual ya incluía los MSIs del ciclo cerrado; `msi_tracker` es la versión conversacional en tiempo real.
+
+## 6. Tickets por foto (OCR)
 - La foto va directo a Llama 4 Scout (`analizar_ticket_groq`): extrae **comercio, monto, fecha y la
   lista de productos** `[{nombre, precio}]`.
 - El desglose se guarda como **tabla Notion** (Producto | Precio) dentro de la página del gasto.
-- **Si el ticket tiene productos, el concepto lleva `*` al final** (ej. `Walmart*`) como señal visual
-  de que esa página tiene desglose interno.
-- El comercio pasa por `normalizar_comercio` (usa `COMERCIOS_OCR`).
+- **Si el ticket tiene productos, el concepto lleva `*` al final** (ej. `Walmart*`) como señal visual.
 - Preview con botones **Confirmar / Cancelar** antes de guardar.
 - Fallback a Google Vision (`ocr_ticket` + `parsear_ticket`) si Groq falla.
-- Tras confirmar, queda como "último gasto" → se puede editar por frase ("cámbialo a 400").
 
-## 5. Editar y borrar
+## 7. Editar y borrar
 - **`/corregir` — panel inline multi-campo (híbrido):** muestra los **últimos 5 gastos de ambos
-  usuarios combinados** (sin importar quién los registró) para que cualquiera pueda corregir el gasto
-  del otro. Eliges el número (1-5) y se abre un panel con teclado en línea y los 6 campos editables:
-  **monto, fecha, tarjeta, categoría, presupuesto, concepto**. Apilas varios cambios (se ve un resumen
-  "Cambios pendientes") y se aplican **todos en un solo PATCH** al tocar ✅ Aplicar.
+  usuarios combinados** para que cualquiera pueda corregir el gasto del otro. Eliges el número (1-5)
+  y se abre un panel con teclado en línea y los 6 campos editables: **monto, fecha, tarjeta,
+  categoría, presupuesto, concepto**. Apilas varios cambios y se aplican **todos en un solo PATCH**.
   También acepta frases ("monto 95 y tarjeta BBVA05").
-  Usa `cargar_historial_compartido()` (sin filtro por UsuarioID).
 - **Edición contextual por frase:** justo después de registrar, "cámbialo a 400", "ponlo en
-  restaurantes", "fue con BBVA05" editan el último gasto (guardado en RAM).
-- Ambas rutas usan la **única** función de escritura `aplicar_edicion_contextual`, que recalcula el
-  ciclo de Mes si cambia fecha/tarjeta y aprende la categoría si cambia.
+  restaurantes" editan el último gasto (guardado en RAM).
+- Ambas rutas usan la **única** función de escritura `aplicar_edicion_contextual`.
 - **`/eliminar`:** archiva el último gasto en Notion (pide confirmación).
-- `/corregir` y `/eliminar` **releen los valores vigentes** de la BD principal (vía
-  `_base_desde_notion`) antes de mostrar el gasto, para reflejar correcciones recientes.
 
-## 6. Reportes proactivos
+## 8. Reportes proactivos
 - **Telegram (resumen rápido):** semanal = últimos 7 días; mensual = ciclo recién cerrado.
+  Incluye **desglose por tarjeta** en el texto del reporte.
   Redactado por Groq con fallback a texto.
-- **Correo (detallado, solo mensual):** HTML vía Resend (`_html_reporte_mensual`): total, barras por
-  categoría con Δ, top gastos (fecha estilizada `18 de mayo, 2026`), MSI activos, y una sección de
-  recomendaciones generada por Groq.
-- **Disparo:** `/reporte [mensual]` (a quien lo pide; el mensual además manda el correo) o
-  `GET /reporte?secret=<SHORTCUT_SECRET>&tipo=semanal|mensual` (a ambos usuarios).
-- **Calendario en producción:** semanal lunes 9am MX (`job_reporte_semanal`), mensual día 5 2pm MX
-  (`job_reporte_mensual`) — **APScheduler dentro del bot**, sin depender de rutinas externas.
-  Al arrancar aparece en los logs: `[APScheduler] Scheduler iniciado. Jobs: reporte_semanal (lun 9am MX), reporte_mensual (día 5 2pm MX)`
+- **Correo (detallado, solo mensual):** HTML vía Resend: total, barras por categoría con Δ, top gastos, MSI activos, recomendaciones.
+- **Disparo:** `/reporte [mensual]` o `GET /reporte?secret=<SHORTCUT_SECRET>&tipo=semanal|mensual`.
+- **Calendario:** semanal lunes 9am MX (`job_reporte_semanal`), mensual día 5 2pm MX (`job_reporte_mensual`) — APScheduler dentro del bot.
 
-## 7. Flujo de voz (cómo funciona hoy)
-La voz **no es un camino aparte**: se transcribe y se reusa todo el cerebro del texto.
-1. `handle_voice` es entry-point de `conv_gasto` para `filters.VOICE | filters.AUDIO`.
-2. Descarga el audio de Telegram (`get_file` → `download_as_bytearray`).
-3. `groq_transcribir` (Whisper `whisper-large-v3-turbo`, `language="es"`) → texto. Corre en
-   `asyncio.to_thread` para no bloquear el event loop.
-4. Muestra "🎤 Entendí: {texto}" como confirmación de lo que escuchó.
-5. Pasa el texto a `_procesar_conversacion` → de ahí en adelante es idéntico a un mensaje escrito:
-   puede terminar como **gasto, consulta o edición**.
-- Requiere `GROQ_API_KEY`; si no está, avisa que necesita configurarla.
-- Implicación: cualquier cosa que puedas hacer escribiendo, la puedes hacer hablando
-  (registrar, preguntar, corregir).
+## 9. Flujo de voz
+La voz **no es un camino aparte**: se transcribe y se reusan todos los flujos de texto.
+- Whisper `whisper-large-v3-turbo` → texto → `_procesar_conversacion`.
+- Cualquier cosa que puedas hacer escribiendo, la puedes hacer hablando (registrar, preguntar, corregir, declarar ingreso).
 
-## 8. Categorización automática y aprendizaje
+## 10. Categorización automática y aprendizaje
 - `inferir_categoria(concepto)` resuelve en orden: **reglas → aprendizaje → similitud (>80%) → Google Maps**.
 - Lo aprendido se guarda en la BD Aprendizaje (con limpieza automática de entradas viejas de 1 solo uso).
-- Conceptos únicos (Netflix, Spotify, Walmart…) NO se guardan en Aprendizaje.
 
 ---
 
@@ -241,7 +242,7 @@ La voz **no es un camino aparte**: se transcribe y se reusa todo el cerebro del 
 | `/corregir` | Panel inline para editar un gasto reciente |
 | `/eliminar` | Archiva el último gasto |
 | `/reporte [mensual]` | Dispara el reporte semanal (o mensual + correo) |
-| `/prueba` | Simula el parseo de un gasto sin guardarlo (muestra origen de la inferencia) |
+| `/prueba` | Simula el parseo de un gasto sin guardarlo |
 | `/cancelar` | Cancela la acción en curso |
 
 ---
@@ -257,9 +258,6 @@ La voz **no es un camino aparte**: se transcribe y se reusa todo el cerebro del 
 
 - **Asignación automática** (si no se especifica tarjeta): días 5-11 → BBVA05, resto → BBVA12.
 - **Mes activo** (para `/resumen`): si hoy ≥ día 5 → mes siguiente; si hoy < 5 → mes actual.
-- **Ciclo de mes vs fecha real:** las consultas por "mes" usan la relación `Mes` (ciclo de
-  facturación: ENE26, FEB26…). Las consultas por fecha exacta (ayer, rango) y las históricas usan
-  directamente la propiedad `Fecha` de Notion, ignorando el ciclo.
 
 ---
 
@@ -278,13 +276,9 @@ La voz **no es un camino aparte**: se transcribe y se reusa todo el cerebro del 
 🔗 Ver en Notion
 ```
 
-**Resumen / estadísticas:** tabla monoespaciada dentro de code block (con línea vacía inicial para
-que el botón `</>` de Telegram no tape la primera fila). Emojis estrechos (⛪) llevan espacio extra.
-
 **Fechas (2 formatos):**
-- `_fecha_compacta` → `18/MAY/26` (mes en MAYÚSCULA, `MESES_ESP`): estándar en TODOS los mensajes al
-  usuario (tarjeta de gasto, ticket, panel `/corregir`, `/eliminar`, `/buscar`, datos de consulta).
-- `_fecha_larga` → `18 de mayo, 2026` (`MESES_ESP_LARGO`): solo el correo mensual (tono editorial).
+- `_fecha_compacta` → `18/MAY/26`: estándar en todos los mensajes al usuario.
+- `_fecha_larga` → `18 de mayo, 2026`: solo el correo mensual.
 
 ---
 
@@ -293,73 +287,45 @@ que el botón `</>` de Telegram no tape la primera fila). Emojis estrechos (⛪)
 ### Funciones clave
 - `_procesar_conversacion(update, context, texto, uid)` — cerebro compartido de texto y voz.
 - `clasificar_mensaje_groq(texto, ultimo, historial)` — clasifica intención
-  (gasto / multi_gasto / consulta / edición / otro); recibe la memoria conversacional.
-- `responder_consulta_groq(...)` — consultas NL en 2 pasos (plan → datos → redacción).
-- `ejecutar_consulta_finanzas(plan)` — ÚNICA función que trae datos para consultas (rutas: histórico / fecha real / ciclo de mes).
-- `_datos_consulta_especial(modo, plan)` — modos de agregación (ranking, tendencia, hormiga…).
+  (gasto / multi_gasto / consulta / edición / meta / **ingreso** / alias / otro).
+- `responder_consulta_groq(...)` — consultas NL en 2 pasos (plan → datos → redacción). El plan JSON ahora incluye `subcategoria`, `tarjeta`; el contexto incluye `last_query` para carryover de filtros.
+- `ejecutar_consulta_finanzas(plan)` — ÚNICA función que trae datos para consultas. Filtros: categoria, **subcategoria** (via SC dict), **tarjeta** (rich_text), comercio, fecha, historico.
+- `_datos_consulta_especial(modo, plan)` — modos de agregación. Todos los modos propagan `subcategoria_id`. Nuevos modos: **msi_tracker**, **oportunidades_ahorro**, **posicion_financiera**, **tendencia_ingresos**.
+- `_gastos_recientes(n, categoria, meses, subcategoria_id)` — lista de gastos recientes; soporta filtro de subcategoría.
+- `_agg_ciclo(mes)` — agrega gastos de un ciclo; ahora incluye `por_tarjeta`.
 - `aplicar_edicion_contextual(...)` — ÚNICA ruta de escritura para editar un gasto.
-- `groq_transcribir(audio_bytes)` — voz → texto (Whisper).
-- `analizar_ticket_groq(img)` — foto de ticket → datos + productos (Llama 4 Scout).
-- `guardar_notion(gasto)` / `registrar_y_notificar(...)` / `registrar_via_shortcut(...)` — registro.
-- `inferir_categoria(concepto)` — pipeline de categorización.
-- `precargar_meses()` — carga la BD Balance al cache al arrancar (evita timeouts).
-- `notificar_pareja(context, uid, texto)` — aviso al otro usuario (helper único).
-- `_base_desde_notion(nid)` — relee un gasto vigente desde la BD principal (usa `SC_INV`/`PR_INV`).
-- `_construir_gasto_desde_data(data, hoy)` — arma un gasto completo desde el JSON del LLM (single y multi).
-- `_registrar_multiples(...)` — guarda una lista de gastos y manda confirmación agrupada.
-- `calcular_proyeccion(...)` / `_dias_en_ciclo()` — proyección de cierre del ciclo en `/resumen`.
-- `generar_narrativa_resumen(...)` — 2-3 líneas de insight del mes (Groq).
-- `verificar_hormiga(...)` / `detectar_anomalia(...)` — alertas en background al registrar.
-- `agregar_historial`/`obtener_historial`/`limpiar_historial` — memoria conversacional (RAM).
-- `cargar_historial_compartido()` — últimos MAX_HISTORIAL gastos de ambos usuarios (sin filtro UsuarioID); usado por `/corregir`.
-- `cargar_historial_notion(uid)` — últimos MAX_HISTORIAL gastos de un usuario; usado por `/eliminar`.
-- `guardar_meta(uid, presupuesto, limite, ciclo)` — upsert en Metas Bot (busca y reemplaza si ya existe).
-- `cargar_meta(uid, presupuesto, ciclo)` — lee un límite específico; None si no existe.
-- `cargar_metas_ciclo(uid, ciclo)` — todas las metas del usuario para un ciclo.
-- `enviar_propuesta_mes(datos)` — corrutina async; envía el mensaje de apertura de ciclo con botones a ambos usuarios.
-- `callback_propuesta` — maneja `^propuesta_`: confirma/salta meta, muestra desglose.
+- `guardar_meta(uid, presupuesto, limite, ciclo)` — upsert en Metas Bot. `presupuesto="INGRESO"` para guardar ingreso estimado.
+- `cargar_meta(uid, presupuesto, ciclo)` — lee un límite o ingreso específico.
+- `mem_cargar(uid)` / `mem_guardar(uid)` — memoria persistente Notion.
+- `_manejar_referencia()` — intercepta referencias contextuales antes de Groq.
+- `enviar_reporte(tipo)` — reporte a Telegram; incluye desglose por tarjeta.
 
 ### ConversationHandlers (el orden de registro importa)
 1. `conv_prueba` — `/prueba`
 2. `conv_foto` — `filters.PHOTO` ← debe ir ANTES que conv_gasto
-3. `conv_corregir` — `/corregir`; estado `CORREGIR_PANEL` maneja
-   CallbackQuery `^edit:` (botones del panel) y texto (valor de campo o frase híbrida)
+3. `conv_corregir` — `/corregir`
 4. `conv_eliminar` — `/eliminar`
-5. `conv_gasto` — `filters.TEXT` + `filters.VOICE | filters.AUDIO` (voz)
-
-### Estados de conversación
-```python
-CONFIRMAR_MONTO  = 1   # monto >= 5000 (botones inline ^monto_)
-CONFIRMAR_CAT    = 2   # concepto desconocido
-CONFIRMAR_SUBCAT = 3   # subcategoría cuando el grupo tiene varias
-CORREGIR_ELEGIR  = 10
-CORREGIR_PANEL   = 11  # panel inline multi-campo (botones ^edit: + texto híbrido)
-PRUEBA_GASTO     = 20
-FOTO_CONFIRMAR   = 30
-ELIMINAR_CONFIRM = 50
-PROPUESTA_META   = 60  # reservado para ajuste de meta en apertura de ciclo (Feature 3)
-```
+5. `conv_gasto` — `filters.TEXT` + `filters.VOICE | filters.AUDIO`
 
 ### Endpoints HTTP
 - `GET /` — health check (UptimeRobot)
 - `POST /webhook` — updates de Telegram
-- `POST /log` — gastos del iOS Shortcut/Siri (`{text, user_id, secret}`)
-- `GET /reporte?secret=<SHORTCUT_SECRET>&tipo=semanal|mensual` — dispara el reporte a ambos usuarios
-- `POST /propuesta_mes` — recibe datos de la rutina "Nuevo mes" y envía mensaje de apertura de ciclo con botones inline (`{secret, ciclo_nuevo, ciclo_anterior, total_anterior, promedio_3m, delta_pct, recurrentes_registrados, recurrentes_total, limite_propuesto, desglose}`)
+- `POST /log` — gastos del iOS Shortcut/Siri
+- `GET /reporte?secret=<SHORTCUT_SECRET>&tipo=semanal|mensual` — dispara reporte a ambos usuarios
+- `POST /propuesta_mes` — apertura de ciclo con botones inline
 
 ---
 
 ## Notas técnicas críticas
-1. **`precargar_meses()`** se llama en `main()` antes de `app.initialize()`; el cache evita timeouts de Notion.
-2. **Loop async:** `app.update_processor._loop = loop` permite que `/log` despache corrutinas desde el thread del HTTP server.
-3. **Historial en Notion, no en RAM:** persiste entre reinicios de Render.
-4. **El Historial Bot puede quedar viejo:** al editar un gasto solo se actualiza la BD principal, no el snapshot del Historial. Por eso `/corregir` y `/eliminar` releen con `_base_desde_notion`.
-5. **parse_mode="Markdown":** úsalo cuando el mensaje incluya el deep link o negritas. El panel de `/corregir` va en texto plano a propósito (conceptos con `*`/`_` romperían Markdown).
-6. **conv_foto antes que conv_gasto:** si se invierte, las fotos caen en el handler de texto.
-7. **IDs de relación Notion:** llegan con guiones — `.replace("-", "")` antes de comparar con `SC`/`PR`.
-8. **Emojis estrechos** (⛪) necesitan un espacio extra para alinear las tablas monoespaciadas (`EMOJI_ESTRECHO`).
-9. **Vision API:** requiere `GOOGLE_VISION_API_KEY`, Cloud Vision habilitada y la key sin restricciones (o con Vision en la lista).
-10. **Fallback silencioso:** sin `GROQ_API_KEY` o ante cualquier fallo de IA, el bot usa el parser clásico. Cero regresiones.
+1. **IDs de relación Notion:** llegan con guiones — `.replace("-", "")` antes de comparar con `SC`/`PR`.
+2. **Tarjeta en Notion:** campo `rich_text` (no select) — leer con `props.get("Tarjeta", {}).get("rich_text", [])`.
+3. **Subcategoría y Presupuesto:** "Restaurantes" existe en ambos dicts (SC y PR). El planner usa `subcategoria` por default cuando hay ambigüedad.
+4. **Ingreso estimado:** se guarda en Metas Bot con `presupuesto="INGRESO"`. `cargar_meta(uid, "INGRESO", ciclo)` lo lee; se busca en ambos UIDs porque las finanzas son conjuntas.
+5. **MSI formato:** `"Concepto X/Total"` — ej. "MacBook Pro 4/18". `msi_tracker` usa regex `^(.+?)\s+(\d{1,2})\s*/\s*(\d{1,2})\s*$`.
+6. **gastos_raw:** máximo 20 gastos ordenados por monto (era 10 antes).
+7. **parse_mode="Markdown":** úsalo cuando el mensaje incluya el deep link o negritas.
+8. **conv_foto antes que conv_gasto:** si se invierte, las fotos caen en el handler de texto.
+9. **Fallback silencioso:** sin `GROQ_API_KEY` o ante cualquier fallo de IA, el bot usa el parser clásico.
 
 ---
 
@@ -374,32 +340,31 @@ PROPUESTA_META   = 60  # reservado para ajuste de meta en apertura de ciclo (Fea
 ## Features en construcción / pendientes 🔲
 
 ### Feature 2 — Memoria semántica (Alias Bot) ✅ IMPLEMENTADO
-El bot aprende alias personales de la conversación normal. Si el usuario dice
-"recuerda que el café de siempre es Starbucks BBVA05", Groq detecta el patrón,
-llama a `guardar_alias(uid, trigger, resolved)` y la próxima vez expande el texto
-antes de clasificar (`expandir_aliases(uid, texto)`).
+El bot aprende alias personales de la conversación normal.
 - BD: Alias Bot (personal, no compartida entre usuarios)
-- Aprendizaje: detección automática en `clasificar_mensaje_groq`
-- Expansión: antes de `clasificar_mensaje_groq` en `_procesar_conversacion`
+- Detección automática en `clasificar_mensaje_groq`
+- Expansión antes de `clasificar_mensaje_groq` en `_procesar_conversacion`
 
 ### Feature 3 — Metas de gasto (Metas Bot) ✅ IMPLEMENTADO
 El usuario fija metas por ciclo y presupuesto en lenguaje natural.
-"Quiero gastar máximo $10,000 en Diversión este ciclo" → Groq detecta intent `meta`,
-llama a `guardar_meta(uid, presupuesto, limite, ciclo)`.
-- Alertas: al 80% y al 100% del límite, tras cada registro (`verificar_metas` en background)
-- Progreso en `/resumen`: muestra meta y % usado si existe meta para ese ciclo
-- BD: Metas Bot (personal, presupuesto TOTAL para meta global)
+- Alertas al 80% y al 100% del límite, tras cada registro
+- Progreso en `/resumen`
+- BD: Metas Bot (presupuesto TOTAL para meta global)
 
 ### Feature 4 — Multi-agente apertura de ciclo ✅ IMPLEMENTADO (bot-side)
-El bot tiene implementado el flujo completo de propuesta de ciclo:
-- Endpoint `POST /propuesta_mes` recibe datos de cualquier fuente externa
-- `enviar_propuesta_mes(datos)` envía mensaje a ambos usuarios con resumen del ciclo cerrado,
-  recurrentes registrados, meta sugerida y botones ✅ Meta · ❌ Sin meta · 📋 Ver desglose
-- `callback_propuesta` guarda la meta confirmada en Metas Bot (presupuesto="TOTAL")
+Endpoint `POST /propuesta_mes` listo. La rutina "Nuevo mes" fue simplificada — solo
+registra recurrentes en Notion sin notificar al bot.
 
-**Estado actual de la rutina:** la rutina "Nuevo mes [Notion]" fue simplificada — solo
-registra los recurrentes en Notion y termina (sin POST al bot). El endpoint `/propuesta_mes`
-permanece en el bot listo para reactivarse si se decide volver a dispararlo desde una rutina.
+### Feature 5 — Hub Financiero v2 ✅ IMPLEMENTADO
+- Filtro por subcategoría en todos los modos (incluyendo tendencia, desviación, hormiga, etc.)
+- Filtro por tarjeta (BBVA05/12/HEYB25/BMEX04/EFVO) en cualquier consulta
+- Plan carryover: el bot recuerda los filtros de la consulta anterior
+- Ingresos estimados (freelance-friendly) guardados en Metas Bot
+- MSI tracker conversacional
+- Análisis de oportunidades de ahorro vs histórico
+- Posición financiera en tiempo real (ingreso estimado vs gasto real)
+- Tendencia histórica de ingresos vs gastos
+- Desglose por tarjeta en reportes semanal y mensual
 
 ### Email BBVA (reconciliación automática) 🔲 v2
 Conectar Gmail API, parsear PDF del estado de cuenta y cruzar con Notion.
