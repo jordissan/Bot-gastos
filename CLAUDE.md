@@ -410,9 +410,9 @@ resumen      - 📊 Resumen del mes activo
 estadisticas - 📈 Comparar este mes vs el anterior
 reporte      - 📰 Reporte semanal (o /reporte mensual)
 top          - 🏆 Top 5 gastos del mes
-buscar       - 🔍 Buscar gastos por concepto
+buscar       - 🔍 Buscar gasto
 corregir     - ✏️ Corregir un gasto reciente
 eliminar     - 🗑️ Eliminar el último gasto
-prueba       - 🧪 Simular un gasto sin registrar
+prueba       - 🧪 Simular un gasto
 cancelar     - ❌ Cancelar acción en curso
 ```
