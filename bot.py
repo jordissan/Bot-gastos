@@ -25,6 +25,7 @@ NOTION_BALANCE_ID     = os.environ.get("NOTION_BALANCE_ID", "")
 GROQ_API_KEY          = os.environ.get("GROQ_API_KEY", "")
 RESEND_API_KEY        = os.environ.get("RESEND_API_KEY", "")
 REPORTE_EMAIL         = os.environ.get("REPORTE_EMAIL", "jor.jorwww@gmail.com")
+SHORTCUT_SECRET       = os.environ.get("SHORTCUT_SECRET", "")
 
 # ── GROQ LLM ──────────────────────────────────────────────────────────────────
 _groq_client = None
@@ -3921,7 +3922,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             qs = parse_qs(parsed.query)
             secret = qs.get("secret", [""])[0]
             tipo   = qs.get("tipo", ["semanal"])[0]
-            SC_SECRET = os.environ.get("SHORTCUT_SECRET", "")
+            SC_SECRET = SHORTCUT_SECRET
             if SC_SECRET and secret != SC_SECRET:
                 self.send_response(403); self.end_headers(); self.wfile.write(b'{"ok":false}'); return
             app = get_app()
@@ -3951,7 +3952,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length", 0))
                 body   = self.rfile.read(length)
                 data   = json.loads(body.decode("utf-8"))
-                SC_SECRET = os.environ.get("SHORTCUT_SECRET", "")
+                SC_SECRET = SHORTCUT_SECRET
                 if SC_SECRET and data.get("secret") != SC_SECRET:
                     self.send_response(403); self.send_header("Content-Type","application/json"); self.end_headers()
                     self.wfile.write(b'{"ok":false,"error":"unauthorized"}'); return
@@ -3978,7 +3979,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 length  = int(self.headers.get("Content-Length", 0))
                 body    = self.rfile.read(length)
                 data    = json.loads(body.decode("utf-8"))
-                SC_SECRET = os.environ.get("SHORTCUT_SECRET", "")
+                SC_SECRET = SHORTCUT_SECRET
                 if SC_SECRET and data.get("secret") != SC_SECRET:
                     self.send_response(403); self.send_header("Content-Type","application/json"); self.end_headers()
                     self.wfile.write(b'{"ok":false,"error":"unauthorized"}'); return
