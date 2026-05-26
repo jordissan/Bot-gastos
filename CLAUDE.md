@@ -1,5 +1,9 @@
 # Bot Gastos — Contexto para Claude Code
 
+> **⚠️ LEER PRIMERO:** Al iniciar una sesión nueva, leer `/Users/jordi/Bot-gastos/memoria.md`
+> antes que cualquier otra cosa. Contiene decisiones recientes, bugs resueltos, cosas descartadas
+> y pendientes activos que no están en este archivo.
+
 > Documento de estado actual del bot (no es un changelog). Describe **lo que el bot hace hoy**
 > y cómo está construido. Versión: **26.2.0**
 
