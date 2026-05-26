@@ -1883,6 +1883,24 @@ def _formatear_datos_consulta(res: dict) -> str:
             f"{c} ${m:,.0f} ({_fecha_compacta(f)})" for c, m, f, _ in res["top"]))
     return "\n".join(partes)
 
+def _ciclo_a_rango_calendario(ciclo: str):
+    """
+    Convierte un código de ciclo de pago (ej. "JUN26") al rango de fechas del mes calendario.
+    Devuelve (date_inicio, date_fin) o (None, None) si el formato no es reconocido.
+    Ejemplo: "JUN26" → (date(2026,6,1), date(2026,6,30))
+    """
+    import calendar as _cal
+    ciclo = (ciclo or "").strip().upper()
+    _MESES_INV = {v: k for k, v in MESES_ESP.items()}
+    mes_str = ciclo[:3]
+    anio_str = ciclo[3:]
+    mes_num = _MESES_INV.get(mes_str)
+    if not mes_num or not anio_str.isdigit():
+        return None, None
+    anio = int("20" + anio_str) if len(anio_str) == 2 else int(anio_str)
+    ultimo_dia = _cal.monthrange(anio, mes_num)[1]
+    return datetime.date(anio, mes_num, 1), datetime.date(anio, mes_num, ultimo_dia)
+
 def _agg_por_anio() -> dict:
     """Gasto total por año, leído de los rollups de la BD Balance (1 query, eficiente)."""
     if not NOTION_BALANCE_ID:
@@ -2583,14 +2601,47 @@ CAMPOS:
         res = await asyncio.to_thread(ejecutar_consulta_finanzas, plan)
         datos = _formatear_datos_consulta(res)
 
+        # Auto-retry por mes calendario cuando el ciclo de pago devuelve vacío.
+        # Ejemplo: "gastos de JUN26" busca el ciclo JUN26 (compras ~12-May a 11-Jun),
+        # pero si el usuario compró el 26-Jun ese gasto queda en JUL26.
+        # En ese caso reintentamos por fecha real de compra dentro de junio calendario.
+        if (res["conteo"] == 0
+                and plan.get("meses")
+                and not plan.get("fecha_desde")
+                and not plan.get("historico")):
+            ciclos = plan["meses"]
+            fechas_ini, fechas_fin = [], []
+            for ciclo in ciclos:
+                fd, fh = _ciclo_a_rango_calendario(ciclo)
+                if fd and fh:
+                    fechas_ini.append(fd)
+                    fechas_fin.append(fh)
+            if fechas_ini:
+                plan_fecha = {
+                    **plan,
+                    "fecha_desde": min(fechas_ini).isoformat(),
+                    "fecha_hasta": max(fechas_fin).isoformat(),
+                    "meses": [],
+                }
+                res2 = await asyncio.to_thread(ejecutar_consulta_finanzas, plan_fecha)
+                if res2["conteo"] > 0:
+                    res = res2
+                    ciclos_str = "/".join(ciclos)
+                    datos = (
+                        f"📅 Nota: el ciclo de pago {ciclos_str} no tiene gastos en sí. "
+                        f"Mostrando gastos cuya FECHA DE COMPRA cae en ese mes calendario "
+                        f"({plan_fecha['fecha_desde']} → {plan_fecha['fecha_hasta']}):\n"
+                        + _formatear_datos_consulta(res2)
+                    )
+
     prompt_resp = f"""Eres el asistente del bot de gastos de Jordi y Nani. Responde en español mexicano, claro y directo (máx 3 oraciones). Usa $ con separador de miles. Emojis con moderación.
 
-Pregunta: "{texto}"
+Pregunta del usuario: "{texto}"
 
-Datos consultados (reales, de Notion):
+Datos reales consultados en Notion ahora mismo:
 {datos}
 
-Responde la pregunta usando SOLO estos datos. No inventes cifras. Si los datos están vacíos, dilo con naturalidad."""
+REGLA CRÍTICA: responde ÚNICAMENTE con los datos mostrados arriba. PROHIBIDO usar información de mensajes anteriores, inventar cifras o mencionar meses/gastos que no aparezcan en esos datos. Si los datos dicen "Sin gastos que coincidan", dilo tal cual — no menciones otros meses ni datos de turnos previos."""
 
     respuesta = await asyncio.to_thread(groq_completar, prompt_resp, 200)
     if respuesta:
