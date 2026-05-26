@@ -1698,18 +1698,20 @@ def _presupuesto_desde_subcat(props) -> str:
 def ejecutar_consulta_finanzas(plan: dict) -> dict:
     """
     Ejecuta un plan de consulta determinístico contra Notion.
-    plan: {"meses": [...], "categoria": str|None, "comercio": str|None,
+    plan: {"meses": [...], "categoria": str|None, "subcategoria": str|None, "comercio": str|None,
            "fecha_desde": "YYYY-MM-DD"|None, "fecha_hasta": "YYYY-MM-DD"|None,
            "historico": bool}
     Si historico=True, consulta TODOS los registros desde 2020 (sin límite de meses).
     Si fecha_desde/hasta están presentes, filtra por Fecha real (no por ciclo de mes).
     Devuelve un agregado compacto. Es la ÚNICA función que toca datos para consultas NL.
     """
-    categoria   = (plan.get("categoria")   or "").strip() or None
-    comercio    = normalizar(plan.get("comercio") or "") or None
-    fecha_desde = (plan.get("fecha_desde") or "").strip() or None
-    fecha_hasta = (plan.get("fecha_hasta") or "").strip() or None
-    historico   = bool(plan.get("historico"))
+    categoria       = (plan.get("categoria")    or "").strip() or None
+    subcategoria    = (plan.get("subcategoria") or "").strip() or None
+    subcategoria_id = SC.get(subcategoria, "").replace("-", "") if subcategoria else None
+    comercio        = normalizar(plan.get("comercio") or "") or None
+    fecha_desde     = (plan.get("fecha_desde") or "").strip() or None
+    fecha_hasta     = (plan.get("fecha_hasta") or "").strip() or None
+    historico       = bool(plan.get("historico"))
 
     res = {"meses": [], "total": 0.0, "conteo": 0,
            "por_dia": {}, "por_mes": {}, "por_categoria": {}, "top": [],
@@ -1736,6 +1738,10 @@ def ejecutar_consulta_finanzas(plan: dict) -> dict:
             fecha    = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
             if categoria and pr != categoria:
                 continue
+            if subcategoria_id:
+                rel_sc = props.get("Subcategoria", {}).get("relation", [])
+                if not any(r.get("id", "").replace("-", "") == subcategoria_id for r in rel_sc):
+                    continue
             if comercio and comercio not in normalizar(concepto):
                 continue
             res["total"] += monto
@@ -1766,6 +1772,10 @@ def ejecutar_consulta_finanzas(plan: dict) -> dict:
             fecha    = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
             if categoria and pr != categoria:
                 continue
+            if subcategoria_id:
+                rel_sc = props.get("Subcategoria", {}).get("relation", [])
+                if not any(r.get("id", "").replace("-", "") == subcategoria_id for r in rel_sc):
+                    continue
             if comercio and comercio not in normalizar(concepto):
                 continue
             res["total"] += monto
@@ -1796,6 +1806,10 @@ def ejecutar_consulta_finanzas(plan: dict) -> dict:
                 fecha    = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
                 if categoria and pr != categoria:
                     continue
+                if subcategoria_id:
+                    rel_sc = props.get("Subcategoria", {}).get("relation", [])
+                    if not any(r.get("id", "").replace("-", "") == subcategoria_id for r in rel_sc):
+                        continue
                 if comercio and comercio not in normalizar(concepto):
                     continue
                 res["total"] += monto
@@ -2293,7 +2307,8 @@ async def responder_consulta_groq(texto: str, user_id: int, update, context) -> 
     hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
     activo = mes_activo_str()
     meses_disp = ", ".join(sorted(_meses_cache.keys())) or activo
-    categorias = ", ".join(PR.keys())
+    categorias   = ", ".join(PR.keys())
+    subcategorias = ", ".join(SC.keys())
 
     ayer      = (hoy - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
     hoy_iso   = hoy.strftime("%Y-%m-%d")
@@ -2312,7 +2327,8 @@ async def responder_consulta_groq(texto: str, user_id: int, update, context) -> 
 
     prompt_plan = f"""Hoy es {hoy.strftime('%d/%m/%Y')} ({hoy_iso}). Mes de ciclo activo: {activo}.
 Meses disponibles: {meses_disp}
-Categorías válidas: {categorias}
+Categorías de presupuesto válidas: {categorias}
+Subcategorías válidas: {subcategorias}
 
 Fechas de referencia:
 - Ayer: {ayer}  | Esta semana (lunes): {lunes_esta.strftime('%Y-%m-%d')}
@@ -2326,6 +2342,7 @@ Devuelve SOLO JSON válido:
   "modo": "detalle",
   "meses": ["{activo}"],
   "categoria": null,
+  "subcategoria": null,
   "comercio": null,
   "fecha_desde": null,
   "fecha_hasta": null,
@@ -2357,7 +2374,8 @@ CAMPOS:
 - "fecha_desde"/"fecha_hasta" (YYYY-MM-DD): para días o rangos exactos (ayer, esta semana, el 15 mayo). Cuando se usan, "meses" se ignora.
 - "meses": códigos MES+AA. "este mes"={activo}. "mes pasado"=anterior al activo. Para MES COMPLETO, no uses fecha_desde/hasta.
 - "anio": año de 4 dígitos (ej "2025"), para modo mes_mas_caro u otras preguntas anuales.
-- "categoria": nombre EXACTO de la lista, o null.
+- "categoria": nombre EXACTO de la lista de presupuesto (Despensa, Restaurantes, Automovil…), o null. Para filtrar por bolsa de presupuesto.
+- "subcategoria": nombre EXACTO de la lista de subcategorías (Abarrotes, Gasolina, Super, Treat, Restaurantes…), o null. Úsalo cuando el usuario pregunte por un tipo de gasto específico dentro de una categoría (ej. "abarrotes", "gasolina", "super", "treat"). NUNCA pongas subcategoria y categoria al mismo tiempo.
 - "comercio": texto a buscar en el concepto (ej "starbucks"), o null.
 - "historico": true cuando la pregunta sea sobre toda la historia: "en total", "desde siempre", "cuánto llevo pagado", "cuánto he gastado en total", pagos de coche (VW Polo, mensualidades), gastos recurrentes de largo plazo. Con historico=true se consultan TODOS los registros desde 2020; "meses" se ignora.
 - Si la pregunta NO es sobre finanzas/gastos → {{"error":"no_finanzas"}}."""
