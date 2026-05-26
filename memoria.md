@@ -1,110 +1,78 @@
-# memoria.md — Contexto persistente de sesiones con Claude
+# memoria.md — Memoria institucional del proyecto
 
-> Leer este archivo al inicio de cada sesión antes de tocar bot.py o CLAUDE.md.
-> Contiene decisiones tomadas, bugs resueltos, cosas descartadas y pendientes activos.
-> Formato: entradas más recientes arriba.
-
----
-
-## Sesión: 2026-05-20 / 2026-05-26 — Hub Financiero v2 + fixes críticos
-
-### ¿Qué se hizo en esta sesión?
-
-#### 1. Bug: subcategoría ignorada en consultas (RESUELTO ✅)
-**Síntoma:** bot preguntado por "abarrotes" devolvía el total de "Despensa" (toda la categoría).
-**Causa:** `ejecutar_consulta_finanzas` no filtraba por subcategoría — solo por categoría.
-**Fix:** se añadió `subcategoria_id` derivado del dict `SC` y se filtra en los tres loops de la función. También se propagó a `_datos_consulta_especial` para que todos los modos especiales lo respeten.
-
-#### 2. Feature: Hub Financiero v2 (IMPLEMENTADO ✅)
-Se expandió masivamente el bot como hub financiero personal. Cambios en bot.py:
-- **Filtro por subcategoría** en todos los modos de consulta (era solo global antes).
-- **Filtro por tarjeta** (`tarjeta_filtro` vía campo `rich_text` Tarjeta en Notion) en cualquier consulta.
-- **Plan carryover:** el planner recibe `last_query` de la memoria para resolver "¿y la semana pasada?", "¿y con BBVA12?".
-- **Ingresos estimados freelance:** `guardar_meta(uid, "INGRESO", monto, ciclo)` en Metas Bot. El clasificador detecta frases como "este mes esperamos ganar $45,000". Muestra posición financiera inmediata al declarar.
-- **MSI tracker** (`msi_tracker`): ve todos los MSIs activos (formato "Concepto X/Total"), calcula restantes y compromiso mensual.
-- **Oportunidades de ahorro** (`oportunidades_ahorro`): compara últimos 3 meses vs promedio de 6 meses por categoría.
-- **Posición financiera** (`posicion_financiera`): ingreso estimado vs gasto real, % gastado, saldo libre, proyección.
-- **Tendencia ingresos** (`tendencia_ingresos`): historial 6 ciclos de ingreso declarado vs gasto real.
-- **Desglose por tarjeta** en reportes semanal y mensual (campo `por_tarjeta` en `_agg_ciclo`).
-- **`gastos_raw` limit:** aumentado de 10 → 20.
-
-#### 3. Bug: Groq hallucina datos de turnos anteriores cuando resultado es vacío (RESUELTO ✅)
-**Síntoma:** usuario preguntó "gastos de abarrotes de JUN26"; bot dijo "no tengo JUN26, solo MAY26" y luego listó los gastos de MAY26 inventándolos del historial de la conversación.
-**Causa:** `prompt_resp` tenía instrucción débil "usa SOLO estos datos" pero Groq ignoraba eso y usaba el contexto de turnos anteriores cuando los datos estaban vacíos.
-**Fix en `responder_consulta_groq`:** instrucción reforzada con "REGLA CRÍTICA: responde ÚNICAMENTE con los datos mostrados arriba. PROHIBIDO usar información de mensajes anteriores, inventar cifras o mencionar meses/gastos que no aparezcan en esos datos."
-
-#### 4. Auto-retry calendario — IMPLEMENTADO Y LUEGO REVERTIDO ❌
-**Lo que se hizo:** cuando el ciclo de pago devolvía 0 resultados, se reintentaba la query con `fecha_desde/fecha_hasta` del mes calendario.
-**Por qué se revirtió:** el usuario aclaró que cuando dice "gastos de JUN26" quiere exactamente `Mes = JUN26` en Notion. Si no hay resultados, debe decirlo claramente — no buscar por fecha de compra. El auto-retry contradecía su intención.
-**Lección:** no "ayudar de más" cuando el concepto de ciclo de pago está bien definido en Notion.
-
-#### 5. APScheduler — reportes autoagendados (IMPLEMENTADO ✅, en sesión anterior)
-Se movió el disparo de reportes del schedule externo de Claude (que no puede hacer HTTP saliente desde Render) al interior del propio bot con APScheduler.
-- `job_reporte_semanal`: lunes 9am MX
-- `job_reporte_mensual`: día 5 2pm MX
-Ambos llaman la lógica interna directamente (sin HTTP self-call).
+> Acumula decisiones de diseño, conceptos clave del dominio y lecciones aprendidas.
+> **Nunca se borra** — se agrega al inicio de cada entrada nueva.
+> Para el estado operativo de la última sesión, ver `handoff.md`.
 
 ---
 
-### Conceptos clave aclarados en esta sesión
+## Conceptos del dominio — verdades permanentes
 
-#### Ciclo de pago vs mes calendario
+### Ciclo de pago vs mes calendario
 `JUN26` en Notion = **"gastos que se pagan en junio 2026"** (mes de pago), NO "gastos comprados en junio".
-- BBVA05 (corte día 5): compra 26-jun → JUL26
-- BBVA12 (corte día 12): compra 26-jun → JUL26
-- HEYB25 (corte día 25): compra 26-jun → AGO26 (mes+2)
-- BMEX04 (corte día 4): compra 26-jun → JUL26
-- EFVO: compra 26-jun → JUN26 (siempre mes actual)
+Una compra del 26 de junio queda en:
+- **EFVO** → JUN26 (siempre mes actual)
+- **BBVA05** → JUL26 (corte día 5, 26 ≥ 5)
+- **BBVA12** → JUL26 (corte día 12, 26 ≥ 12)
+- **BMEX04** → JUL26 (corte día 4, 26 ≥ 4)
+- **HEYB25** → AGO26 (corte día 25, 26 ≥ 25 → mes+2)
 
-**Cuando el usuario dice "gastos de JUN26" quiere `Mes = JUN26` en Notion, filtrado por subcategoría/categoría. No es ambiguo — el bot ya lo hace bien.**
+Cuando el usuario dice "dame los gastos de JUN26", quiere exactamente `Mes = JUN26` en Notion — filtrado por subcategoría o lo que pida. Es determinístico, no ambiguo. Si no hay resultados, decirlo claro.
 
-#### Finanzas conjuntas Jordi + Nane
-No hay separación de gastos por usuario en consultas. Todo es familia. El ingreso estimado es conjunto también (cualquier usuario puede declararlo, se lee de ambos UIDs).
+### Finanzas conjuntas
+Jordi y Nane manejan finanzas como unidad familiar. **Nunca separar gastos por usuario en consultas.** El ingreso estimado también es conjunto — se guarda y se lee en ambos UIDs.
 
-#### Subcategoría vs Categoría (presupuesto)
-- "Restaurantes" existe en AMBOS dicts (SC subcategoría y PR presupuesto). El planner usa `subcategoria=Restaurantes` por default cuando hay ambigüedad (más preciso).
-- NUNCA poner `subcategoria` y `categoria` simultáneamente en el plan.
+### Subcategoría vs Categoría (presupuesto)
+"Restaurantes" existe en SC (subcategoría) Y en PR (presupuesto). El planner debe usar `subcategoria=Restaurantes` por default cuando hay ambigüedad — es más preciso. **Nunca poner `subcategoria` y `categoria` simultáneamente en el plan.**
 
----
-
-### Estado del repo al cierre de sesión
-- **Branch:** main
-- **Último commit:** `703d45d` — "revert: elimina auto-retry calendario"
-- **Todos los cambios pusheados** a github.com/jordissan/Bot-gastos
-
-### Deploy pendiente
-⚠️ **Render → Manual Deploy → Restart service** — los cambios de esta sesión están en GitHub pero NO desplegados hasta que se haga el deploy manual.
-Verificar en logs: `[APScheduler] Scheduler iniciado.`
+### Semántica de "JUN26" en consultas
+El usuario entiende `JUN26` como ciclo de pago. Nunca intentar "ayudar" traduciendo automáticamente a fechas calendario — rompe la semántica del sistema. Si JUN26 está vacío en Notion, es porque los gastos de esas fechas quedaron en otro ciclo. El bot debe informarlo, no inventar.
 
 ---
 
-### Pendientes / Ideas exploradas no implementadas
+## Decisiones de diseño
 
-| Item | Estado | Notas |
-|------|--------|-------|
-| Email BBVA reconciliación (Gmail API + PDF) | 🔲 Pendiente | Alta complejidad, versión futura |
-| Rutina "Nuevo mes" en Claude Code | ✅ Simplificada | Solo crea recurrentes en Notion, sin notificar al bot |
-| Rutinas remotas de reportes en Claude Code | ❌ Eliminadas | Reemplazadas por APScheduler dentro del bot |
-| Dashboard HTML | ✅ Existe | `/Users/jordi/Documents/Claude/Projects/Hub Financiero/dashboard.html` |
+### Query en 2 pasos (plan → datos → redacción)
+El LLM nunca toca los datos directamente — primero genera un plan JSON, luego `ejecutar_consulta_finanzas` hace la query determinística, y solo entonces el LLM redacta con esos datos. Esto elimina alucinaciones de cifras. Aprendido desde el inicio del Hub Financiero.
+
+### `prompt_resp` con REGLA CRÍTICA
+La instrucción débil "usa SOLO estos datos" no fue suficiente — Groq usaba el historial de la conversación cuando los datos estaban vacíos. Se cambió a una REGLA CRÍTICA explícita: "PROHIBIDO usar información de mensajes anteriores, inventar cifras o mencionar meses/gastos que no aparezcan en los datos." Si los datos están vacíos, el bot debe decirlo directamente.
+
+### APScheduler dentro del bot (no rutinas externas)
+Las rutinas remotas de Claude Code (CCR) no pueden hacer llamadas HTTP salientes desde el entorno de Render. Por eso los reportes se movieron a APScheduler dentro del propio bot. El bot ya corre 24/7 y tiene toda la lógica — es el lugar correcto.
+
+### Ingreso estimado en Metas Bot con presupuesto="INGRESO"
+Jordi y Nane son freelancers con ingresos variables. No hay forma de saber el ingreso real antes de que llegue. Se usa `guardar_meta(uid, "INGRESO", monto, ciclo)` para declarar el ingreso esperado. Metas Bot ya existía — se reusó con una clave especial en lugar de crear una nueva BD.
+
+### Tarjeta como `rich_text` en Notion (no select)
+El campo Tarjeta en Notion es `rich_text`, no `select`. Leer con `.get("Tarjeta", {}).get("rich_text", [])`. Confundir esto causa que el filtro de tarjeta no funcione silenciosamente.
+
+### `conv_foto` antes que `conv_gasto`
+Si se invierte el orden de registro de los ConversationHandlers, las fotos caen en el handler de texto y se rompe el OCR. El orden en `main()` es crítico.
 
 ---
 
-### Archivos relevantes del proyecto
+## Cosas intentadas y descartadas — con razonamiento
 
-| Archivo | Ruta |
-|---------|------|
-| Bot principal | `/Users/jordi/Bot-gastos/bot.py` |
-| Contexto técnico | `/Users/jordi/Bot-gastos/CLAUDE.md` |
-| Este archivo | `/Users/jordi/Bot-gastos/memoria.md` |
-| Plan automatización (referencia) | `/Users/jordi/Documents/Claude/Projects/Hub Financiero/plan_automatizacion_reportes.md` |
-| Instrucciones Hub Financiero | `/Users/jordi/Documents/Claude/Projects/Hub Financiero/CLAUDE.md` |
+### Auto-retry por mes calendario (descartado)
+**Qué era:** cuando `Mes=JUN26` devolvía 0 resultados, se reintentaba la query con `fecha_desde/fecha_hasta` del mes calendario equivalente.
+**Por qué se descartó:** el usuario aclaró que `JUN26` = ciclo de pago, no mes calendario. El auto-retry "ayudaba" de forma que contradecía la semántica del sistema. Si JUN26 está vacío, es la respuesta correcta.
+**Qué quedó:** el helper `_ciclo_a_rango_calendario(ciclo)` se mantiene en el código — puede ser útil en el futuro para algo más explícito.
+
+### Rutinas remotas CCR para reportes (reemplazadas)
+**Qué era:** reportes semanal y mensual disparados desde rutinas de Claude Code remoto.
+**Por qué se reemplazó:** las rutinas CCR no pueden hacer llamadas HTTP salientes desde Render. Los reportes nunca llegaban.
+**Solución:** APScheduler dentro del bot (ver arriba).
+
+### Rutina "Nuevo mes" con notificación al bot (simplificada)
+**Qué era:** la rutina de Claude Code "Nuevo mes" terminaba con un POST al bot notificando el nuevo ciclo.
+**Por qué se eliminó:** el endpoint `POST /propuesta_mes` existe en el bot, pero la notificación al bot no agrega valor — solo creaba una dependencia frágil. La rutina ahora solo crea recurrentes en Notion y termina.
 
 ---
 
-### Cómo trabajar con Jordi (recordatorio)
+## Backlog — features explorados, postergados indefinidamente
 
-- Respuestas directas, sin postambles ni recaps. Si hay duda, preguntar UNA sola cosa.
-- No confirmar de más — si ya está en CLAUDE.md o memoria.md, actuar directamente.
-- Cuando Jordi aclara su intención, **escuchar primero** antes de implementar lo que parezca más inteligente.
-- Deploy siempre en este orden: borrar webhook → push a GitHub → Manual Deploy en Render.
-- Nunca copy-paste de código — arrastrar archivos a GitHub para evitar comillas tipográficas.
+| Feature | Motivo de postergación |
+|---------|------------------------|
+| Reconciliación email BBVA (Gmail API + PDF) | Alta complejidad; requiere parsear PDFs de banco, cruzar con Notion. Versión futura. |
+| Búsqueda híbrida ciclo+calendario | Evaluar si tiene sentido cuando la pregunta es genuinamente ambigua — pero NO como comportamiento default. |
