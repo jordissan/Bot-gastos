@@ -2601,39 +2601,6 @@ CAMPOS:
         res = await asyncio.to_thread(ejecutar_consulta_finanzas, plan)
         datos = _formatear_datos_consulta(res)
 
-        # Auto-retry por mes calendario cuando el ciclo de pago devuelve vacío.
-        # Ejemplo: "gastos de JUN26" busca el ciclo JUN26 (compras ~12-May a 11-Jun),
-        # pero si el usuario compró el 26-Jun ese gasto queda en JUL26.
-        # En ese caso reintentamos por fecha real de compra dentro de junio calendario.
-        if (res["conteo"] == 0
-                and plan.get("meses")
-                and not plan.get("fecha_desde")
-                and not plan.get("historico")):
-            ciclos = plan["meses"]
-            fechas_ini, fechas_fin = [], []
-            for ciclo in ciclos:
-                fd, fh = _ciclo_a_rango_calendario(ciclo)
-                if fd and fh:
-                    fechas_ini.append(fd)
-                    fechas_fin.append(fh)
-            if fechas_ini:
-                plan_fecha = {
-                    **plan,
-                    "fecha_desde": min(fechas_ini).isoformat(),
-                    "fecha_hasta": max(fechas_fin).isoformat(),
-                    "meses": [],
-                }
-                res2 = await asyncio.to_thread(ejecutar_consulta_finanzas, plan_fecha)
-                if res2["conteo"] > 0:
-                    res = res2
-                    ciclos_str = "/".join(ciclos)
-                    datos = (
-                        f"📅 Nota: el ciclo de pago {ciclos_str} no tiene gastos en sí. "
-                        f"Mostrando gastos cuya FECHA DE COMPRA cae en ese mes calendario "
-                        f"({plan_fecha['fecha_desde']} → {plan_fecha['fecha_hasta']}):\n"
-                        + _formatear_datos_consulta(res2)
-                    )
-
     prompt_resp = f"""Eres el asistente del bot de gastos de Jordi y Nani. Responde en español mexicano, claro y directo (máx 3 oraciones). Usa $ con separador de miles. Emojis con moderación.
 
 Pregunta del usuario: "{texto}"
