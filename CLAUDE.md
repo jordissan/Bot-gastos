@@ -1,7 +1,7 @@
 # Bot Gastos — Contexto para Claude Code
 
 > Documento de estado actual del bot (no es un changelog). Describe **lo que el bot hace hoy**
-> y cómo está construido. Versión: **26.0.1**
+> y cómo está construido. Versión: **26.1.0**
 
 > **Esquema de versiones** — `MAJOR.MINOR.PATCH`
 > - **MAJOR**: feature set nuevo o cambio de dominio (nueva BD, nueva modalidad, capacidad estructural nueva). Ej: APScheduler, voz, metas.

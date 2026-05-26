@@ -26,6 +26,7 @@ GROQ_API_KEY          = os.environ.get("GROQ_API_KEY", "")
 RESEND_API_KEY        = os.environ.get("RESEND_API_KEY", "")
 REPORTE_EMAIL         = os.environ.get("REPORTE_EMAIL", "jor.jorwww@gmail.com")
 SHORTCUT_SECRET       = os.environ.get("SHORTCUT_SECRET", "")
+NOTION_MEMORIA_ID     = os.environ.get("NOTION_MEMORIA_ID", "")
 
 # ── GROQ LLM ──────────────────────────────────────────────────────────────────
 _groq_client = None
@@ -120,31 +121,169 @@ def _extraer_json(raw):
             return None
     return None
 
-# ── CONTEXTO DE CONVERSACION ──────────────────────────────────────────────────
-# Guarda el último gasto guardado por usuario para ediciones contextuales
-_ultimo_gasto_usuario = {}
+# ── MEMORIA CONVERSACIONAL PERSISTENTE ────────────────────────────────────────
+# RAM (instancia activa) + Notion (persiste entre reinicios de Render).
+# Estructura por uid:
+#   turns        → últimos 8 turnos [{r:"u"|"b", t:"texto"}]
+#   last_results → hasta 10 gastos del último query [{concepto,monto,notion_id,fecha}]
+#   last_query   → parámetros del último query
+#   last_gasto   → último gasto registrado {concepto,monto,notion_id,fecha}
+#   loaded       → True si ya se intentó cargar desde Notion esta sesión
+_memoria_ram: dict = {}
+_ultimo_gasto_usuario = {}  # Gasto COMPLETO para edición contextual (mantiene todos los campos)
+
+def _mem_init(uid: int) -> dict:
+    if uid not in _memoria_ram:
+        _memoria_ram[uid] = {
+            "turns": [], "last_results": [], "last_query": {},
+            "last_gasto": {}, "loaded": False,
+        }
+    return _memoria_ram[uid]
+
+# ── I/O Notion (síncronos; llamar con asyncio.to_thread) ─────────────────────
+
+def _leer_memoria_notion(uid: int) -> dict:
+    if not NOTION_MEMORIA_ID:
+        return {}
+    try:
+        rows = query_notion_db(NOTION_MEMORIA_ID, {"property": "uid", "number": {"equals": uid}})
+        if not rows:
+            return {}
+        rt = rows[0]["properties"].get("memoria", {}).get("rich_text", [])
+        raw = "".join(t.get("plain_text", "") for t in rt)
+        return json.loads(raw) if raw else {}
+    except Exception as e:
+        logger.warning(f"[Mem] leer uid={uid}: {e}")
+        return {}
+
+def _escribir_memoria_notion(uid: int, data: dict):
+    if not NOTION_MEMORIA_ID:
+        return
+    try:
+        raw = json.dumps(data, ensure_ascii=False)
+        if len(raw) > 1900:
+            tr = {**data, "turns": data.get("turns", [])[-4:]}
+            raw = json.dumps(tr, ensure_ascii=False)[:1900]
+        now = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        props = {
+            "memoria":    {"rich_text": [{"type": "text", "text": {"content": raw}}]},
+            "updated_at": {"date": {"start": now}},
+        }
+        rows = query_notion_db(NOTION_MEMORIA_ID, {"property": "uid", "number": {"equals": uid}})
+        if rows:
+            notion_request("PATCH", f"{NOTION_API_BASE}/pages/{rows[0]['id']}",
+                headers=nh(), json={"properties": props}, timeout=NOTION_T_DEFAULT)
+        else:
+            nombre = USUARIOS_NOMBRES.get(uid, str(uid))
+            notion_request("POST", f"{NOTION_API_BASE}/pages", headers=nh(), json={
+                "parent": {"database_id": NOTION_MEMORIA_ID},
+                "properties": {
+                    "Name": {"title": [{"type": "text", "text": {"content": nombre}}]},
+                    "uid":  {"number": uid},
+                    **props,
+                },
+            }, timeout=NOTION_T_DEFAULT)
+    except Exception as e:
+        logger.warning(f"[Mem] escribir uid={uid}: {e}")
+
+# ── API pública ───────────────────────────────────────────────────────────────
+
+async def mem_cargar(uid: int):
+    """Cold-start: carga Notion → RAM. No-op si ya se cargó esta sesión."""
+    m = _mem_init(uid)
+    if m["loaded"]:
+        return
+    try:
+        data = await asyncio.to_thread(_leer_memoria_notion, uid)
+        if data:
+            m["turns"]        = data.get("turns", [])[-8:]
+            m["last_results"] = data.get("last_results", [])
+            m["last_query"]   = data.get("last_query", {})
+            m["last_gasto"]   = data.get("last_gasto", {})
+            # TTL: resultados con más de 2 horas = stale, se descartan
+            updated = data.get("updated_at", "")
+            if updated:
+                try:
+                    delta = (datetime.datetime.utcnow() -
+                             datetime.datetime.fromisoformat(updated.replace("Z", ""))).total_seconds()
+                    if delta > 7200:
+                        m["last_results"] = []
+                        m["last_query"]   = {}
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"[Mem] cargar uid={uid}: {e}")
+    finally:
+        m["loaded"] = True
+
+async def mem_guardar(uid: int):
+    """Persiste RAM → Notion en background (no bloquea al usuario)."""
+    m = _mem_init(uid)
+    data = {
+        "turns":        m["turns"][-8:],
+        "last_results": m["last_results"][:10],
+        "last_query":   m["last_query"],
+        "last_gasto":   m["last_gasto"],
+        "updated_at":   datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    await asyncio.to_thread(_escribir_memoria_notion, uid, data)
+
+def mem_add_turn(uid: int, role: str, text: str):
+    m = _mem_init(uid)
+    m["turns"].append({"r": role[0], "t": text[:200]})
+    if len(m["turns"]) > 8:
+        m["turns"] = m["turns"][-8:]
+
+def mem_get_turns(uid: int) -> list:
+    """Historial en formato [{role, content}] listo para el prompt de Groq."""
+    return [{"role": "user" if t["r"] == "u" else "assistant", "content": t["t"]}
+            for t in _mem_init(uid)["turns"]]
+
+def mem_set_results(uid: int, results: list, query: dict = None):
+    """Guarda gastos del último query para referencias como 'dame el link', 'el más caro'."""
+    m = _mem_init(uid)
+    m["last_results"] = [
+        {"concepto": r.get("concepto", ""), "monto": r.get("monto", 0),
+         "notion_id": r.get("notion_id", ""), "fecha": str(r.get("fecha", ""))}
+        for r in results[:10] if r.get("notion_id")
+    ]
+    if query:
+        m["last_query"] = query
+
+def mem_get_results(uid: int) -> list:
+    return _mem_init(uid)["last_results"]
+
+def mem_set_gasto(uid: int, gasto: dict):
+    """Guarda el último gasto registrado (simplificado, para links y eliminación)."""
+    m = _mem_init(uid)
+    m["last_gasto"] = {
+        "concepto":  gasto.get("concepto", ""),
+        "monto":     gasto.get("monto", 0),
+        "notion_id": gasto.get("notion_id", ""),
+        "fecha":     str(gasto.get("fecha", "")),
+    }
+
+def mem_get_gasto(uid: int) -> dict:
+    return _mem_init(uid)["last_gasto"]
+
+# ── Aliases de compatibilidad (el código existente no cambia) ─────────────────
 
 def guardar_contexto(user_id: int, gasto: dict):
-    """Guarda el último gasto completo del usuario para uso contextual."""
-    _ultimo_gasto_usuario[user_id] = gasto.copy()
+    _ultimo_gasto_usuario[user_id] = gasto.copy()  # completo, para edición
+    mem_set_gasto(user_id, gasto)                  # simplificado, para refs
 
 def obtener_contexto(user_id: int):
     return _ultimo_gasto_usuario.get(user_id)
 
-# Memoria conversacional: últimos 4 turnos por usuario (RAM, no persiste). Tarea 2.
-_historial_chat = {}
-
 def agregar_historial(uid: int, role: str, content: str):
-    h = _historial_chat.setdefault(uid, [])
-    h.append({"role": role, "content": content})
-    if len(h) > 4:
-        del h[0]
+    mem_add_turn(uid, role, content)
 
 def obtener_historial(uid: int) -> list:
-    return _historial_chat.get(uid, [])
+    return mem_get_turns(uid)
 
 def limpiar_historial(uid: int):
-    _historial_chat.pop(uid, None)
+    if uid in _memoria_ram:
+        _memoria_ram[uid]["turns"] = []
 
 USUARIOS_AUTORIZADOS = {8663298433, 8093171397}
 USUARIOS_NOMBRES     = {8663298433: "Jordi", 8093171397: "Nani"}
@@ -1568,6 +1707,7 @@ def ejecutar_consulta_finanzas(plan: dict) -> dict:
 
     res = {"meses": [], "total": 0.0, "conteo": 0,
            "por_dia": {}, "por_mes": {}, "por_categoria": {}, "top": [],
+           "gastos_raw": [],
            "fecha_desde": fecha_desde, "fecha_hasta": fecha_hasta,
            "historico": historico}
     todos = []
@@ -1599,6 +1739,8 @@ def ejecutar_consulta_finanzas(plan: dict) -> dict:
             if pr:
                 res["por_categoria"][pr] = res["por_categoria"].get(pr, 0) + monto
             todos.append((concepto, monto, fecha, anio))
+            res["gastos_raw"].append({"concepto": concepto, "monto": monto, "fecha": fecha,
+                                      "notion_id": g.get("id", "").replace("-", "")})
     elif fecha_desde or fecha_hasta:
         # ── Ruta por fecha real ──────────────────────────────────────────
         # Filtra directamente por la propiedad Fecha de Notion (ignora ciclo de mes).
@@ -1627,6 +1769,8 @@ def ejecutar_consulta_finanzas(plan: dict) -> dict:
             if pr:
                 res["por_categoria"][pr] = res["por_categoria"].get(pr, 0) + monto
             todos.append((concepto, monto, fecha, dia))
+            res["gastos_raw"].append({"concepto": concepto, "monto": monto, "fecha": fecha,
+                                      "notion_id": g.get("id", "").replace("-", "")})
     else:
         # ── Ruta por ciclo de mes (comportamiento original) ──────────────
         meses = [m.upper() for m in (plan.get("meses") or [])][:6] or [mes_activo_str()]
@@ -1654,8 +1798,11 @@ def ejecutar_consulta_finanzas(plan: dict) -> dict:
                 if pr:
                     res["por_categoria"][pr] = res["por_categoria"].get(pr, 0) + monto
                 todos.append((concepto, monto, fecha, mes))
+                res["gastos_raw"].append({"concepto": concepto, "monto": monto, "fecha": fecha,
+                                          "notion_id": g.get("id", "").replace("-", "")})
 
     res["top"] = sorted(todos, key=lambda x: x[1], reverse=True)[:8]
+    res["gastos_raw"] = sorted(res["gastos_raw"], key=lambda x: x["monto"], reverse=True)[:10]
     return res
 
 def _formatear_datos_consulta(res: dict) -> str:
@@ -2243,12 +2390,18 @@ Responde la pregunta usando SOLO estos datos. No inventes cifras. Si los datos e
 
     respuesta = await asyncio.to_thread(groq_completar, prompt_resp, 200)
     if respuesta:
-        agregar_historial(user_id, "user", texto)
-        agregar_historial(user_id, "assistant", respuesta)
+        mem_add_turn(user_id, "u", texto)
+        mem_add_turn(user_id, "b", respuesta)
+        # Guardar gastos_raw del query para referencias futuras ("dame el link", "el más caro")
+        if res.get("gastos_raw"):
+            mem_set_results(user_id, res["gastos_raw"], plan)
+        asyncio.create_task(mem_guardar(user_id))
         await update.message.reply_text(respuesta)
         return True
     # Fallback: si el segundo LLM falla pero sí hubo datos, responde lo básico
     if res["conteo"]:
+        if res.get("gastos_raw"):
+            mem_set_results(user_id, res["gastos_raw"], plan)
         await update.message.reply_text(f"💰 Total: ${res['total']:,.0f} en {res['conteo']} gastos ({', '.join(res['meses'])})")
         return True
     return False
@@ -2513,7 +2666,8 @@ async def registrar_y_notificar(update, context, gasto):
     gasto_completo = {**gasto, "notion_id": nid}
     uid = update.effective_user.id
     threading.Thread(target=guardar_historial_notion, args=(gasto_completo, uid), daemon=True).start()
-    guardar_contexto(uid, gasto_completo)
+    guardar_contexto(uid, gasto_completo)  # actualiza _ultimo_gasto_usuario + mem_set_gasto
+    asyncio.create_task(mem_guardar(uid))  # persiste a Notion en background
     asyncio.create_task(generar_insight_groq(gasto_completo, uid, context))
     asyncio.create_task(verificar_hormiga(gasto_completo, uid, context))
     asyncio.create_task(detectar_anomalia(gasto_completo, uid, context))
@@ -2828,7 +2982,110 @@ async def _registrar_multiples(update, context, gastos, uid):
                 parse_mode="Markdown"
             )
 
+async def _manejar_referencia(texto: str, uid: int, update, context) -> bool:
+    """
+    Detecta mensajes que referencian el contexto anterior sin ser un gasto nuevo.
+    Maneja: links de Notion, eliminar, el más caro/barato.
+    Retorna True si respondió (shortcircuit), False para continuar flujo normal.
+    """
+    t = texto.lower().strip()
+
+    # ── "dame el link" / "link de notion" ────────────────────────────────────
+    es_link = any(p in t for p in [
+        "dame el link", "dáme el link", "dame links", "los links",
+        "link de notion", "link del", "ver en notion", "ábreme", "abre el link",
+    ])
+    if es_link:
+        results  = mem_get_results(uid)
+        last_g   = mem_get_gasto(uid)
+        items    = results if results else ([last_g] if last_g.get("notion_id") else [])
+        if not items:
+            await update.message.reply_text("🤷 No tengo resultados recientes. Haz una consulta primero.")
+            return True
+        # Filtros de ítem específico
+        if any(p in t for p in ["primer", "primero"]):
+            items = items[:1]
+        elif any(p in t for p in ["segundo"]):
+            items = items[1:2] if len(items) > 1 else items[:1]
+        elif any(p in t for p in ["último", "ultimo", "el último"]):
+            items = items[-1:]
+        elif not any(p in t for p in ["ambos", "los dos", "todos", "todas"]):
+            items = items[:3]  # máximo 3 si no especifica
+        links = []
+        for item in items:
+            nid = item.get("notion_id", "")
+            if nid:
+                url = f"https://notion.so/{nid}"
+                links.append(f"• [{item.get('concepto','Gasto')} ${item.get('monto',0):,.0f}]({url})")
+        if links:
+            await update.message.reply_text(
+                "\n".join(links), parse_mode="Markdown", disable_web_page_preview=True)
+        else:
+            await update.message.reply_text("⚠️ No encontré IDs de Notion en los resultados recientes.")
+        return True
+
+    # ── "elimínalo" / "bórralo" → last_gasto ─────────────────────────────────
+    es_eliminar = any(p in t for p in [
+        "elimínalo", "elimínala", "bórralo", "bórrala",
+        "eliminalo", "borralo", "elimina el último", "borra el último",
+    ])
+    if es_eliminar:
+        last_g = mem_get_gasto(uid)
+        if not last_g.get("notion_id"):
+            # También revisar _ultimo_gasto_usuario como fallback
+            ug = obtener_contexto(uid)
+            if ug and ug.get("notion_id"):
+                last_g = {"concepto": ug.get("concepto",""), "monto": ug.get("monto",0),
+                          "notion_id": ug.get("notion_id",""), "fecha": str(ug.get("fecha",""))}
+        if not last_g.get("notion_id"):
+            await update.message.reply_text(
+                "🤷 No sé a qué gasto te refieres. Usa /eliminar para buscarlo.")
+            return True
+        context.user_data["gasto_eliminar"] = last_g
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🗑️ Sí, eliminar", callback_data="elim_si"),
+            InlineKeyboardButton("❌ No",            callback_data="elim_no"),
+        ]])
+        await update.message.reply_text(
+            f"¿Eliminar *{last_g['concepto']}* ${last_g['monto']:,.2f}?",
+            reply_markup=kb, parse_mode="Markdown")
+        return True
+
+    # ── "el más caro" / "el más barato" → operación sobre last_results ───────
+    if any(p in t for p in ["más caro", "el mayor", "el más alto"]):
+        results = mem_get_results(uid)
+        if not results:
+            return False
+        top = max(results, key=lambda r: r.get("monto", 0))
+        nid = top.get("notion_id", "")
+        msg = f"💰 El más caro: *{top['concepto']}* ${top['monto']:,.0f}"
+        if nid:
+            msg += f"\n[Ver en Notion](https://notion.so/{nid})"
+        await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
+        return True
+
+    if any(p in t for p in ["más barato", "el menor", "el más chico", "el más económico"]):
+        results = mem_get_results(uid)
+        if not results:
+            return False
+        low = min(results, key=lambda r: r.get("monto", 0))
+        nid = low.get("notion_id", "")
+        msg = f"💸 El más barato: *{low['concepto']}* ${low['monto']:,.0f}"
+        if nid:
+            msg += f"\n[Ver en Notion](https://notion.so/{nid})"
+        await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
+        return True
+
+    return False
+
 async def _procesar_conversacion(update, context, texto, uid):
+    # 0) Cargar memoria persistente (no-op si ya está en RAM esta sesión)
+    await mem_cargar(uid)
+
+    # 0.5) Pre-proceso: detectar referencias al contexto anterior antes de clasificar
+    if await _manejar_referencia(texto, uid, update, context):
+        return ConversationHandler.END
+
     # 1) Clasificar con Groq cuando el mensaje NO tiene formato estricto.
     #    Distingue gasto / consulta / edición → evita registrar gastos al preguntar.
     gasto_groq = None
@@ -3602,6 +3859,63 @@ async def cmd_top(update, context):
 
 MX_TZ = pytz.timezone("America/Mexico_City")
 
+# ── AUTO-CREACIÓN DE NOTION_MEMORIA_ID ───────────────────────────────────────
+
+async def _inicializar_memoria_db():
+    """
+    Si NOTION_MEMORIA_ID no está configurado, intenta crear la base de datos
+    'Memoria Bot' en Notion usando el mismo parent que Historial Bot.
+    Loguea el ID resultante → el usuario lo añade como env var en Render.
+    """
+    global NOTION_MEMORIA_ID
+    if NOTION_MEMORIA_ID:
+        logger.info(f"[Mem] NOTION_MEMORIA_ID configurado: {NOTION_MEMORIA_ID}")
+        return
+    if not NOTION_TOKEN:
+        logger.warning("[Mem] NOTION_TOKEN no disponible — Memoria Bot no se puede crear")
+        return
+    try:
+        # Obtener el parent page del Historial Bot
+        r = await asyncio.to_thread(
+            notion_request, "GET",
+            f"{NOTION_API_BASE}/databases/{NOTION_HISTORIAL_ID}",
+            headers=nh(), timeout=NOTION_T_DEFAULT
+        )
+        if not r or r.status_code != 200:
+            logger.warning(f"[Mem] No se pudo obtener info de Historial Bot: {r.status_code if r else 'None'}")
+            return
+        parent = r.json().get("parent", {})
+        parent_page_id = parent.get("page_id")
+        if not parent_page_id:
+            logger.warning("[Mem] Historial Bot no tiene page_id como parent")
+            return
+        # Crear la base de datos Memoria Bot
+        create_r = await asyncio.to_thread(
+            notion_request, "POST",
+            f"{NOTION_API_BASE}/databases",
+            headers=nh(),
+            json={
+                "parent": {"type": "page_id", "page_id": parent_page_id},
+                "title": [{"type": "text", "text": {"content": "Memoria Bot"}}],
+                "properties": {
+                    "Name":       {"title": {}},
+                    "uid":        {"number": {}},
+                    "memoria":    {"rich_text": {}},
+                    "updated_at": {"date": {}},
+                },
+            },
+            timeout=NOTION_T_DEFAULT
+        )
+        if create_r and create_r.status_code == 200:
+            db_id = create_r.json()["id"].replace("-", "")
+            NOTION_MEMORIA_ID = db_id
+            logger.info(f"[Mem] ✅ Memoria Bot creada. Agrega en Render: NOTION_MEMORIA_ID={db_id}")
+        else:
+            status = create_r.status_code if create_r else "None"
+            logger.error(f"[Mem] Error creando Memoria Bot: {status}")
+    except Exception as e:
+        logger.error(f"[Mem] _inicializar_memoria_db: {e}")
+
 async def job_reporte_semanal():
     """Job APScheduler: reporte semanal — lunes 9am MX"""
     try:
@@ -4128,6 +4442,7 @@ def main():
     loop.run_until_complete(app.initialize())
     loop.run_until_complete(setup_webhook(app))
     loop.run_until_complete(app.start())
+    loop.run_until_complete(_inicializar_memoria_db())
     app.update_processor._loop = loop
 
     # ── APScheduler ──────────────────────────────────────────────────────────
@@ -4149,7 +4464,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_final25…")
+    logger.info("Bot corriendo 26.1.0 — memoria persistente activa")
     server.serve_forever()
 
 if __name__ == "__main__":
