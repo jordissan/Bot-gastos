@@ -27,7 +27,7 @@ RESEND_API_KEY        = os.environ.get("RESEND_API_KEY", "")
 REPORTE_EMAIL         = os.environ.get("REPORTE_EMAIL", "jor.jorwww@gmail.com")
 SHORTCUT_SECRET       = os.environ.get("SHORTCUT_SECRET", "")
 # Memoria persistente: filas especiales en NOTION_HISTORIAL_ID con UsuarioID=0
-# Concepto = __MEM_{uid}__ · JSON en campo NotionID · ya existen en Notion
+# Concepto = MEM_{uid} · JSON en campo NotionID · filas ya existen en Historial Bot
 
 # ── GROQ LLM ──────────────────────────────────────────────────────────────────
 _groq_client = None
@@ -144,11 +144,11 @@ def _mem_init(uid: int) -> dict:
 # ── I/O Notion (síncronos; llamar con asyncio.to_thread) ─────────────────────
 
 def _leer_memoria_notion(uid: int) -> dict:
-    """Lee memoria desde la fila __MEM_{uid}__ en Historial Bot (UsuarioID=0)."""
+    """Lee memoria desde la fila MEM_{uid} en Historial Bot (UsuarioID=0)."""
     try:
         rows = query_notion_db(NOTION_HISTORIAL_ID, {"and": [
             {"property": "UsuarioID", "number": {"equals": 0}},
-            {"property": "Concepto",  "title":  {"equals": f"__MEM_{uid}__"}},
+            {"property": "Concepto",  "title":  {"equals": f"MEM_{uid}"}},
         ]})
         if not rows:
             return {}
@@ -160,7 +160,7 @@ def _leer_memoria_notion(uid: int) -> dict:
         return {}
 
 def _escribir_memoria_notion(uid: int, data: dict):
-    """Escribe memoria en la fila __MEM_{uid}__ en Historial Bot (campo NotionID)."""
+    """Escribe memoria en la fila MEM_{uid} en Historial Bot (campo NotionID)."""
     try:
         raw = json.dumps(data, ensure_ascii=False)
         if len(raw) > 1900:
@@ -171,7 +171,7 @@ def _escribir_memoria_notion(uid: int, data: dict):
         }
         rows = query_notion_db(NOTION_HISTORIAL_ID, {"and": [
             {"property": "UsuarioID", "number": {"equals": 0}},
-            {"property": "Concepto",  "title":  {"equals": f"__MEM_{uid}__"}},
+            {"property": "Concepto",  "title":  {"equals": f"MEM_{uid}"}},
         ]})
         if rows:
             notion_request("PATCH", f"{NOTION_API_BASE}/pages/{rows[0]['id']}",
@@ -182,7 +182,7 @@ def _escribir_memoria_notion(uid: int, data: dict):
             notion_request("POST", f"{NOTION_API_BASE}/pages", headers=nh(), json={
                 "parent": {"database_id": NOTION_HISTORIAL_ID},
                 "properties": {
-                    "Concepto":  {"title":     [{"type": "text", "text": {"content": f"__MEM_{uid}__"}}]},
+                    "Concepto":  {"title":     [{"type": "text", "text": {"content": f"MEM_{uid}"}}]},
                     "UsuarioID": {"number":    0},
                     "Tarjeta":   {"rich_text": [{"type": "text", "text": {"content": "MEMORIA_BOT"}}]},
                     "Mes":       {"rich_text": [{"type": "text", "text": {"content": nombre}}]},
