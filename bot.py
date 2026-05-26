@@ -26,7 +26,8 @@ GROQ_API_KEY          = os.environ.get("GROQ_API_KEY", "")
 RESEND_API_KEY        = os.environ.get("RESEND_API_KEY", "")
 REPORTE_EMAIL         = os.environ.get("REPORTE_EMAIL", "jor.jorwww@gmail.com")
 SHORTCUT_SECRET       = os.environ.get("SHORTCUT_SECRET", "")
-NOTION_MEMORIA_ID     = os.environ.get("NOTION_MEMORIA_ID", "")
+# Memoria persistente: filas especiales en NOTION_HISTORIAL_ID con UsuarioID=0
+# Concepto = __MEM_{uid}__ · JSON en campo NotionID · ya existen en Notion
 
 # ── GROQ LLM ──────────────────────────────────────────────────────────────────
 _groq_client = None
@@ -143,13 +144,15 @@ def _mem_init(uid: int) -> dict:
 # ── I/O Notion (síncronos; llamar con asyncio.to_thread) ─────────────────────
 
 def _leer_memoria_notion(uid: int) -> dict:
-    if not NOTION_MEMORIA_ID:
-        return {}
+    """Lee memoria desde la fila __MEM_{uid}__ en Historial Bot (UsuarioID=0)."""
     try:
-        rows = query_notion_db(NOTION_MEMORIA_ID, {"property": "uid", "number": {"equals": uid}})
+        rows = query_notion_db(NOTION_HISTORIAL_ID, {"and": [
+            {"property": "UsuarioID", "number": {"equals": 0}},
+            {"property": "Concepto",  "title":  {"equals": f"__MEM_{uid}__"}},
+        ]})
         if not rows:
             return {}
-        rt = rows[0]["properties"].get("memoria", {}).get("rich_text", [])
+        rt = rows[0]["properties"].get("NotionID", {}).get("rich_text", [])
         raw = "".join(t.get("plain_text", "") for t in rt)
         return json.loads(raw) if raw else {}
     except Exception as e:
@@ -157,29 +160,32 @@ def _leer_memoria_notion(uid: int) -> dict:
         return {}
 
 def _escribir_memoria_notion(uid: int, data: dict):
-    if not NOTION_MEMORIA_ID:
-        return
+    """Escribe memoria en la fila __MEM_{uid}__ en Historial Bot (campo NotionID)."""
     try:
         raw = json.dumps(data, ensure_ascii=False)
         if len(raw) > 1900:
             tr = {**data, "turns": data.get("turns", [])[-4:]}
             raw = json.dumps(tr, ensure_ascii=False)[:1900]
-        now = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
         props = {
-            "memoria":    {"rich_text": [{"type": "text", "text": {"content": raw}}]},
-            "updated_at": {"date": {"start": now}},
+            "NotionID": {"rich_text": [{"type": "text", "text": {"content": raw}}]},
         }
-        rows = query_notion_db(NOTION_MEMORIA_ID, {"property": "uid", "number": {"equals": uid}})
+        rows = query_notion_db(NOTION_HISTORIAL_ID, {"and": [
+            {"property": "UsuarioID", "number": {"equals": 0}},
+            {"property": "Concepto",  "title":  {"equals": f"__MEM_{uid}__"}},
+        ]})
         if rows:
             notion_request("PATCH", f"{NOTION_API_BASE}/pages/{rows[0]['id']}",
                 headers=nh(), json={"properties": props}, timeout=NOTION_T_DEFAULT)
         else:
+            # Fallback: crear la fila si no existe
             nombre = USUARIOS_NOMBRES.get(uid, str(uid))
             notion_request("POST", f"{NOTION_API_BASE}/pages", headers=nh(), json={
-                "parent": {"database_id": NOTION_MEMORIA_ID},
+                "parent": {"database_id": NOTION_HISTORIAL_ID},
                 "properties": {
-                    "Name": {"title": [{"type": "text", "text": {"content": nombre}}]},
-                    "uid":  {"number": uid},
+                    "Concepto":  {"title":     [{"type": "text", "text": {"content": f"__MEM_{uid}__"}}]},
+                    "UsuarioID": {"number":    0},
+                    "Tarjeta":   {"rich_text": [{"type": "text", "text": {"content": "MEMORIA_BOT"}}]},
+                    "Mes":       {"rich_text": [{"type": "text", "text": {"content": nombre}}]},
                     **props,
                 },
             }, timeout=NOTION_T_DEFAULT)
@@ -3859,63 +3865,6 @@ async def cmd_top(update, context):
 
 MX_TZ = pytz.timezone("America/Mexico_City")
 
-# ── AUTO-CREACIÓN DE NOTION_MEMORIA_ID ───────────────────────────────────────
-
-async def _inicializar_memoria_db():
-    """
-    Si NOTION_MEMORIA_ID no está configurado, intenta crear la base de datos
-    'Memoria Bot' en Notion usando el mismo parent que Historial Bot.
-    Loguea el ID resultante → el usuario lo añade como env var en Render.
-    """
-    global NOTION_MEMORIA_ID
-    if NOTION_MEMORIA_ID:
-        logger.info(f"[Mem] NOTION_MEMORIA_ID configurado: {NOTION_MEMORIA_ID}")
-        return
-    if not NOTION_TOKEN:
-        logger.warning("[Mem] NOTION_TOKEN no disponible — Memoria Bot no se puede crear")
-        return
-    try:
-        # Obtener el parent page del Historial Bot
-        r = await asyncio.to_thread(
-            notion_request, "GET",
-            f"{NOTION_API_BASE}/databases/{NOTION_HISTORIAL_ID}",
-            headers=nh(), timeout=NOTION_T_DEFAULT
-        )
-        if not r or r.status_code != 200:
-            logger.warning(f"[Mem] No se pudo obtener info de Historial Bot: {r.status_code if r else 'None'}")
-            return
-        parent = r.json().get("parent", {})
-        parent_page_id = parent.get("page_id")
-        if not parent_page_id:
-            logger.warning("[Mem] Historial Bot no tiene page_id como parent")
-            return
-        # Crear la base de datos Memoria Bot
-        create_r = await asyncio.to_thread(
-            notion_request, "POST",
-            f"{NOTION_API_BASE}/databases",
-            headers=nh(),
-            json={
-                "parent": {"type": "page_id", "page_id": parent_page_id},
-                "title": [{"type": "text", "text": {"content": "Memoria Bot"}}],
-                "properties": {
-                    "Name":       {"title": {}},
-                    "uid":        {"number": {}},
-                    "memoria":    {"rich_text": {}},
-                    "updated_at": {"date": {}},
-                },
-            },
-            timeout=NOTION_T_DEFAULT
-        )
-        if create_r and create_r.status_code == 200:
-            db_id = create_r.json()["id"].replace("-", "")
-            NOTION_MEMORIA_ID = db_id
-            logger.info(f"[Mem] ✅ Memoria Bot creada. Agrega en Render: NOTION_MEMORIA_ID={db_id}")
-        else:
-            status = create_r.status_code if create_r else "None"
-            logger.error(f"[Mem] Error creando Memoria Bot: {status}")
-    except Exception as e:
-        logger.error(f"[Mem] _inicializar_memoria_db: {e}")
-
 async def job_reporte_semanal():
     """Job APScheduler: reporte semanal — lunes 9am MX"""
     try:
@@ -4442,7 +4391,6 @@ def main():
     loop.run_until_complete(app.initialize())
     loop.run_until_complete(setup_webhook(app))
     loop.run_until_complete(app.start())
-    loop.run_until_complete(_inicializar_memoria_db())
     app.update_processor._loop = loop
 
     # ── APScheduler ──────────────────────────────────────────────────────────
