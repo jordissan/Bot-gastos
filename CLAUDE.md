@@ -379,3 +379,39 @@ Archivos externos relacionados:
 - Siempre verificar fecha real del sistema. "Ayer" = día anterior real.
 - Deploy en orden: borrar webhook → push a GitHub → Manual Deploy en Render.
 - GitHub: arrastrar archivos — nunca copy-paste (evita comillas tipográficas que rompen el código Python).
+
+---
+
+## ⚠️ PROTOCOLO DE CIERRE DE SESIÓN — ejecutar siempre, sin esperar que Jordi lo pida
+
+Al terminar cualquier sesión en la que se haya tocado código o tomado decisiones, actualizar los
+documentos antes del último commit. **Jordi no debería tener que pedir esto nunca.**
+
+### Qué actualizar según lo que se hizo
+
+| Si en esta sesión... | Actualizar |
+|----------------------|------------|
+| Cualquier cambio (siempre) | `handoff.md` — sobreescribir con estado actual |
+| Se tomó una decisión de diseño, se aclaró un concepto, se descartó algo con razonamiento | `memoria.md` — agregar entrada nueva al inicio |
+| Cambió una función clave, un endpoint, una capacidad del bot, la versión | `CLAUDE.md` — sección correspondiente |
+| Se descubrió/corrigió un tipo de campo en Notion, cambió un ID, se agregó un dict | `NOTION_SCHEMA.md` |
+| Cambió una regla de categorización, tarjeta, ciclo, o caso especial | `REGLAS_NEGOCIO.md` |
+| Se encontró y resolvió un fallo nuevo no documentado antes | `DEBUGGING.md` — agregar síntoma + solución |
+| Se agregó una feature que necesita verificación | `TESTING.md` — agregar caso de test |
+
+### Cómo cerrar bien una sesión
+
+1. Actualizar los archivos `.md` que correspondan (tabla arriba).
+2. Actualizar `handoff.md` con el commit hash final, estado del deploy y próximos pasos.
+3. Hacer commit de los docs junto con el código: `git add *.md && git commit`.
+4. Push a GitHub.
+
+### Qué va en cada archivo (resumen rápido)
+
+- **`handoff.md`** — el "qué": commit, deploy, cambios de esta sesión, qué verificar, qué sigue.
+- **`memoria.md`** — el "por qué": decisiones, conceptos, lecciones, cosas descartadas con razonamiento.
+- **`CLAUDE.md`** — el "cómo es": arquitectura actual, capacidades, funciones clave. Sin historia.
+- **`NOTION_SCHEMA.md`** — schema vivo de las BDs. Actualizar cuando cambia algún campo o ID.
+- **`REGLAS_NEGOCIO.md`** — reglas del dominio. Actualizar cuando Jordi aclara o cambia una regla.
+- **`DEBUGGING.md`** — base de conocimiento de fallos. Agregar cada problema nuevo resuelto.
+- **`TESTING.md`** — checklist de verificación. Agregar tests para cada feature nueva.

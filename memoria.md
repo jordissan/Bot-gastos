@@ -3,6 +3,10 @@
 > Acumula decisiones de diseño, conceptos clave del dominio y lecciones aprendidas.
 > **Nunca se borra** — se agrega al inicio de cada entrada nueva.
 > Para el estado operativo de la última sesión, ver `handoff.md`.
+>
+> **Actualizar al cierre de sesión** cuando: se tomó una decisión de diseño, se aclaró
+> un concepto del dominio, se descartó algo con razonamiento, o se aprendió una lección
+> que evita repetir un error. No esperar a que Jordi lo pida.
 
 ---
 

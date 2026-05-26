@@ -2,6 +2,10 @@
 
 > Se sobreescribe al final de cada sesión. Responde: ¿dónde quedó el proyecto?
 > Para arquitectura técnica: `CLAUDE.md`. Para decisiones y lecciones: `memoria.md`.
+>
+> **Al cerrar la sesión:** actualizar este archivo + los demás `.md` que correspondan según
+> lo que se hizo. Ver tabla en `CLAUDE.md → Protocolo de Cierre`. Luego commit + push.
+> Jordi no debería tener que pedir esto.
 
 ---
 
