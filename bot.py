@@ -1572,6 +1572,12 @@ Decide la intención y responde SOLO con JSON válido, sin texto adicional ni ma
   Ej: "pon meta Restaurantes 8000" → {{"tipo": "meta", "presupuesto": "Restaurantes", "limite": 8000}}
   Presupuestos válidos: {', '.join(PR.keys())} o TOTAL
 
+- Si el usuario declara el INGRESO ESTIMADO del mes (usa "esperamos ganar", "vamos a ganar", "ingreso del mes", "ingreso estimado", "recibiremos", "nuestro ingreso"):
+{{"tipo": "ingreso", "monto": número, "ciclo": "código MES+AA o null para el ciclo activo"}}
+  Ej: "este mes esperamos ganar 45000" → {{"tipo": "ingreso", "monto": 45000, "ciclo": null}}
+  Ej: "el ingreso de JUL26 es 52000" → {{"tipo": "ingreso", "monto": 52000, "ciclo": "JUL26"}}
+  Ej: "actualizamos el ingreso a 38000" → {{"tipo": "ingreso", "monto": 38000, "ciclo": null}}
+
 - Si el usuario quiere GUARDAR un atajo o alias personal (usa "recuerda que", "cuando digo", "de ahora en adelante", "guarda que"):
 {{"tipo": "alias", "trigger": "frase que dice el usuario", "resolved": "lo que significa"}}
   Ej: "recuerda que el café de siempre es Starbucks BBVA05" → {{"tipo": "alias", "trigger": "el café de siempre", "resolved": "Starbucks BBVA05"}}
@@ -1605,6 +1611,13 @@ IMPORTANTE: usa "multi_gasto" SOLO si hay 2+ gastos claramente distintos. Si es 
             except (ValueError, TypeError):
                 return ("otro", None)
             return ("meta", {"presupuesto": presupuesto, "limite": limite}) if limite > 0 else ("otro", None)
+        if tipo == "ingreso":
+            try:
+                monto_i = float(data.get("monto") or 0)
+            except (ValueError, TypeError):
+                return ("otro", None)
+            ciclo_i = (data.get("ciclo") or "").strip().upper() or None
+            return ("ingreso", {"monto": monto_i, "ciclo": ciclo_i}) if monto_i > 0 else ("otro", None)
         if tipo == "alias":
             trigger  = (data.get("trigger")  or "").strip()
             resolved = (data.get("resolved") or "").strip()
@@ -1708,6 +1721,7 @@ def ejecutar_consulta_finanzas(plan: dict) -> dict:
     categoria       = (plan.get("categoria")    or "").strip() or None
     subcategoria    = (plan.get("subcategoria") or "").strip() or None
     subcategoria_id = SC.get(subcategoria, "").replace("-", "") if subcategoria else None
+    tarjeta_filtro  = (plan.get("tarjeta")      or "").strip().upper() or None
     comercio        = normalizar(plan.get("comercio") or "") or None
     fecha_desde     = (plan.get("fecha_desde") or "").strip() or None
     fecha_hasta     = (plan.get("fecha_hasta") or "").strip() or None
@@ -1741,6 +1755,10 @@ def ejecutar_consulta_finanzas(plan: dict) -> dict:
             if subcategoria_id:
                 rel_sc = props.get("Subcategoria", {}).get("relation", [])
                 if not any(r.get("id", "").replace("-", "") == subcategoria_id for r in rel_sc):
+                    continue
+            if tarjeta_filtro:
+                t_notion = "".join(rt.get("plain_text", "") for rt in props.get("Tarjeta", {}).get("rich_text", [])).upper()
+                if tarjeta_filtro not in t_notion:
                     continue
             if comercio and comercio not in normalizar(concepto):
                 continue
@@ -1776,6 +1794,10 @@ def ejecutar_consulta_finanzas(plan: dict) -> dict:
                 rel_sc = props.get("Subcategoria", {}).get("relation", [])
                 if not any(r.get("id", "").replace("-", "") == subcategoria_id for r in rel_sc):
                     continue
+            if tarjeta_filtro:
+                t_notion = "".join(rt.get("plain_text", "") for rt in props.get("Tarjeta", {}).get("rich_text", [])).upper()
+                if tarjeta_filtro not in t_notion:
+                    continue
             if comercio and comercio not in normalizar(concepto):
                 continue
             res["total"] += monto
@@ -1810,6 +1832,10 @@ def ejecutar_consulta_finanzas(plan: dict) -> dict:
                     rel_sc = props.get("Subcategoria", {}).get("relation", [])
                     if not any(r.get("id", "").replace("-", "") == subcategoria_id for r in rel_sc):
                         continue
+                if tarjeta_filtro:
+                    t_notion = "".join(rt.get("plain_text", "") for rt in props.get("Tarjeta", {}).get("rich_text", [])).upper()
+                    if tarjeta_filtro not in t_notion:
+                        continue
                 if comercio and comercio not in normalizar(concepto):
                     continue
                 res["total"] += monto
@@ -1822,7 +1848,7 @@ def ejecutar_consulta_finanzas(plan: dict) -> dict:
                                           "notion_id": g.get("id", "").replace("-", "")})
 
     res["top"] = sorted(todos, key=lambda x: x[1], reverse=True)[:8]
-    res["gastos_raw"] = sorted(res["gastos_raw"], key=lambda x: x["monto"], reverse=True)[:10]
+    res["gastos_raw"] = sorted(res["gastos_raw"], key=lambda x: x["monto"], reverse=True)[:20]
     return res
 
 def _formatear_datos_consulta(res: dict) -> str:
@@ -1928,10 +1954,12 @@ def _promedio_mensual() -> dict:
         return {}
     return {"promedio": sum(totales) / len(totales), "meses": len(totales), "total": sum(totales)}
 
-def _gastos_recientes(n_meses: int = 3, categoria: str = None, meses_especificos: list = None) -> list:
+def _gastos_recientes(n_meses: int = 3, categoria: str = None, meses_especificos: list = None,
+                      subcategoria_id: str = None) -> list:
     """Lista de (concepto, monto, fecha) de los últimos n ciclos.
     Si se pasa meses_especificos, usa esos en vez de los últimos n meses.
     Si se pasa categoria, filtra por presupuesto.
+    Si se pasa subcategoria_id (ID limpio de SC), filtra por subcategoría.
     """
     items = []
     meses_a_consultar = meses_especificos if meses_especificos else _meses_recientes(n_meses)
@@ -1949,6 +1977,10 @@ def _gastos_recientes(n_meses: int = 3, categoria: str = None, meses_especificos
                 pr = _presupuesto_de_props(props)
                 if pr != categoria:
                     continue
+            if subcategoria_id:
+                rel_sc = props.get("Subcategoria", {}).get("relation", [])
+                if not any(r.get("id", "").replace("-", "") == subcategoria_id for r in rel_sc):
+                    continue
             items.append((concepto, monto, fecha))
     return items
 
@@ -1957,8 +1989,10 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
     plan puede incluir 'categoria' y 'meses' para filtrar en modos que lo soporten.
     """
     plan = plan or {}
-    categoria = (plan.get("categoria") or "").strip() or None
-    meses_plan = [m.upper() for m in (plan.get("meses") or [])] or None
+    categoria       = (plan.get("categoria")    or "").strip() or None
+    subcategoria    = (plan.get("subcategoria") or "").strip() or None
+    subcategoria_id = SC.get(subcategoria, "").replace("-", "") if subcategoria else None
+    meses_plan      = [m.upper() for m in (plan.get("meses") or [])] or None
 
     if modo == "por_anio":
         pa = _agg_por_anio()
@@ -1979,7 +2013,7 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
         cat = f", categoría {g['presupuesto']}" if g.get("presupuesto") else ""
         return f"El gasto {etq}: '{g['concepto']}' por ${g['monto']:,.2f} el {g['fecha']}{cat}."
     if modo == "ranking_categorias":
-        res = ejecutar_consulta_finanzas({"meses": meses_plan or _meses_recientes(3)})
+        res = ejecutar_consulta_finanzas({"meses": meses_plan or _meses_recientes(3), "subcategoria": subcategoria})
         if res["conteo"] == 0:
             return "Sin gastos en los últimos 3 meses."
         cats = sorted(res["por_categoria"].items(), key=lambda x: x[1], reverse=True)
@@ -1991,7 +2025,7 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
             meses_hist = _meses_recientes(12)
             totales_cat = []
             for mes in meses_hist:
-                r = ejecutar_consulta_finanzas({"meses": [mes], "categoria": categoria})
+                r = ejecutar_consulta_finanzas({"meses": [mes], "categoria": categoria, "subcategoria": subcategoria})
                 if r["total"] > 0:
                     totales_cat.append(r["total"])
             if not totales_cat:
@@ -2003,7 +2037,7 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
             return "Sin datos para calcular el promedio."
         return f"Promedio de gasto mensual: ${d['promedio']:,.0f} (sobre {d['meses']} meses con registro)."
     if modo == "dia_semana":
-        items = _gastos_recientes(3, categoria=categoria, meses_especificos=meses_plan)
+        items = _gastos_recientes(3, categoria=categoria, meses_especificos=meses_plan, subcategoria_id=subcategoria_id)
         entre = sum(m for c, m, f in items if f and _es_finde(f) is False)
         finde = sum(m for c, m, f in items if f and _es_finde(f) is True)
         ce = sum(1 for c, m, f in items if f and _es_finde(f) is False)
@@ -2014,23 +2048,24 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
                 f"Fines de semana (sáb-dom): ${finde:,.0f} en {cf} gastos.")
     if modo == "desviacion":
         activo = mes_activo_str()
-        if categoria:
-            # Comparar categoría en mes activo vs su promedio histórico
+        if categoria or subcategoria:
+            # Comparar categoría/subcategoría en mes activo vs su promedio histórico
             meses_hist = _meses_recientes(7)
             totales_cat = {}
             for mes in meses_hist:
-                r = ejecutar_consulta_finanzas({"meses": [mes], "categoria": categoria})
+                r = ejecutar_consulta_finanzas({"meses": [mes], "categoria": categoria, "subcategoria": subcategoria})
                 if r["total"] > 0:
                     totales_cat[mes] = r["total"]
             actual = totales_cat.get(activo, 0)
             otros = [v for k, v in totales_cat.items() if k != activo and v > 0]
+            filtro_str = subcategoria or categoria
             if not otros:
-                return f"Aún no tengo suficientes meses con gastos en {categoria} para comparar."
+                return f"Aún no tengo suficientes meses con gastos en {filtro_str} para comparar."
             prom = sum(otros) / len(otros)
             dif = actual - prom
             signo = "MÁS" if dif >= 0 else "MENOS"
-            return (f"Mes activo ({activo}) en {categoria}: ${actual:,.0f}. "
-                    f"Tu promedio histórico en {categoria}: ${prom:,.0f}. "
+            return (f"Mes activo ({activo}) en {filtro_str}: ${actual:,.0f}. "
+                    f"Tu promedio histórico en {filtro_str}: ${prom:,.0f}. "
                     f"Estás gastando ${abs(dif):,.0f} {signo} que tu promedio.")
         tot = _totales_por_ciclo()
         actual = tot.get(activo, 0)
@@ -2043,7 +2078,7 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
         return (f"Mes activo ({activo}): ${actual:,.0f}. Promedio de tus otros meses: ${prom:,.0f}. "
                 f"Estás gastando ${abs(dif):,.0f} {signo} que tu promedio.")
     if modo == "hormiga":
-        items = _gastos_recientes(3, categoria=categoria, meses_especificos=meses_plan)
+        items = _gastos_recientes(3, categoria=categoria, meses_especificos=meses_plan, subcategoria_id=subcategoria_id)
         chicos = [(c, m) for c, m, f in items if 0 < m < 150]
         total = sum(m for _, m in chicos)
         n_meses = len(meses_plan) if meses_plan else 3
@@ -2058,7 +2093,7 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
     if modo == "dia_mas_caro":
         # El día del mes con más gasto total
         meses_t = meses_plan or [mes_activo_str()]
-        items = _gastos_recientes(len(meses_t), categoria=categoria, meses_especificos=meses_t)
+        items = _gastos_recientes(len(meses_t), categoria=categoria, meses_especificos=meses_t, subcategoria_id=subcategoria_id)
         por_dia = {}
         for c, m, f in items:
             dia = f[:10] if f else None
@@ -2077,7 +2112,7 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
     if modo == "semana_mes":
         # Gasto agrupado por semana del mes (sem1=días 1-7, sem2=8-14, sem3=15-21, sem4=22+)
         meses_t = meses_plan or [mes_activo_str()]
-        items = _gastos_recientes(len(meses_t), categoria=categoria, meses_especificos=meses_t)
+        items = _gastos_recientes(len(meses_t), categoria=categoria, meses_especificos=meses_t, subcategoria_id=subcategoria_id)
         semanas = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
         rangos = {1: "días 1-7", 2: "días 8-14", 3: "días 15-21", 4: "días 22-31"}
         for c, m, f in items:
@@ -2129,23 +2164,23 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
                 f"En el último año: {n} visitas, ${total:,.0f} total.")
 
     if modo == "tendencia":
-        # Evolución mensual de una categoría (o total) en los últimos 6 meses
+        # Evolución mensual de una categoría/subcategoría (o total) en los últimos 6 meses
         meses_hist = list(reversed(_meses_recientes(6)))  # orden cronológico
         puntos = []
         for mes in meses_hist:
-            r = ejecutar_consulta_finanzas({"meses": [mes], "categoria": categoria})
+            r = ejecutar_consulta_finanzas({"meses": [mes], "categoria": categoria, "subcategoria": subcategoria})
             puntos.append((mes, r["total"]))
         while puntos and puntos[0][1] == 0:   # quitar ceros iniciales
             puntos.pop(0)
         if len(puntos) < 2:
-            cat_str = f" en {categoria}" if categoria else ""
+            cat_str = f" en {subcategoria or categoria}" if (subcategoria or categoria) else ""
             return f"No hay suficientes datos para ver la tendencia{cat_str}."
         mitad = len(puntos) // 2
         prom_antes = sum(v for _, v in puntos[:mitad]) / mitad
         prom_despues = sum(v for _, v in puntos[mitad:]) / (len(puntos) - mitad)
         cambio = ((prom_despues - prom_antes) / prom_antes * 100) if prom_antes else 0
         icono = "📈" if cambio > 5 else ("📉" if cambio < -5 else "➡️")
-        cat_str = f" en {categoria}" if categoria else ""
+        cat_str = f" en {subcategoria or categoria}" if (subcategoria or categoria) else ""
         detalle = ", ".join(f"{mes}=${v:,.0f}" for mes, v in puntos)
         return (f"Tendencia{cat_str}: {detalle}. "
                 f"{icono} {cambio:+.1f}% vs primeros meses del período.")
@@ -2159,12 +2194,12 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
         meses_anio = [f"{m}{anio_2d}" for m in orden if f"{m}{anio_2d}" in _meses_cache]
         if not meses_anio:
             return f"No encontré meses del año {anio_str} en los registros."
-        res = ejecutar_consulta_finanzas({"meses": meses_anio, "categoria": categoria})
+        res = ejecutar_consulta_finanzas({"meses": meses_anio, "categoria": categoria, "subcategoria": subcategoria})
         if not res["por_mes"]:
-            cat_str = f" en {categoria}" if categoria else ""
+            cat_str = f" en {subcategoria or categoria}" if (subcategoria or categoria) else ""
             return f"Sin gastos{cat_str} en {anio_str}."
         mejor = max(res["por_mes"], key=res["por_mes"].get)
-        cat_str = f" en {categoria}" if categoria else ""
+        cat_str = f" en {subcategoria or categoria}" if (subcategoria or categoria) else ""
         detalle = ", ".join(f"{m}=${v:,.0f}" for m, v in
                             sorted(res["por_mes"].items(),
                                    key=lambda x: orden.index(x[0][:3]) if x[0][:3] in orden else 99))
@@ -2206,7 +2241,7 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
     if modo == "dias_sin_gasto":
         # Cuántos días llevas sin gastar en una categoría (o en general)
         hoy_local = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
-        items = _gastos_recientes(3, categoria=categoria)
+        items = _gastos_recientes(3, categoria=categoria, subcategoria_id=subcategoria_id)
         con_fecha = [(c, m, f) for c, m, f in items if f]
         if not con_fecha:
             cat_str = f" en {categoria}" if categoria else ""
@@ -2223,7 +2258,7 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
         hoy_local = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
         activo    = mes_activo_str()
         meses_t   = meses_plan or [activo]
-        res = ejecutar_consulta_finanzas({"meses": meses_t, "categoria": categoria})
+        res = ejecutar_consulta_finanzas({"meses": meses_t, "categoria": categoria, "subcategoria": subcategoria})
         if res["total"] == 0:
             return "Sin gastos para calcular el promedio diario."
         if len(meses_t) == 1 and meses_t[0] == activo:
@@ -2284,6 +2319,136 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
                 f"({conteo} visitas, ~${promedio_mes:,.0f}/mes). "
                 f"Si lo eliminaras, ahorrarías ~${total:,.0f} al año.")
 
+    if modo == "msi_tracker":
+        # MSIs activos: parse "Concepto X/Total" en subcategoría MSI
+        msi_id = SC.get("MSI", "").replace("-", "")
+        hoy_iso = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).strftime("%Y-%m-%d")
+        gastos = query_notion_db(NOTION_DATABASE_ID, {"and": [
+            {"property": "Fecha", "date": {"on_or_after": "2020-01-01"}},
+            {"property": "Fecha", "date": {"on_or_before": hoy_iso}},
+        ]})
+        msi_map = {}
+        for g in gastos:
+            props = g.get("properties", {})
+            rel_sc = props.get("Subcategoria", {}).get("relation", [])
+            if not any(r.get("id", "").replace("-", "") == msi_id for r in rel_sc):
+                continue
+            titulo = props.get("Concepto", {}).get("title", [])
+            concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+            monto = props.get("Monto", {}).get("number", 0) or 0
+            mm = re.search(r'^(.+?)\s+(\d{1,2})\s*/\s*(\d{1,2})\s*$', concepto)
+            if not mm:
+                continue
+            base, actual, total = mm.group(1).strip(), int(mm.group(2)), int(mm.group(3))
+            clave = normalizar(base)
+            if clave not in msi_map or msi_map[clave]["actual"] < actual:
+                msi_map[clave] = {"concepto": base, "actual": actual, "total": total, "monto": monto}
+        if not msi_map:
+            return "No encontré MSIs en los registros. Recuerda usar el formato 'Concepto X/Total' al registrarlos."
+        activos = [v for v in msi_map.values() if v["actual"] < v["total"]]
+        terminados = [v for v in msi_map.values() if v["actual"] >= v["total"]]
+        if not activos:
+            return f"Todos los MSIs registrados están terminados ({len(terminados)} en total). 🎉"
+        activos.sort(key=lambda x: x["actual"] / x["total"])
+        total_mensual = sum(a["monto"] for a in activos)
+        partes = []
+        for a in activos:
+            restantes = a["total"] - a["actual"]
+            partes.append(
+                f"{a['concepto']}: pago {a['actual']}/{a['total']}, "
+                f"quedan {restantes} × ${a['monto']:,.0f} = ${restantes * a['monto']:,.0f} restante"
+            )
+        return (f"MSIs activos ({len(activos)}): {'; '.join(partes)}. "
+                f"Compromiso mensual en MSI: ${total_mensual:,.0f}/mes.")
+
+    if modo == "oportunidades_ahorro":
+        # Últimos 3 meses vs promedio histórico (6 meses anteriores) por categoría
+        meses_rec = _meses_recientes(3)
+        meses_hist_prev = _meses_recientes(9)[3:]  # 6 meses antes de los últimos 3
+        def _prom_cats(meses_lista):
+            acum, cnt = {}, 0
+            for mes in meses_lista:
+                r = ejecutar_consulta_finanzas({"meses": [mes]})
+                if r["total"] > 0:
+                    cnt += 1
+                    for cat, val in r["por_categoria"].items():
+                        acum[cat] = acum.get(cat, 0) + val
+            return {k: v / cnt for k, v in acum.items()} if cnt else {}
+        prom_rec  = _prom_cats(meses_rec)
+        prom_hist = _prom_cats(meses_hist_prev)
+        if not prom_rec or not prom_hist:
+            return "No hay suficientes datos históricos para calcular oportunidades de ahorro."
+        ops = []
+        for cat, rec in prom_rec.items():
+            hist = prom_hist.get(cat, 0)
+            if hist > 200 and rec > hist * 1.10:
+                exc = rec - hist
+                ops.append((cat, rec, hist, exc, exc * 12))
+        ops.sort(key=lambda x: x[3], reverse=True)
+        if not ops:
+            return "¡Buen control! No hay categorías significativamente por encima de tu promedio histórico."
+        partes = [
+            f"{c} ${rec:,.0f}/mes (hist. ${hist:,.0f}, exceso +${exc:,.0f} → ~${anual:,.0f}/año)"
+            for c, rec, hist, exc, anual in ops[:5]
+        ]
+        total_pot = sum(o[4] for o in ops[:5])
+        return (f"Oportunidades de ahorro (últimos 3 meses vs histórico): {'; '.join(partes)}. "
+                f"Potencial total de ahorro: ~${total_pot:,.0f}/año.")
+
+    if modo == "posicion_financiera":
+        # Ingreso estimado vs gasto real del ciclo activo
+        ciclo = mes_activo_str()
+        ingreso = None
+        for u in USUARIOS_AUTORIZADOS:
+            v = cargar_meta(u, "INGRESO", ciclo)
+            if v:
+                ingreso = v
+                break
+        gasto_r = ejecutar_consulta_finanzas({"meses": [ciclo]})
+        gastado = gasto_r["total"]
+        if not ingreso:
+            return (f"Gasto actual en {ciclo}: ${gastado:,.0f} en {gasto_r['conteo']} movimientos. "
+                    f"No hay ingreso estimado declarado para este ciclo. "
+                    f"Decláralo con: 'Este mes esperamos ganar $X'.")
+        resto = ingreso - gastado
+        pct   = (gastado / ingreso * 100) if ingreso else 0
+        hoy_l = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+        dias_e = max(hoy_l.day, 1)
+        proj   = gastado / dias_e * 30
+        ahorro_proy = ingreso - proj
+        return (f"Ciclo {ciclo}: gastado ${gastado:,.0f} de ${ingreso:,.0f} estimados ({pct:.0f}%). "
+                f"Saldo libre: ${resto:,.0f}. "
+                f"Al ritmo actual proyectas gastar ~${proj:,.0f} este mes "
+                f"→ ahorro estimado ~${ahorro_proy:,.0f}.")
+
+    if modo == "tendencia_ingresos":
+        # Ingresos declarados vs gasto por ciclo en los últimos 6 meses
+        meses_hist = list(reversed(_meses_recientes(6)))
+        puntos = []
+        for mes in meses_hist:
+            ingreso = None
+            for u in USUARIOS_AUTORIZADOS:
+                v = cargar_meta(u, "INGRESO", mes)
+                if v:
+                    ingreso = v
+                    break
+            gasto_r = ejecutar_consulta_finanzas({"meses": [mes]})
+            if ingreso or gasto_r["total"] > 0:
+                puntos.append((mes, gasto_r["total"], ingreso))
+        while puntos and puntos[0][1] == 0 and not puntos[0][2]:
+            puntos.pop(0)
+        if not puntos:
+            return "No hay datos suficientes para comparar ingresos y gastos históricos."
+        partes = []
+        for mes, gasto, ingreso in puntos:
+            if ingreso:
+                pct = (gasto / ingreso * 100)
+                diff = ingreso - gasto
+                partes.append(f"{mes}: gastado ${gasto:,.0f} / estimado ${ingreso:,.0f} ({pct:.0f}%, {'ahorrado' if diff >= 0 else 'excedido'} ${abs(diff):,.0f})")
+            else:
+                partes.append(f"{mes}: gastado ${gasto:,.0f} (sin ingreso declarado)")
+        return f"Ingresos estimados vs gasto (últimos 6 ciclos): {'; '.join(partes)}."
+
     return None
 
 def _es_finde(fecha_iso: str):
@@ -2323,7 +2488,16 @@ async def responder_consulta_groq(texto: str, user_id: int, update, context) -> 
     if hist:
         ctx = "\n".join(f"{m['role']}: {m['content']}" for m in hist[-4:])
         bloque_hist = (f"\nContexto reciente de la conversación (úsalo para resolver referencias como "
-                       f"\"¿y ayer?\", \"¿y en esa categoría?\"):\n{ctx}\n")
+                       f"\"¿y ayer?\", \"¿y en esa categoría?\", \"¿y la semana pasada?\"):\n{ctx}\n")
+    # Filtros del plan anterior — permite carryover de categoria/subcategoria/tarjeta
+    last_q = _mem_init(user_id).get("last_query", {})
+    if last_q:
+        filtros_prev = {k: v for k, v in last_q.items()
+                        if k not in ("modo", "historico", "meses", "anio") and v}
+        if filtros_prev:
+            bloque_hist += (f"Filtros activos de la consulta anterior (reutiliza los que apliquen "
+                            f"si el usuario dice 'lo mismo', 'en esa subcategoría', etc.): "
+                            f"{json.dumps(filtros_prev, ensure_ascii=False)}\n")
 
     prompt_plan = f"""Hoy es {hoy.strftime('%d/%m/%Y')} ({hoy_iso}). Mes de ciclo activo: {activo}.
 Meses disponibles: {meses_disp}
@@ -2343,6 +2517,7 @@ Devuelve SOLO JSON válido:
   "meses": ["{activo}"],
   "categoria": null,
   "subcategoria": null,
+  "tarjeta": null,
   "comercio": null,
   "fecha_desde": null,
   "fecha_hasta": null,
@@ -2369,14 +2544,19 @@ MODOS disponibles:
 - "dias_sin_gasto": días desde el último gasto en una categoría. Requiere "categoria".
 - "ultima_visita": última vez que fui a un comercio. Requiere "comercio".
 - "proyeccion_ahorro": cuánto ahorraría si dejara un hábito. Requiere "comercio".
+- "msi_tracker": cuántos meses sin intereses tengo activos, cuánto debo en total, cuándo terminan.
+- "oportunidades_ahorro": dónde puedo ahorrar, en qué categorías gasto de más vs mi historial.
+- "posicion_financiera": cuánto he gastado vs mi ingreso estimado del ciclo, cuánto me queda, proyección de ahorro del mes.
+- "tendencia_ingresos": ingresos estimados vs gasto real en los últimos 6 ciclos.
 
 CAMPOS:
 - "fecha_desde"/"fecha_hasta" (YYYY-MM-DD): para días o rangos exactos (ayer, esta semana, el 15 mayo). Cuando se usan, "meses" se ignora.
 - "meses": códigos MES+AA. "este mes"={activo}. "mes pasado"=anterior al activo. Para MES COMPLETO, no uses fecha_desde/hasta.
 - "anio": año de 4 dígitos (ej "2025"), para modo mes_mas_caro u otras preguntas anuales.
-- "categoria": nombre EXACTO de la lista de presupuesto (Despensa, Restaurantes, Automovil…), o null. Para filtrar por bolsa de presupuesto.
-- "subcategoria": nombre EXACTO de la lista de subcategorías (Abarrotes, Gasolina, Super, Treat, Restaurantes…), o null. Úsalo cuando el usuario pregunte por un tipo de gasto específico dentro de una categoría (ej. "abarrotes", "gasolina", "super", "treat"). NUNCA pongas subcategoria y categoria al mismo tiempo.
-- "comercio": texto a buscar en el concepto (ej "starbucks"), o null.
+- "categoria": nombre EXACTO de la lista de presupuesto (Despensa, Automovil, Servicios…), o null. Para filtrar por bolsa de presupuesto global.
+- "subcategoria": nombre EXACTO de la lista de subcategorías (Abarrotes, Gasolina, Super, Treat…), o null. Úsalo cuando el usuario pregunte por un tipo de gasto específico (ej. "abarrotes", "gasolina", "super", "treat"). NOTA CRÍTICA: "Restaurantes" es tanto subcategoría como categoría de presupuesto — en caso de duda usa subcategoria=Restaurantes (más preciso). NUNCA pongas subcategoria y categoria simultáneamente.
+- "tarjeta": BBVA05, BBVA12, HEYB25, BMEX04 o EFVO; solo si el usuario la menciona explícitamente. null si no especifica tarjeta.
+- "comercio": texto a buscar en el concepto del gasto (ej "starbucks", "walmart"), o null.
 - "historico": true cuando la pregunta sea sobre toda la historia: "en total", "desde siempre", "cuánto llevo pagado", "cuánto he gastado en total", pagos de coche (VW Polo, mensualidades), gastos recurrentes de largo plazo. Con historico=true se consultan TODOS los registros desde 2020; "meses" se ignora.
 - Si la pregunta NO es sobre finanzas/gastos → {{"error":"no_finanzas"}}."""
 
@@ -3145,6 +3325,27 @@ async def _procesar_conversacion(update, context, texto, uid):
                 )
             else:
                 await update.message.reply_text("❌ No pude guardar la meta. Intenta de nuevo.")
+            return ConversationHandler.END
+        if tipo == "ingreso" and payload:
+            monto_i = payload.get("monto", 0)
+            ciclo   = payload.get("ciclo") or mes_activo_str()
+            ok = await asyncio.get_event_loop().run_in_executor(None, guardar_meta, uid, "INGRESO", monto_i, ciclo)
+            if ok:
+                # Mostrar posición financiera inmediata
+                gasto_r = await asyncio.to_thread(ejecutar_consulta_finanzas, {"meses": [ciclo]})
+                gastado = gasto_r["total"]
+                pct = (gastado / monto_i * 100) if monto_i else 0
+                resto = monto_i - gastado
+                agregar_historial(uid, "assistant", f"Ingreso estimado ${monto_i:,.0f} guardado para {ciclo}.")
+                await update.message.reply_text(
+                    f"💰 Ingreso estimado para *{ciclo}*: ${monto_i:,.0f}\n\n"
+                    f"📊 Gasto actual: ${gastado:,.0f} ({pct:.0f}%)\n"
+                    f"💚 Saldo libre: ${resto:,.0f}\n\n"
+                    f"Puedes actualizar el ingreso en cualquier momento.",
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text("❌ No pude guardar el ingreso estimado. Intenta de nuevo.")
             return ConversationHandler.END
         if tipo == "alias" and payload:
             trigger  = payload.get("trigger", "")
@@ -3915,9 +4116,9 @@ def _agg_ciclo(mes: str) -> dict:
     """Agrega los gastos de un ciclo (relación Mes) de Notion."""
     mid = buscar_mes_id(mes)
     if not mid:
-        return {"total": 0.0, "conteo": 0, "por_categoria": {}, "items": []}
+        return {"total": 0.0, "conteo": 0, "por_categoria": {}, "por_tarjeta": {}, "items": []}
     gastos = query_notion_db(NOTION_DATABASE_ID, {"property": "Mes", "relation": {"contains": mid}})
-    total, cats, items = 0.0, {}, []
+    total, cats, tarjetas, items = 0.0, {}, {}, []
     for g in gastos:
         props = g.get("properties", {})
         m = props.get("Monto", {}).get("number", 0) or 0
@@ -3925,11 +4126,13 @@ def _agg_ciclo(mes: str) -> dict:
         pr = _presupuesto_de_props(props)
         if pr:
             cats[pr] = cats.get(pr, 0) + m
+        t = "".join(rt.get("plain_text", "") for rt in props.get("Tarjeta", {}).get("rich_text", [])) or "?"
+        tarjetas[t] = tarjetas.get(t, 0) + m
         titulo = props.get("Concepto", {}).get("title", [])
         concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
         fecha = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
         items.append((concepto, m, fecha))
-    return {"total": total, "conteo": len(items), "por_categoria": cats, "items": items}
+    return {"total": total, "conteo": len(items), "por_categoria": cats, "por_tarjeta": tarjetas, "items": items}
 
 def _datos_reporte(tipo: str = "semanal") -> dict:
     """Datos para el reporte simple (Telegram). Semanal=últimos 7 días; Mensual=ciclo recién cerrado."""
@@ -3939,7 +4142,8 @@ def _datos_reporte(tipo: str = "semanal") -> dict:
         a, b = _agg_ciclo(cerrado), _agg_ciclo(_mes_anterior(cerrado))
         return {"tipo": "mensual", "periodo": f"el ciclo {cerrado}", "titulo": f"Reporte {cerrado}",
                 "total": a["total"], "conteo": a["conteo"],
-                "por_categoria": a["por_categoria"], "total_prev": b["total"]}
+                "por_categoria": a["por_categoria"], "por_tarjeta": a.get("por_tarjeta", {}),
+                "total_prev": b["total"]}
     ini, fin_prev = hoy - datetime.timedelta(days=6), hoy - datetime.timedelta(days=7)
     ini_prev = ini - datetime.timedelta(days=7)
 
@@ -3947,7 +4151,7 @@ def _datos_reporte(tipo: str = "semanal") -> dict:
         gastos = query_notion_db(NOTION_DATABASE_ID, {"and": [
             {"property": "Fecha", "date": {"on_or_after": d1.isoformat()}},
             {"property": "Fecha", "date": {"on_or_before": d2.isoformat()}}]})
-        total, cats = 0.0, {}
+        total, cats, tarjetas = 0.0, {}, {}
         for g in gastos:
             props = g.get("properties", {})
             m = props.get("Monto", {}).get("number", 0) or 0
@@ -3955,12 +4159,15 @@ def _datos_reporte(tipo: str = "semanal") -> dict:
             pr = _presupuesto_de_props(props)
             if pr:
                 cats[pr] = cats.get(pr, 0) + m
-        return total, len(gastos), cats
+            t = "".join(rt.get("plain_text", "") for rt in props.get("Tarjeta", {}).get("rich_text", [])) or "?"
+            tarjetas[t] = tarjetas.get(t, 0) + m
+        return total, len(gastos), cats, tarjetas
 
-    total, n, cats = agg(ini, hoy)
-    total_prev, _, _ = agg(ini_prev, fin_prev)
+    total, n, cats, tarjetas_sem = agg(ini, hoy)
+    total_prev, _, _, _ = agg(ini_prev, fin_prev)
     return {"tipo": "semanal", "periodo": "esta semana", "titulo": "Reporte semanal",
-            "total": total, "conteo": n, "por_categoria": cats, "total_prev": total_prev}
+            "total": total, "conteo": n, "por_categoria": cats, "por_tarjeta": tarjetas_sem,
+            "total_prev": total_prev}
 
 async def enviar_reporte(tipo: str = "semanal", solo_a: int = None):
     """Reporte SIMPLE a Telegram (a ambos o a uno). Lenguaje natural con fallback."""
@@ -3969,7 +4176,9 @@ async def enviar_reporte(tipo: str = "semanal", solo_a: int = None):
         return
     d = await asyncio.to_thread(_datos_reporte, tipo)
     cats = sorted(d["por_categoria"].items(), key=lambda x: x[1], reverse=True)
-    resumen = ", ".join(f"{k}=${v:,.0f}" for k, v in cats[:6])
+    resumen_cats = ", ".join(f"{k}=${v:,.0f}" for k, v in cats[:6])
+    tarjetas_ord = sorted(d.get("por_tarjeta", {}).items(), key=lambda x: x[1], reverse=True)
+    resumen_tarj = ", ".join(f"{k}=${v:,.0f}" for k, v in tarjetas_ord if k != "?")
 
     if d["conteo"] == 0:
         texto = f"📊 {d['titulo']}: no hay gastos registrados en el periodo."
@@ -3977,18 +4186,20 @@ async def enviar_reporte(tipo: str = "semanal", solo_a: int = None):
         diff = d["total"] - d["total_prev"]
         texto = None
         if GROQ_API_KEY:
+            tarj_block = f"\n- Por tarjeta: {resumen_tarj}" if resumen_tarj else ""
             prompt = f"""Escribe un reporte de gastos de {d['periodo']} para Jordi y Nani, en español mexicano, cálido y breve (3-4 oraciones, 1-2 emojis).
 Datos reales (no inventes nada):
 - Total: ${d['total']:,.0f} en {d['conteo']} gastos
 - Periodo anterior: ${d['total_prev']:,.0f} (diferencia ${diff:+,.0f})
-- Por categoría: {resumen}
-Menciona el total, cómo va contra el periodo anterior, y en qué categoría se fue más. Cierra con un comentario útil o de ánimo."""
-            texto = await asyncio.to_thread(groq_completar, prompt, 220)
+- Por categoría: {resumen_cats}{tarj_block}
+Menciona el total, cómo va contra el periodo anterior, en qué categoría se fue más, y si hay desglose por tarjeta menciónalo brevemente. Cierra con un comentario útil o de ánimo."""
+            texto = await asyncio.to_thread(groq_completar, prompt, 250)
         if not texto:
             flecha = "🔺" if diff > 0 else ("🔻" if diff < 0 else "➡️")
+            tarj_line = f"\n💳 Tarjetas: {resumen_tarj}" if resumen_tarj else ""
             texto = (f"📊 *{d['titulo']}*\n\n"
                      f"💰 Total: ${d['total']:,.0f}  ({d['conteo']} gastos)\n"
-                     f"{flecha} vs anterior: ${d['total_prev']:,.0f}\n\n{resumen}")
+                     f"{flecha} vs anterior: ${d['total_prev']:,.0f}\n\n{resumen_cats}{tarj_line}")
 
     destinos = [solo_a] if solo_a else list(USUARIOS_AUTORIZADOS)
     for uid in destinos:
