@@ -1,7 +1,12 @@
 # Bot Gastos — Contexto para Claude Code
 
 > Documento de estado actual del bot (no es un changelog). Describe **lo que el bot hace hoy**
-> y cómo está construido. Versión: **v_final26**.
+> y cómo está construido. Versión: **26.0.0**
+
+> **Esquema de versiones** — `MAJOR.MINOR.PATCH`
+> - **MAJOR**: feature set nuevo o cambio de dominio (nueva BD, nueva modalidad, capacidad estructural nueva). Ej: APScheduler, voz, metas.
+> - **MINOR**: feature individual dentro de un dominio existente. Ej: nuevo modo de consulta, nueva alerta.
+> - **PATCH**: fix, ajuste visual o actualización de docs.
 
 ## Resumen del proyecto
 Bot de Telegram personal para registrar los gastos de Jordi y Nane, conectado a Notion como base
