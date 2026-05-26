@@ -1,7 +1,7 @@
 # Bot Gastos — Contexto para Claude Code
 
 > Documento de estado actual del bot (no es un changelog). Describe **lo que el bot hace hoy**
-> y cómo está construido. Versión: **v_final25**.
+> y cómo está construido. Versión: **v_final26**.
 
 ## Resumen del proyecto
 Bot de Telegram personal para registrar los gastos de Jordi y Nane, conectado a Notion como base
@@ -15,9 +15,10 @@ ping cada 5 min para que el servicio no se duerma.
 - **Lenguaje:** Python 3.11
 - **Telegram:** python-telegram-bot==21.3, modo **webhook** (no polling — más estable en Render free tier)
 - **Servidor:** Render.com — https://bot-gastos-socj.onrender.com
-- **Base de datos:** Notion API (4 bases: Gastos, Aprendizaje, Historial, Balance)
+- **Base de datos:** Notion API (6 bases: Gastos, Aprendizaje, Historial, Balance, Metas Bot, Alias Bot)
 - **IA (Groq):** Llama 3.3 70B (texto), Llama 4 Scout (visión/tickets), Whisper large-v3-turbo (voz)
 - **Otras APIs:** Google Maps Places (categorización), Google Vision (OCR de respaldo), Resend (correo)
+- **Scheduler:** APScheduler==3.10.4 (`AsyncIOScheduler`) — reportes autoagendados dentro del bot
 - **Repositorio:** github.com/jordissan/Bot-gastos (branch: main)
 
 ### Modelos Groq
@@ -196,7 +197,9 @@ pasar al LLM, para que no tenga que hacer aritmética de fechas.
   recomendaciones generada por Groq.
 - **Disparo:** `/reporte [mensual]` (a quien lo pide; el mensual además manda el correo) o
   `GET /reporte?secret=<SHORTCUT_SECRET>&tipo=semanal|mensual` (a ambos usuarios).
-- **Calendario en producción:** semanal lunes 9am, mensual día 5 — vía rutina externa que pega el endpoint.
+- **Calendario en producción:** semanal lunes 9am MX (`job_reporte_semanal`), mensual día 5 2pm MX
+  (`job_reporte_mensual`) — **APScheduler dentro del bot**, sin depender de rutinas externas.
+  Al arrancar aparece en los logs: `[APScheduler] Scheduler iniciado. Jobs: reporte_semanal (lun 9am MX), reporte_mensual (día 5 2pm MX)`
 
 ## 7. Flujo de voz (cómo funciona hoy)
 La voz **no es un camino aparte**: se transcribe y se reusa todo el cerebro del texto.
@@ -378,16 +381,16 @@ llama a `guardar_meta(uid, presupuesto, limite, ciclo)`.
 - Progreso en `/resumen`: muestra meta y % usado si existe meta para ese ciclo
 - BD: Metas Bot (personal, presupuesto TOTAL para meta global)
 
-### Feature 4 — Multi-agente apertura de ciclo ✅ IMPLEMENTADO
-La rutina "Nuevo mes [Notion]" (v7) ahora:
-1. Registra todos los recurrentes en Notion (igual que antes)
-2. Calcula total del ciclo anterior + promedio 3 meses
-3. POST a `/propuesta_mes` → bot envía mensaje a ambos usuarios con:
-   - Resumen del ciclo cerrado ($X, Δ% vs promedio)
-   - Recurrentes registrados y su total
-   - Meta sugerida para el nuevo ciclo
-   - Botones: ✅ Meta $XX,XXX · ❌ Sin meta · 📋 Ver desglose
-4. `callback_propuesta` guarda la meta confirmada en Metas Bot (presupuesto="TOTAL")
+### Feature 4 — Multi-agente apertura de ciclo ✅ IMPLEMENTADO (bot-side)
+El bot tiene implementado el flujo completo de propuesta de ciclo:
+- Endpoint `POST /propuesta_mes` recibe datos de cualquier fuente externa
+- `enviar_propuesta_mes(datos)` envía mensaje a ambos usuarios con resumen del ciclo cerrado,
+  recurrentes registrados, meta sugerida y botones ✅ Meta · ❌ Sin meta · 📋 Ver desglose
+- `callback_propuesta` guarda la meta confirmada en Metas Bot (presupuesto="TOTAL")
+
+**Estado actual de la rutina:** la rutina "Nuevo mes [Notion]" fue simplificada — solo
+registra los recurrentes en Notion y termina (sin POST al bot). El endpoint `/propuesta_mes`
+permanece en el bot listo para reactivarse si se decide volver a dispararlo desde una rutina.
 
 ### Email BBVA (reconciliación automática) 🔲 v2
 Conectar Gmail API, parsear PDF del estado de cuenta y cruzar con Notion.
