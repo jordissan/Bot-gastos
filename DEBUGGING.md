@@ -36,8 +36,10 @@ https://api.telegram.org/bot{TOKEN}/getWebhookInfo
 
 **Solución:**
 1. Borrar webhook: `https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=true`
-2. Render → Manual Deploy → Restart
-3. El bot se autoconfigura el webhook al arrancar
+2. Push cualquier cambio a `main` en GitHub → Render hace **Auto Deploy** automáticamente.
+3. El bot se autoconfigura el webhook al arrancar.
+
+> ⚠️ Render tiene Auto Deploy activado — nunca se hace deploy manual desde la UI de Render.
 
 ### Render "dormido" — primer mensaje tarda 30-60s
 
@@ -193,8 +195,17 @@ LOG_LEVEL=DEBUG python bot.py
 
 ## Procedimiento de rollback
 
-Si un deploy rompe el bot:
-1. En GitHub → repo → commits → ir al commit anterior → copiar el SHA
-2. En Render → Settings → Build & Deploy → Branch: pegar el SHA del commit anterior
-3. Manual Deploy
-4. Borrar webhook y reconectar si es necesario
+Render tiene Auto Deploy — basta con revertir el commit en GitHub:
+
+```bash
+git revert HEAD        # crea un commit que deshace el último
+git push origin main   # Render lo detecta y despliega automáticamente
+```
+
+O si el problema es de varios commits:
+```bash
+git revert <SHA_BUENO>..HEAD   # revierte el rango
+git push origin main
+```
+
+No se necesita tocar Render — el Auto Deploy lo maneja.

@@ -341,12 +341,18 @@ cancelar     - ❌ Cancelar acción en curso
 
 ---
 
-## Deploy — procedimiento obligatorio
+## Deploy — procedimiento
 
-1. Borrar webhook: `https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=true`
-2. Subir a GitHub **arrastrando** el archivo (nunca copy-paste — evita comillas tipográficas).
-3. Render → Manual Deploy → Restart service.
-4. Verificar en logs: `[APScheduler] Scheduler iniciado.`
+Render está configurado con **Auto Deploy** desde GitHub. Cada push a `main` dispara un deploy automático — no hay acción manual en Render.
+
+**Flujo completo:**
+1. Borrar webhook antes del push: `https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=true`
+2. Push a `main` → Render detecta el cambio y despliega automáticamente.
+3. Verificar en logs de Render: `[APScheduler] Scheduler iniciado.`
+
+**Nota sobre GitHub:** arrastrar archivos al repo — nunca copy-paste (evita comillas tipográficas que rompen el código Python).
+
+**Rollback:** revertir el commit en GitHub → Render lo detecta y hace rollback automático.
 
 ---
 

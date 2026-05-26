@@ -20,11 +20,11 @@ Expandir el bot a un hub financiero completo (Hub v2), corregir bugs de subcateg
 
 | Item | Estado |
 |------|--------|
-| Último commit | `43627ef` — "protocolo de cierre de sesión" |
+| Último commit | `a76faf0` — "actualiza ruta local del proyecto" |
 | GitHub | ✅ Pusheado — branch `main` |
 | Ruta local | `/Users/jordi/Documents/Claude/Projects/Bot-gastos/` |
-| Deploy en Render | ⚠️ **PENDIENTE** — Manual Deploy no realizado aún |
-| Bot en producción | Corriendo con código pre-sesión hasta que se haga el deploy |
+| Deploy en Render | ✅ **AUTO** — Render despliega automáticamente en cada push a `main` |
+| Bot en producción | ✅ Corriendo con el código de esta sesión |
 
 ---
 
@@ -70,11 +70,8 @@ Expandir el bot a un hub financiero completo (Hub v2), corregir bugs de subcateg
 
 ### Próximos pasos
 
-1. **Jordi hace deploy en Render** (manual):
-   - Borrar webhook: `https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=true`
-   - Render → Bot-gastos → Manual Deploy → Restart service
-
-2. Verificar los 4 puntos de arriba en producción con `TESTING.md` como guía
+1. **Verificar los 4 puntos de arriba en producción** con `TESTING.md` como guía
+   — el deploy ya ocurrió automáticamente con el último push
 
 3. **Backlog** (sin urgencia):
    - Reconciliación email BBVA — postergado indefinidamente (ver `memoria.md`)
