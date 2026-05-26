@@ -2255,14 +2255,15 @@ Responde la pregunta usando SOLO estos datos. No inventes cifras. Si los datos e
 HORMIGA_SUBCATS = ("Treat", "Abarrotes", "Restaurantes", "Gasolina")
 
 async def verificar_hormiga(gasto: dict, uid: int, context) -> None:
-    """Alerta de gasto hormiga: gasto pequeño (<$150) en categoría de consumo frecuente
-    cuando ya van 3+ en la misma categoría esta semana. Background, solo al que registró. Tarea 8."""
+    """Alerta de gasto hormiga: gasto pequeño (<$150) en subcategoría de consumo frecuente
+    cuando ya van 3+ en la misma subcategoría esta semana. Background, solo al que registró."""
     if (gasto.get("monto") or 0) >= 150:
         return
-    if gasto.get("subcategoria") not in HORMIGA_SUBCATS:
+    subcategoria = gasto.get("subcategoria")
+    if subcategoria not in HORMIGA_SUBCATS:
         return
-    presupuesto = gasto.get("presupuesto")
-    if not presupuesto:
+    sc_id = SC.get(subcategoria)
+    if not sc_id:
         return
     try:
         hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
@@ -2273,7 +2274,8 @@ async def verificar_hormiga(gasto: dict, uid: int, context) -> None:
             n, total = 0, 0.0
             for g in gastos:
                 props = g.get("properties", {})
-                if _presupuesto_de_props(props) == presupuesto:
+                rel_sc = props.get("Subcategoria", {}).get("relation", [])
+                if rel_sc and rel_sc[0].get("id", "").replace("-", "") == sc_id:
                     n += 1
                     total += props.get("Monto", {}).get("number", 0) or 0
             return n, total
@@ -2281,7 +2283,7 @@ async def verificar_hormiga(gasto: dict, uid: int, context) -> None:
         if n >= 3:
             await context.bot.send_message(
                 chat_id=uid,
-                text=f"☕ Llevas {n} gastos en {presupuesto} esta semana (${total:,.0f} en total).")
+                text=f"☕ Llevas {n} gastos en {subcategoria} esta semana (${total:,.0f} en total).")
     except Exception as e:
         logger.warning(f"verificar_hormiga error: {e}")
 
@@ -2635,6 +2637,11 @@ async def registrar_via_shortcut(texto: str, user_id: int):
     guardar_contexto(user_id, gasto_completo)
     if random.randint(1, 50) == 1:
         threading.Thread(target=limpiar_aprendizaje, daemon=True).start()
+    ctx = _BotCtx(app.bot)
+    asyncio.create_task(generar_insight_groq(gasto_completo, user_id, ctx))
+    asyncio.create_task(verificar_hormiga(gasto_completo, user_id, ctx))
+    asyncio.create_task(detectar_anomalia(gasto_completo, user_id, ctx))
+    asyncio.create_task(verificar_metas(gasto_completo, user_id, ctx))
     msg = msg_gasto(gasto, notion_id=nid)
     if not gasto.get("seguro"):
         msg += "\n\n⚠️ Categoría inferida — usa /corregir si no es correcta."
@@ -2647,6 +2654,11 @@ async def registrar_via_shortcut(texto: str, user_id: int):
             parse_mode="Markdown"
         )
     return True, msg
+
+class _BotCtx:
+    """Wrapper mínimo para pasar app.bot a funciones que esperan context.bot
+    (usado en registrar_via_shortcut, que no tiene contexto PTB)."""
+    def __init__(self, bot): self.bot = bot
 
 async def _cancelar_conv(update, context):
     context.user_data.clear()
@@ -2744,6 +2756,13 @@ async def callback_foto(update, context):
     uid = query.from_user.id
     guardar_contexto(uid, gasto_completo)  # habilita edición conversacional tras registrar por foto
     threading.Thread(target=guardar_historial_notion, args=(gasto_completo, uid), daemon=True).start()
+    asyncio.create_task(generar_insight_groq(gasto_completo, uid, context))
+    asyncio.create_task(verificar_hormiga(gasto_completo, uid, context))
+    asyncio.create_task(detectar_anomalia(gasto_completo, uid, context))
+    asyncio.create_task(verificar_metas(gasto_completo, uid, context))
+    import random
+    if random.randint(1, 50) == 1:
+        threading.Thread(target=limpiar_aprendizaje, daemon=True).start()
     await query.message.edit_text(msg_gasto(gasto, notion_id=nid), parse_mode="Markdown")
     notif  = USUARIOS_NOTIFICAR.get(uid)
     nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
@@ -3293,24 +3312,67 @@ async def cmd_prueba(update,context):
     )
     return PRUEBA_GASTO
 
-async def handle_prueba(update,context):
-    if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
-    texto=update.message.text.strip()
+async def handle_prueba(update, context):
+    if update.effective_user.id not in USUARIOS_AUTORIZADOS:
+        return ConversationHandler.END
+    texto = update.message.text.strip()
     try:
-        tokens=texto.strip().split()
-        hoy=datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
-        fecha,tokens2=parsear_fecha(tokens); texp,tokens2=parsear_tarjeta(tokens2); monto,tokens2=parsear_monto(tokens2)
-        concepto=" ".join(tokens2).strip()
-        if not concepto: raise ValueError("No encontré el concepto")
-        if monto is None: raise ValueError("No encontré el monto")
-        tarjeta=calcular_tarjeta(fecha,texp); mes=calcular_mes(fecha,tarjeta)
-        sub,pre,seguro,origen_emoji,origen_texto=inferir_categoria_con_origen(concepto)
-        fecha_fmt=datetime.datetime.strptime(fecha.strftime("%Y-%m-%d"),"%Y-%m-%d").strftime("%d %b %Y").lower()
+        gasto = None
+        origen_label = ""
+
+        # ── Ruta Groq (si disponible y el mensaje parece NL) ─────────────────
+        if GROQ_API_KEY and not _parece_gasto_estricto(texto):
+            tipo, payload = await asyncio.to_thread(clasificar_mensaje_groq, texto)
+            if tipo == "multi_gasto" and payload:
+                lineas = [f"🧪 Multi-gasto detectado ({len(payload)} elementos)\n"]
+                for i, g in enumerate(payload, 1):
+                    lineas.append(f"#{i}  {g['concepto']} · ${g['monto']:,.2f}")
+                    lineas.append(f"     💳 {g['tarjeta']} · 🧾 {g['mes']} · 🏷️ {g['subcategoria']}")
+                lineas.append("\nNada fue registrado en Notion.")
+                await update.message.reply_text("\n".join(lineas))
+                return ConversationHandler.END
+            if tipo in ("consulta", "otro", "meta", "alias"):
+                await update.message.reply_text(
+                    f"🧪 Groq clasificó este mensaje como: *{tipo}*\n\n"
+                    "No se registraría como gasto.\nNada fue registrado en Notion.",
+                    parse_mode="Markdown"
+                )
+                return ConversationHandler.END
+            if tipo == "gasto" and payload:
+                gasto = payload
+                sub, pre, seguro, ori_emoji, ori_txt = inferir_categoria_con_origen(gasto["concepto"])
+                gasto["subcategoria"] = sub; gasto["presupuesto"] = pre; gasto["seguro"] = seguro
+                origen_label = f"🤖 Groq + {ori_emoji} {ori_txt}"
+
+        # ── Ruta parser clásico (fallback o formato estricto) ────────────────
+        if gasto is None:
+            tokens = texto.split()
+            hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+            fecha, tokens2 = parsear_fecha(tokens)
+            texp,  tokens2 = parsear_tarjeta(tokens2)
+            monto, tokens2 = parsear_monto(tokens2)
+            concepto = " ".join(tokens2).strip()
+            if not concepto: raise ValueError("No encontré el concepto")
+            if monto is None: raise ValueError("No encontré el monto")
+            tarjeta = calcular_tarjeta(fecha, texp)
+            mes     = calcular_mes(fecha, tarjeta)
+            sub, pre, seguro, ori_emoji, ori_txt = inferir_categoria_con_origen(concepto)
+            gasto = {"concepto": concepto.title(), "monto": monto,
+                     "fecha": fecha.strftime("%Y-%m-%d"), "tarjeta": tarjeta,
+                     "mes": mes, "subcategoria": sub, "presupuesto": pre}
+            origen_label = f"{ori_emoji} {ori_txt}"
+
+        fecha_fmt = datetime.datetime.strptime(gasto["fecha"], "%Y-%m-%d").strftime("%d %b %Y").lower()
         await update.message.reply_text(
             f"🧪 Resultado de prueba\n\n"
-            f"📌 {concepto.title()}\n💵 ${monto:,.2f}\n🗓️ {fecha_fmt}\n"
-            f"💳 {tarjeta}\n🧾 {mes}\n🏷️ {sub}\n🗂️ {pre}\n\n"
-            f"🔍 Origen: {origen_emoji} {origen_texto}\n\n"
+            f"📌 {gasto['concepto']}\n"
+            f"💵 ${gasto['monto']:,.2f}\n"
+            f"🗓️ {fecha_fmt}\n"
+            f"💳 {gasto['tarjeta']}\n"
+            f"🧾 {gasto['mes']}\n"
+            f"🏷️ {gasto['subcategoria']}\n"
+            f"🗂️ {gasto['presupuesto']}\n\n"
+            f"🔍 Origen: {origen_label}\n\n"
             f"Nada fue registrado en Notion."
         )
     except ValueError as e:
@@ -3805,33 +3867,41 @@ async def cmd_eliminar(update, context):
         if actual:
             ultimo = {**ultimo, **{k: v for k, v in actual.items() if v not in ("", None)}}
     context.user_data["gasto_eliminar"] = ultimo
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🗑️ Sí, eliminar", callback_data="elim_si"),
+        InlineKeyboardButton("❌ No",            callback_data="elim_no"),
+    ]])
     await update.message.reply_text(
         f"🗑️ ¿Eliminar este gasto?\n\n"
         f"📌 {ultimo['concepto']}\n"
         f"💵 ${ultimo['monto']:,.2f}\n"
         f"🗓️ {_fecha_compacta(ultimo['fecha'])}\n"
         f"🏷️ {ultimo['subcategoria']}  •  {ultimo['presupuesto']}",
-        reply_markup=ReplyKeyboardMarkup([["✅ Sí, eliminar", "❌ No"]], one_time_keyboard=True, resize_keyboard=True)
+        reply_markup=kb
     )
     return ELIMINAR_CONFIRM
 
-async def eliminar_confirmar(update, context):
-    txt = update.message.text.strip()
-    if "SI" not in txt.upper() and "SÍ" not in txt.upper():
-        return await _cancelar_conv(update, context)
+async def callback_eliminar(update, context):
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id not in USUARIOS_AUTORIZADOS:
+        return ConversationHandler.END
+    if query.data == "elim_no":
+        context.user_data.clear()
+        await query.edit_message_text("❌ Cancelado.")
+        return ConversationHandler.END
     gasto = context.user_data.pop("gasto_eliminar", None)
     if not gasto or not gasto.get("notion_id"):
-        await update.message.reply_text("❌ No se encontró el gasto en Notion.", reply_markup=ReplyKeyboardRemove())
+        await query.edit_message_text("❌ No se encontró el gasto en Notion.")
         return ConversationHandler.END
     r = notion_request("PATCH", f"{NOTION_API_BASE}/pages/{gasto['notion_id']}",
         headers=nh(), json={"archived": True}, timeout=NOTION_T_DEFAULT)
     if r and r.status_code == 200:
-        await update.message.reply_text(
-            f"🗑️ Eliminado\n\n📌 {gasto['concepto']}  ${gasto['monto']:,.2f}",
-            reply_markup=ReplyKeyboardRemove()
+        await query.edit_message_text(
+            f"🗑️ Eliminado\n\n📌 {gasto['concepto']}  ${gasto['monto']:,.2f}"
         )
     else:
-        await update.message.reply_text("❌ Error al eliminar en Notion.", reply_markup=ReplyKeyboardRemove())
+        await query.edit_message_text("❌ Error al eliminar en Notion.")
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -4035,7 +4105,7 @@ def main():
     )
     conv_eliminar = ConversationHandler(
         entry_points=[CommandHandler("eliminar", cmd_eliminar)],
-        states={ELIMINAR_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, eliminar_confirmar)]},
+        states={ELIMINAR_CONFIRM: [CallbackQueryHandler(callback_eliminar, pattern="^elim_")]},
         fallbacks=[CommandHandler("cancelar", cancelar)], allow_reentry=True,
     )
 
