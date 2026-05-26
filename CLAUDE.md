@@ -365,6 +365,8 @@ cancelar     - ❌ Cancelar acción en curso
 | `requirements.txt` | Al cambiar dependencias | Dependencias Python |
 | `Dockerfile` | Al cambiar infra | Imagen Docker para Render |
 
+**Ruta local del proyecto:** `/Users/jordi/Documents/Claude/Projects/Bot-gastos/`
+
 Archivos externos relacionados:
 - `/Users/jordi/Documents/Claude/Projects/Hub Financiero/CLAUDE.md` — instrucciones del hub financiero
 - `/Users/jordi/Documents/Claude/Projects/Hub Financiero/plan_automatizacion_reportes.md` — referencia histórica
