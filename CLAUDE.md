@@ -1,8 +1,11 @@
 # Bot Gastos — Contexto para Claude Code
 
-> **⚠️ LEER PRIMERO:** Al iniciar una sesión nueva, leer `/Users/jordi/Bot-gastos/memoria.md`
-> antes que cualquier otra cosa. Contiene decisiones recientes, bugs resueltos, cosas descartadas
-> y pendientes activos que no están en este archivo.
+> **⚠️ PROTOCOLO DE INICIO DE SESIÓN — leer en este orden:**
+> 1. `handoff.md` — estado operativo exacto: qué quedó pendiente, qué cambió, qué falló, qué sigue.
+> 2. `memoria.md` — memoria institucional: decisiones de diseño, conceptos clave, lecciones aprendidas.
+> 3. Este archivo (`CLAUDE.md`) — arquitectura y estado técnico actual del bot.
+>
+> `handoff.md` se sobreescribe cada sesión. `memoria.md` acumula contexto histórico.
 
 > Documento de estado actual del bot (no es un changelog). Describe **lo que el bot hace hoy**
 > y cómo está construido. Versión: **26.2.0**
