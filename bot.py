@@ -1,6 +1,9 @@
 import os, re, datetime, requests, threading, unicodedata, json, logging, time, base64, zoneinfo, asyncio
 from difflib import SequenceMatcher
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+import pytz
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes, ConversationHandler
 
@@ -3533,6 +3536,26 @@ async def cmd_top(update, context):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 # ── REPORTES PROACTIVOS (semanal / mensual) ──────────────────────────────────
+
+MX_TZ = pytz.timezone("America/Mexico_City")
+
+async def job_reporte_semanal():
+    """Job APScheduler: reporte semanal — lunes 9am MX"""
+    try:
+        await enviar_reporte(tipo="semanal")
+        logger.info("[APScheduler] Reporte semanal enviado OK")
+    except Exception as e:
+        logger.error(f"[APScheduler] Error reporte semanal: {e}")
+
+async def job_reporte_mensual():
+    """Job APScheduler: reporte mensual — día 5 2pm MX"""
+    try:
+        await enviar_reporte(tipo="mensual")
+        ok = await enviar_reporte_email_mensual()
+        logger.info(f"[APScheduler] Reporte mensual enviado OK (email: {ok})")
+    except Exception as e:
+        logger.error(f"[APScheduler] Error reporte mensual: {e}")
+
 def _mes_anterior(codigo: str) -> str:
     """'JUN26' → 'MAY26'. Retrocede un ciclo."""
     nombre, aa = codigo[:3], codigo[3:]
@@ -3936,7 +3959,6 @@ class WebhookHandler(BaseHTTPRequestHandler):
         pass
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
-import asyncio
 
 async def setup_webhook(app):
     webhook_url = f"{RENDER_EXTERNAL_URL}/webhook"
@@ -4037,11 +4059,26 @@ def main():
     loop.run_until_complete(app.start())
     app.update_processor._loop = loop
 
+    # ── APScheduler ──────────────────────────────────────────────────────────
+    scheduler = AsyncIOScheduler(timezone=MX_TZ)
+    scheduler.add_job(
+        job_reporte_semanal,
+        CronTrigger(day_of_week="mon", hour=9, minute=0, timezone=MX_TZ),
+        id="reporte_semanal", replace_existing=True,
+    )
+    scheduler.add_job(
+        job_reporte_mensual,
+        CronTrigger(day=5, hour=14, minute=0, timezone=MX_TZ),
+        id="reporte_mensual", replace_existing=True,
+    )
+    scheduler.start()
+    logger.info("[APScheduler] Scheduler iniciado. Jobs: reporte_semanal (lun 9am MX), reporte_mensual (día 5 2pm MX)")
+
     port = int(os.environ.get("PORT", 10000))
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo v_final22…")
+    logger.info("Bot corriendo v_final25…")
     server.serve_forever()
 
 if __name__ == "__main__":
