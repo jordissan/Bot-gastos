@@ -1,9 +1,13 @@
 # Bot Gastos — Contexto para Claude Code
 
 > **⚠️ PROTOCOLO DE INICIO DE SESIÓN — leer en este orden:**
-> 1. `handoff.md` — qué quedó pendiente, qué cambió, qué sigue. Estado operativo de la última sesión.
-> 2. `memoria.md` — decisiones de diseño, conceptos del dominio, lecciones aprendidas. Nunca se borra.
+> 1. `handoff.md` — qué quedó pendiente, qué cambió, qué sigue.
+> 2. `memoria.md` — decisiones de diseño, conceptos del dominio, lecciones aprendidas.
 > 3. Este archivo — arquitectura técnica y referencia del bot.
+> 4. `NOTION_SCHEMA.md` — solo si vas a tocar código de Notion (schema, IDs, tipos de campos).
+> 5. `REGLAS_NEGOCIO.md` — solo si vas a tocar categorización, tarjetas o ciclos.
+> 6. `DEBUGGING.md` — solo si algo está fallando.
+> 7. `TESTING.md` — solo después de un deploy.
 
 ---
 
@@ -348,14 +352,18 @@ cancelar     - ❌ Cancelar acción en curso
 
 ## Archivos del proyecto
 
-| Archivo | Propósito |
-|---------|-----------|
-| `bot.py` | Código principal — todo el bot |
-| `CLAUDE.md` | Este archivo — referencia técnica y arquitectura |
-| `memoria.md` | Decisiones de diseño, conceptos del dominio, lecciones aprendidas |
-| `handoff.md` | Estado operativo de la última sesión — se sobreescribe cada vez |
-| `requirements.txt` | Dependencias Python |
-| `Dockerfile` | Imagen Docker para Render |
+| Archivo | Cuándo leer | Propósito |
+|---------|------------|-----------|
+| `handoff.md` | Siempre al inicio | Estado operativo de la última sesión |
+| `memoria.md` | Siempre al inicio | Decisiones, conceptos, lecciones |
+| `CLAUDE.md` | Siempre al inicio | Arquitectura técnica (este archivo) |
+| `NOTION_SCHEMA.md` | Al tocar código Notion | Schema completo, IDs, tipos de campos, dicts SC/PR |
+| `REGLAS_NEGOCIO.md` | Al tocar categorización/tarjetas | Reglas de dominio, casos especiales, gastos fijos |
+| `DEBUGGING.md` | Cuando algo falla | Síntomas → causas → soluciones |
+| `TESTING.md` | Después de un deploy | Checklist de verificación manual |
+| `bot.py` | Al escribir código | Código principal — todo el bot |
+| `requirements.txt` | Al cambiar dependencias | Dependencias Python |
+| `Dockerfile` | Al cambiar infra | Imagen Docker para Render |
 
 Archivos externos relacionados:
 - `/Users/jordi/Documents/Claude/Projects/Hub Financiero/CLAUDE.md` — instrucciones del hub financiero
