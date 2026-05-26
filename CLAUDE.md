@@ -1,7 +1,7 @@
 # Bot Gastos — Contexto para Claude Code
 
 > Documento de estado actual del bot (no es un changelog). Describe **lo que el bot hace hoy**
-> y cómo está construido. Versión: **26.1.0**
+> y cómo está construido. Versión: **26.1.1**
 
 > **Esquema de versiones** — `MAJOR.MINOR.PATCH`
 > - **MAJOR**: feature set nuevo o cambio de dominio (nueva BD, nueva modalidad, capacidad estructural nueva). Ej: APScheduler, voz, metas.
@@ -123,9 +123,13 @@ Detalles del registro:
 y alguno de los últimos 3 es un número. Mensajes más largos (voz, frases naturales) siempre van
 a Groq aunque terminen en un número ("…de 150 pesos").
 
-**Memoria conversacional** (`_historial_chat`, últimos 4 turnos por usuario en RAM): el clasificador y
-el planner de consultas reciben el contexto reciente para resolver referencias como "¿y ayer?",
-"¿y en esa misma categoría?". Se limpia con `/cancelar`. No persiste entre reinicios.
+**Memoria conversacional persistente** (`_memoria_ram` + Notion):
+- **RAM**: cache activo por sesión — `turns` (últimos 8), `last_results`, `last_query`, `last_gasto`.
+- **Notion**: dos filas en **Historial Bot** (`MEM_8663298433` y `MEM_8093171397`, UsuarioID=0) almacenan el JSON en el campo `NotionID`. Sobrevive reinicios de Render.
+- `mem_cargar(uid)`: cold-start, carga Notion → RAM una sola vez por sesión.
+- `mem_guardar(uid)`: persiste RAM → Notion en background tras cada acción relevante. TTL de 2h para `last_results`.
+- `_manejar_referencia()`: intercepta antes de Groq mensajes como "dame el link", "elimínalo", "el más caro" y los resuelve contra el contexto en memoria.
+- `ejecutar_consulta_finanzas` devuelve `gastos_raw` (con notion_ids) que se guarda en `last_results`.
 
 ## 3. Consultas en lenguaje natural
 Flujo de 2 pasos que evita que el LLM invente cifras:
