@@ -132,6 +132,7 @@ def _extraer_json(raw):
 #   loaded       → True si ya se intentó cargar desde Notion esta sesión
 _memoria_ram: dict = {}
 _ultimo_gasto_usuario = {}  # Gasto COMPLETO para edición contextual (mantiene todos los campos)
+_staged_edits: dict = {}   # uid → {"campos": {...}, "base": gasto_dict} — edición pendiente de confirmar
 
 def _mem_init(uid: int) -> dict:
     if uid not in _memoria_ram:
@@ -2995,6 +2996,88 @@ async def aplicar_edicion_contextual(update, context, campos: dict, base: dict):
         msg_gasto(g, notion_id=nid, header=f"✏️ {nombre} editó un gasto"),
         parse_mode="Markdown")
 
+# ── EDICIÓN CON CONFIRMACIÓN (staging area) ──────────────────────────────────
+
+def _construir_props_edicion(base: dict, g: dict) -> dict:
+    """Construye el dict de propiedades Notion para PATCH, basado en diff base→g."""
+    props = {}
+    if g.get("monto") != base.get("monto"):
+        props["Monto"] = {"number": g["monto"]}
+    if g.get("concepto") != base.get("concepto"):
+        props["Concepto"] = {"title": [{"text": {"content": g["concepto"]}}]}
+    tarjeta_cambio = g.get("tarjeta") != base.get("tarjeta")
+    fecha_cambio   = g.get("fecha")   != base.get("fecha")
+    if tarjeta_cambio:
+        props["Estado de Cuenta"] = {"rich_text": [{"text": {"content": g["tarjeta"]}}]}
+        props["Pago"] = {"select": {"name": g["tarjeta"]}}
+    if fecha_cambio:
+        props["Fecha"] = {"date": {"start": g["fecha"]}}
+    if tarjeta_cambio or fecha_cambio:
+        mid = buscar_mes_id(g["mes"])
+        if mid:
+            props["Mes"] = {"relation": [{"id": mid}]}
+    if g.get("presupuesto") != base.get("presupuesto") and g.get("presupuesto") in PR:
+        props["Presupuesto"] = {"relation": [{"id": PR[g["presupuesto"]]}]}
+    if g.get("subcategoria") != base.get("subcategoria") and g.get("subcategoria") in SC:
+        props["Subcategoria"] = {"relation": [{"id": SC[g["subcategoria"]]}]}
+    return props
+
+async def callback_edicion(update, context):
+    """Maneja los botones inline de confirmación de edición (Confirmar / Cancelar)."""
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+
+    staged = _staged_edits.get(uid)
+    if not staged:
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("⚠️ No hay edición pendiente.")
+        return
+
+    if query.data == "edicion_cancel":
+        _staged_edits.pop(uid, None)
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("❌ Edición cancelada.")
+        return
+
+    # ── Confirmar ────────────────────────────────────────────────────────────
+    base   = staged["base"]
+    campos = staged["campos"]
+    nid    = base.get("notion_id")
+    _staged_edits.pop(uid, None)
+
+    if not nid:
+        await query.message.reply_text("⚠️ No encontré el gasto para editar. Usa /corregir.")
+        return
+
+    g     = _editar_gasto_local(base, campos)
+    props = _construir_props_edicion(base, g)
+    if not props:
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("🤔 No detecté cambios para aplicar.")
+        return
+
+    r = notion_request("PATCH", f"{NOTION_API_BASE}/pages/{nid}",
+                       headers=nh(), json={"properties": props}, timeout=NOTION_T_DEFAULT)
+    if not (r and r.status_code == 200):
+        await query.message.reply_text("❌ No pude actualizar el gasto en Notion.")
+        return
+
+    g["seguro"] = True
+    guardar_contexto(uid, g)
+    guardar_aprendizaje(g["concepto"].lower(), g["subcategoria"], g["presupuesto"])
+
+    await query.edit_message_reply_markup(reply_markup=None)
+    nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
+    await query.message.reply_text(
+        msg_gasto(g, notion_id=nid, header="✏️ Gasto actualizado"),
+        parse_mode="Markdown"
+    )
+    await notificar_pareja(context, uid,
+        msg_gasto(g, notion_id=nid, header=f"✏️ {nombre} editó un gasto"),
+        parse_mode="Markdown"
+    )
+
 # ── REGISTRAR VIA SHORTCUT (iOS) ─────────────────────────────────────────────
 async def registrar_via_shortcut(texto: str, user_id: int):
     import random
@@ -3331,7 +3414,23 @@ async def _procesar_conversacion(update, context, texto, uid):
             await update.message.reply_text("🤔 No pude consultar eso ahorita. Intenta reformularlo.")
             return ConversationHandler.END
         if tipo == "edicion" and ultimo:
-            await aplicar_edicion_contextual(update, context, payload, ultimo)
+            # Acumular en staging area: mostrar propuesta con botones antes de aplicar a Notion
+            staged = _staged_edits.get(uid, {})
+            # Si el gasto base cambió (registraron uno nuevo), descartar staged anterior
+            if staged and staged.get("base", {}).get("notion_id") != ultimo.get("notion_id"):
+                staged = {}
+            campos_merged = {**staged.get("campos", {}), **payload}
+            base = staged.get("base") or ultimo
+            preview = _editar_gasto_local(base, campos_merged)
+            _staged_edits[uid] = {"campos": campos_merged, "base": base}
+            nid = base.get("notion_id", "")
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Confirmar", callback_data="edicion_confirm"),
+                InlineKeyboardButton("❌ Cancelar",  callback_data="edicion_cancel"),
+            ]])
+            await _responder(update, context,
+                msg_gasto(preview, notion_id=nid, header="📝 Propuesta de cambio"),
+                reply_markup=kb, parse_mode="Markdown")
             return ConversationHandler.END
         if tipo == "multi_gasto" and payload:
             await _registrar_multiples(update, context, payload, uid)
@@ -4696,6 +4795,7 @@ def main():
         fallbacks=[CommandHandler("cancelar", cancelar)], allow_reentry=True,
     )
 
+    app.add_handler(CallbackQueryHandler(callback_edicion,   pattern="^edicion_"))
     app.add_handler(CallbackQueryHandler(callback_propuesta, pattern="^propuesta_"))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("resumen", cmd_resumen))
@@ -4735,7 +4835,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 26.4.0 — memoria persistente activa")
+    logger.info("Bot corriendo 26.5.0 — memoria persistente activa")
     server.serve_forever()
 
 if __name__ == "__main__":
