@@ -15,7 +15,7 @@
 
 Bot de Telegram personal de Jordi y Nane para registrar gastos, conectado a Notion como fuente de verdad. Entiende lenguaje natural (texto y voz), lee tickets por foto, responde preguntas sobre finanzas y manda reportes automáticos. Corre 24/7 en Render.com con Docker.
 
-**Versión actual:** 26.5.0  
+**Versión actual:** 26.6.0  
 **Esquema:** `MAJOR` = nuevo dominio/capacidad estructural · `MINOR` = feature individual · `PATCH` = fix o ajuste
 
 ---
@@ -246,7 +246,7 @@ Lo aprendido se guarda en Aprendizaje Bot (con limpieza automática de entradas 
 | `/corregir` | Panel inline para editar gasto reciente |
 | `/eliminar` | Archiva el último gasto |
 | `/reporte [mensual]` | Dispara reporte semanal o mensual |
-| `/prueba` | Sandbox multi-turno: registra y edita gastos sin guardar en Notion · /cancelar para salir |
+| `/prueba` | Sandbox multi-turno: registra y edita gastos sin guardar en Notion · misma lógica de confirmación que producción · /cancelar para salir |
 | `/cancelar` | Cancela acción en curso |
 
 ```

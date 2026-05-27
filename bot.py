@@ -3078,6 +3078,31 @@ async def callback_edicion(update, context):
         parse_mode="Markdown"
     )
 
+async def callback_sandbox_edicion(update, context):
+    """Confirmación de edición dentro del sandbox (/prueba). No toca Notion ni notifica."""
+    query = update.callback_query
+    await query.answer()
+
+    staged = context.user_data.get("prueba_staged")
+    if not staged:
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("⚠️ No hay edición pendiente." + _FOOTER_SB)
+        return
+
+    if query.data == "sandbox_cancel":
+        context.user_data.pop("prueba_staged", None)
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("❌ Edición descartada." + _FOOTER_SB)
+        return
+
+    # Confirmar — solo actualiza user_data, sin Notion ni notificaciones
+    g = _editar_gasto_local(staged["base"], staged["campos"])
+    context.user_data["prueba_gasto"] = g
+    context.user_data.pop("prueba_staged", None)
+
+    await query.edit_message_reply_markup(reply_markup=None)
+    await query.message.reply_text(_msg_sandbox(g, header="✅ Gasto actualizado (simulado)"))
+
 # ── REGISTRAR VIA SHORTCUT (iOS) ─────────────────────────────────────────────
 async def registrar_via_shortcut(texto: str, user_id: int):
     import random
@@ -3993,11 +4018,19 @@ async def handle_prueba(update, context):
                 clasificar_mensaje_groq, texto, gasto_actual
             )
 
-            # Edición sobre gasto existente en sandbox
+            # Edición sobre gasto existente en sandbox — staging con confirmación
             if tipo == "edicion" and payload and gasto_actual:
-                g = _editar_gasto_local(gasto_actual, payload)
-                context.user_data["prueba_gasto"] = g
-                await update.message.reply_text(_msg_sandbox(g, header="✏️ Gasto editado (simulado)"))
+                prev_staged = context.user_data.get("prueba_staged", {})
+                campos_merged = {**prev_staged.get("campos", {}), **payload}
+                preview = _editar_gasto_local(gasto_actual, campos_merged)
+                context.user_data["prueba_staged"] = {"campos": campos_merged, "base": gasto_actual}
+                kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ Confirmar", callback_data="sandbox_confirm"),
+                    InlineKeyboardButton("❌ Cancelar",  callback_data="sandbox_cancel"),
+                ]])
+                await update.message.reply_text(
+                    _msg_sandbox(preview, header="📝 Propuesta de cambio"), reply_markup=kb
+                )
                 return PRUEBA_GASTO
 
             # Multi-gasto
@@ -4795,8 +4828,9 @@ def main():
         fallbacks=[CommandHandler("cancelar", cancelar)], allow_reentry=True,
     )
 
-    app.add_handler(CallbackQueryHandler(callback_edicion,   pattern="^edicion_"))
-    app.add_handler(CallbackQueryHandler(callback_propuesta, pattern="^propuesta_"))
+    app.add_handler(CallbackQueryHandler(callback_edicion,         pattern="^edicion_"))
+    app.add_handler(CallbackQueryHandler(callback_sandbox_edicion, pattern="^sandbox_"))
+    app.add_handler(CallbackQueryHandler(callback_propuesta,       pattern="^propuesta_"))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("resumen", cmd_resumen))
     app.add_handler(CommandHandler("estadisticas", cmd_estadisticas))
@@ -4835,7 +4869,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 26.5.0 — memoria persistente activa")
+    logger.info("Bot corriendo 26.6.0 — memoria persistente activa")
     server.serve_forever()
 
 if __name__ == "__main__":
