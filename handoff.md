@@ -9,10 +9,10 @@
 
 ---
 
-## Sesión cerrada: 2026-05-20 → 2026-05-26
+## Sesión cerrada: 2026-05-26
 
 ### Objetivo
-Expandir el bot a un hub financiero completo (Hub v2), corregir bugs de subcategoría y alucinación de Groq, y construir la estructura completa de documentación del proyecto.
+Corregir 3 bugs reportados por Jordi via screenshots del chat con el bot.
 
 ---
 
@@ -20,59 +20,52 @@ Expandir el bot a un hub financiero completo (Hub v2), corregir bugs de subcateg
 
 | Item | Estado |
 |------|--------|
-| Último commit | `a76faf0` — "actualiza ruta local del proyecto" |
-| GitHub | ✅ Pusheado — branch `main` |
+| Último commit | pendiente — ver abajo |
+| GitHub | pendiente push |
 | Ruta local | `/Users/jordi/Documents/Claude/Projects/Bot-gastos/` |
 | Deploy en Render | ✅ **AUTO** — Render despliega automáticamente en cada push a `main` |
-| Bot en producción | ✅ Corriendo con el código de esta sesión |
+| Bot en producción | pendiente deploy de esta sesión |
 
 ---
 
 ### Qué cambió en esta sesión
 
-**bot.py:**
-- Filtro por `subcategoria_id` en `ejecutar_consulta_finanzas` y todos los modos de `_datos_consulta_especial`
-- Filtro por `tarjeta` (campo `rich_text`) en todas las queries
-- Plan carryover: `last_query` inyectado al planner para mantener filtros entre preguntas
-- Ingresos estimados: nuevo intent `ingreso` + handler completo
-- 4 nuevos modos: `msi_tracker`, `oportunidades_ahorro`, `posicion_financiera`, `tendencia_ingresos`
-- Desglose por tarjeta en reportes (`por_tarjeta` en `_agg_ciclo`)
-- `gastos_raw` limit: 10 → 20
-- Helper `_ciclo_a_rango_calendario(ciclo)` (sin uso activo aún)
-- `prompt_resp` con REGLA CRÍTICA anti-alucinación
-- APScheduler: `job_reporte_semanal` (lun 9am MX) y `job_reporte_mensual` (día 5 2pm MX)
+**3 bugs corregidos en bot.py (v26.1.0 → v26.3.0):**
 
-**Qué se intentó y revirtió:**
-- Auto-retry por mes calendario — revertido. Ver `memoria.md`.
+**Bug 1 — Edición contextual no actualizaba presupuesto al cambiar subcategoría**
+- Síntoma: "Este último gasto tiene que ir en Treat y diversión" solo cambiaba la subcategoría (Treat) pero dejaba el presupuesto intacto.
+- Causa: `aplicar_edicion_contextual` manejaba `subcategoria` y `presupuesto` de forma independiente. Si Groq solo devolvía `subcategoria` sin `presupuesto`, el presupuesto nunca se actualizaba.
+- Fix: Cuando se cambia subcategoría sin presupuesto explícito, se auto-deriva desde `SUBCAT_PRESUPUESTO` y se aplica en el mismo PATCH a Notion.
 
-**Documentación creada (estructura completa):**
-- `CLAUDE.md` — arquitectura técnica (restructurado)
-- `memoria.md` — memoria institucional
-- `handoff.md` — estado operativo por sesión (este archivo)
-- `NOTION_SCHEMA.md` — schema de las 6 BDs con todos los IDs y tipos
-- `REGLAS_NEGOCIO.md` — reglas de dominio, categorización, gastos fijos
-- `DEBUGGING.md` — guía de diagnóstico síntoma→solución
-- `TESTING.md` — checklist de verificación post-deploy
+**Bug 2 — Filas MEM_ aparecían en la lista de /corregir**
+- Síntoma: Al usar /corregir, aparecían "MEM_8093171397 · $0.00" y "MEM_8663298433 · $0.00" ocupando 2 de los 5 slots.
+- Causa: `cargar_historial_compartido()` consultaba Historial Bot sin filtro, y las filas MEM_ (UsuarioID=0) aparecían si eran las más recientes por `created_time`.
+- Fix: Agregado `{"property": "UsuarioID", "number": {"greater_than": 0}}` al query de `cargar_historial_compartido()`.
 
-**Infraestructura:**
-- Carpeta movida de `/Users/jordi/Bot-gastos/` a `/Users/jordi/Documents/Claude/Projects/Bot-gastos/`
+**Bug 3 — ID incorrecto para presupuesto "Personal"**
+- Síntoma: Gastos de "Corte de pelo" vinculaban el presupuesto a la página equivocada en Notion.
+- Causa: `PR["Personal"]` apuntaba a `3c42302c396c4f4abffa38bff79ccac6` (una página en "Categorias de Gastos", NO en la BD Presupuesto). El ID correcto es `829161723b0b49bf8787663a89c7248d` (la página que Jordi renombró de "Cuidado personal" a "Personal" en la BD Presupuesto).
+- Fix:
+  - `PR["Personal"]` → `829161723b0b49bf8787663a89c7248d`
+  - Eliminada entrada `"Cuidado personal"` del dict PR (ya no existe ese nombre en Notion)
+  - `SUBCAT_PRESUPUESTO["Cuidado personal"]` → `"Personal"` (antes era `"Cuidado personal"`)
+  - Regla hard-coded de sephora/perfumería actualizada: presupuesto `"Cuidado personal"` → `"Personal"`
+  - `PR_EMOJI`: eliminada entrada `"Cuidado personal":"💆"` (ya no hay clave con ese nombre)
+  - Actualizado en `NOTION_SCHEMA.md` y `REGLAS_NEGOCIO.md`
 
 ---
 
 ### Pendiente de verificación (después del deploy)
 
-- [ ] Anti-alucinación: preguntar por un ciclo sin gastos → debe decir "no hay" sin mencionar otros meses
-- [ ] `msi_tracker`: confirmar parseo del formato "Concepto X/Total" con datos reales
-- [ ] `posicion_financiera`: declarar ingreso y consultar "¿cómo voy este mes?"
-- [ ] Logs de Render: `[APScheduler] Scheduler iniciado. Jobs: reporte_semanal (lun 9am), reporte_mensual (día 5 2pm)`
+- [ ] Bug 1: Decirle al bot "Este gasto ponlo en Treat y Diversión" justo después de registrar → debe cambiar AMBOS campos
+- [ ] Bug 2: Usar /corregir → la lista debe mostrar solo gastos reales (sin MEM_*)
+- [ ] Bug 3: Registrar un gasto de "Corte de pelo" o "Sephora" → verificar en Notion que el presupuesto apunta a la página correcta (Personal en BD Presupuesto)
 
 ---
 
 ### Próximos pasos
 
-1. **Verificar los 4 puntos de arriba en producción** con `TESTING.md` como guía
-   — el deploy ya ocurrió automáticamente con el último push
-
-3. **Backlog** (sin urgencia):
-   - Reconciliación email BBVA — postergado indefinidamente (ver `memoria.md`)
+1. Verificar los 3 puntos de arriba en producción
+2. **Backlog** (sin urgencia):
+   - Reconciliación email BBVA — postergado indefinidamente
    - Evaluar búsqueda híbrida ciclo+calendario para casos genuinamente ambiguos

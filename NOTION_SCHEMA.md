@@ -239,13 +239,12 @@ PR = {
     "MSI":             "1fc7eb0cbb92802ba323cfc943dc0f2c",
     "Renta":           "eeb6e04137c248468f641a5044b16545",
     "Ezra":            "3547eb0cbb92817baaa9f6681e6bbabc",
-    "Cuidado personal":"829161723b0b49bf8787663a89c7248d",
+    "Personal":        "829161723b0b49bf8787663a89c7248d",  # ⚠️ fue "Cuidado personal" — Jordi renombró el presupuesto el 26-may-2026
     "Vacaciones":      "545753674d4e4d0ca0fd8be7d33db21e",
     "Impuestos":       "224cdb40f1f749c7b5d6e165ad31110d",
     "Entretenimiento": "3547eb0cbb92815d8248db75a759646b",
     "Generosidad":     "f4cac9f4b95e4508942ad02ae69ddffe",
     "Iglesia":         "89b897bd6fa24b8d897adf380491130e",
-    "Personal":        "3c42302c396c4f4abffa38bff79ccac6",
     "Departamento":    "1af955c917f54a2da39e9bbb8e4032ff",
     "Otros":           "1ea7eb0cbb9280cbbe43c1bd54396691",
     "Educación":       "3677eb0cbb9281c4b82cc803cb114d65",
@@ -267,7 +266,7 @@ Renta → Renta
 Muebles, Decoracion → Departamento
 Treat, Salidas, Cine, Conciertos, Tiempo de calidad → Diversión
 Ropa, Calzado, Gimnasio, Corte de pelo, Gasto personal → Personal
-Cuidado personal → Cuidado personal
+Cuidado personal → Personal
 Doctor, Medicina → Salud
 Libros, Cursos → Educación
 Emergencias → Emergencias

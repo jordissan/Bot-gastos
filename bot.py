@@ -340,10 +340,10 @@ PR = {
     "Restaurantes":"3547eb0cbb9281e08ef5f3666e091a44","Salud":"3547eb0cbb9281a1ba5dfea0791b8d36",
     "Deuda":"91ab43856d1e4ae69f21f4203eeb3c54","MSI":"1fc7eb0cbb92802ba323cfc943dc0f2c",
     "Renta":"eeb6e04137c248468f641a5044b16545","Ezra":"3547eb0cbb92817baaa9f6681e6bbabc",
-    "Cuidado personal":"829161723b0b49bf8787663a89c7248d","Vacaciones":"545753674d4e4d0ca0fd8be7d33db21e",
+    "Vacaciones":"545753674d4e4d0ca0fd8be7d33db21e",
     "Impuestos":"224cdb40f1f749c7b5d6e165ad31110d","Entretenimiento":"3547eb0cbb92815d8248db75a759646b",
     "Generosidad":"f4cac9f4b95e4508942ad02ae69ddffe","Iglesia":"89b897bd6fa24b8d897adf380491130e",
-    "Personal":"3c42302c396c4f4abffa38bff79ccac6","Departamento":"1af955c917f54a2da39e9bbb8e4032ff",
+    "Personal":"829161723b0b49bf8787663a89c7248d","Departamento":"1af955c917f54a2da39e9bbb8e4032ff",
     "Otros":"1ea7eb0cbb9280cbbe43c1bd54396691","Educación":"3677eb0cbb9281c4b82cc803cb114d65",
     "Emergencias":"3677eb0cbb9281598e2fe19be3db3d74",
     "Deudas":"91ab43856d1e4ae69f21f4203eeb3c54",  # alias del grupo "🏦 Deudas" → misma página que "Deuda"
@@ -352,7 +352,7 @@ PR = {
 PR_EMOJI = {
     "Despensa":"🛒","Diversión":"🎉","Servicios":"🧾","Automovil":"🚗",
     "Restaurantes":"🍽️","Salud":"💊","Deuda":"🏦","MSI":"💳",
-    "Renta":"🏠","Ezra":"👶","Cuidado personal":"💆","Vacaciones":"🏖️",
+    "Renta":"🏠","Ezra":"👶","Vacaciones":"🏖️",
     "Impuestos":"📊","Entretenimiento":"🎭","Generosidad":"🤝","Iglesia":"⛪",
     "Personal":"👤","Departamento":"🏡","Otros":"📦",
     "Educación":"📚","Emergencias":"🚨","Deudas":"🏦",
@@ -369,7 +369,7 @@ SUBCAT_PRESUPUESTO = {
     "Treat":"Diversión","Salidas":"Diversión","Cine":"Diversión","Conciertos":"Diversión","Tiempo de calidad":"Diversión",
     "Ropa":"Personal","Calzado":"Personal","Gimnasio":"Personal","Corte de pelo":"Personal","Gasto personal":"Personal",
     "Doctor":"Salud","Medicina":"Salud",
-    "Cuidado personal":"Cuidado personal",
+    "Cuidado personal":"Personal",
     "Libros":"Educación","Cursos":"Educación",
     "Emergencias":"Emergencias","Ezra":"Ezra",
     "Regalos":"Generosidad","Ofrenda":"Generosidad","Diezmo":"Generosidad",
@@ -752,7 +752,7 @@ REGLAS_CONCEPTO = [
     (["flexi","andrea","price shoes","dportenis","innovasport","vans","converse","dr martens"],"Calzado","Personal"),
     (["smart fit","smartfit","sports world","sport city","anytime","gimnasio","gym "],"Gimnasio","Personal"),
     (["barberia","barber","peluqueria","estetica","salon ","corte de pelo"],"Corte de pelo","Personal"),
-    (["sephora","sally beauty","body shop","kiehl","mac cosmetics","lush","rituals","ulta","perfumeria","perfume"],"Cuidado personal","Cuidado personal"),
+    (["sephora","sally beauty","body shop","kiehl","mac cosmetics","lush","rituals","ulta","perfumeria","perfume"],"Cuidado personal","Personal"),
     # ── DIVERSIÓN ──
     (["cinepolis","cinemex","cine "],"Cine","Diversión"),
     (["ticketmaster","superboletos","eticket"],"Conciertos","Diversión"),
@@ -1123,6 +1123,7 @@ def cargar_historial_compartido():
             f"{NOTION_API_BASE}/databases/{NOTION_HISTORIAL_ID}/query",
             headers=nh(),
             json={
+                "filter": {"property": "UsuarioID", "number": {"greater_than": 0}},
                 "sorts":[{"timestamp":"created_time","direction":"descending"}],
                 "page_size": MAX_HISTORIAL,
             }, timeout=NOTION_T_SHORT)
@@ -2965,6 +2966,12 @@ async def aplicar_edicion_contextual(update, context, campos: dict, base: dict):
     if campos.get("subcategoria") in SC:
         g["subcategoria"] = campos["subcategoria"]
         props["Subcategoria"] = {"relation": [{"id": SC[g["subcategoria"]]}]}; cat_cambio = True
+        # Si no se especificó presupuesto explícito, derivarlo desde la nueva subcategoría
+        if not campos.get("presupuesto") and g["subcategoria"] in SUBCAT_PRESUPUESTO:
+            pr_derivado = SUBCAT_PRESUPUESTO[g["subcategoria"]]
+            if pr_derivado in PR:
+                g["presupuesto"] = pr_derivado
+                props["Presupuesto"] = {"relation": [{"id": PR[pr_derivado]}]}
 
     if not props:
         await _responder(update, context, "🤔 No entendí qué cambiar del último gasto.")
@@ -4659,7 +4666,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 26.1.0 — memoria persistente activa")
+    logger.info("Bot corriendo 26.3.0 — memoria persistente activa")
     server.serve_forever()
 
 if __name__ == "__main__":
