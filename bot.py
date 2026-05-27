@@ -3812,11 +3812,69 @@ async def panel_texto(update, context):
         context.user_data["corr_msg_id"] = msg.message_id
     return CORREGIR_PANEL
 
-async def cmd_prueba(update,context):
+# ── SANDBOX DE PRUEBA ────────────────────────────────────────────────────────
+
+_FOOTER_SB = "\n\n— Sandbox activo · nada se guarda · /cancelar para salir"
+
+def _msg_sandbox(gasto: dict, header: str = "🧪 Gasto simulado", origen: str = "") -> str:
+    """Formatea la tarjeta de un gasto simulado con footer de sandbox."""
+    fecha_fmt = datetime.datetime.strptime(gasto["fecha"], "%Y-%m-%d").strftime("%d/%b/%y").upper()
+    lineas = [
+        f"{header}\n",
+        f"📌 {gasto['concepto']}",
+        f"💵 ${gasto['monto']:,.2f}",
+        f"🗓️ {fecha_fmt}",
+        f"💳 {gasto['tarjeta']}",
+        f"🧾 {gasto['mes']}",
+        f"🏷️ {gasto['subcategoria']}",
+        f"🗂️ {gasto['presupuesto']}",
+    ]
+    if origen:
+        lineas.append(f"\n🔍 {origen}")
+    return "\n".join(lineas) + _FOOTER_SB
+
+def _editar_gasto_local(gasto: dict, campos: dict) -> dict:
+    """Aplica campos de edición sobre un gasto dict sin tocar Notion. Devuelve gasto modificado."""
+    g = dict(gasto)
+    recompute = False
+
+    if campos.get("monto") is not None:
+        try:
+            g["monto"] = float(campos["monto"])
+        except (ValueError, TypeError):
+            pass
+    if campos.get("concepto"):
+        g["concepto"] = str(campos["concepto"]).title()
+    if campos.get("tarjeta") in TARJETAS_VALIDAS:
+        g["tarjeta"] = campos["tarjeta"]
+        recompute = True
+    if campos.get("fecha"):
+        try:
+            g["fecha"] = datetime.date.fromisoformat(campos["fecha"]).strftime("%Y-%m-%d")
+            recompute = True
+        except (ValueError, TypeError):
+            pass
+    if recompute:
+        f = datetime.date.fromisoformat(g["fecha"])
+        g["mes"] = calcular_mes(f, g["tarjeta"])
+    if campos.get("presupuesto") in PR:
+        g["presupuesto"] = campos["presupuesto"]
+    if campos.get("subcategoria") in SC:
+        g["subcategoria"] = campos["subcategoria"]
+        # Auto-derivar presupuesto si no vino explícito (igual que en edición real)
+        if not campos.get("presupuesto") and g["subcategoria"] in SUBCAT_PRESUPUESTO:
+            pr_d = SUBCAT_PRESUPUESTO[g["subcategoria"]]
+            if pr_d in PR:
+                g["presupuesto"] = pr_d
+    return g
+
+async def cmd_prueba(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
+    context.user_data.pop("prueba_gasto", None)
     await update.message.reply_text(
-        "🧪 Modo prueba activado. Escribe el gasto normalmente.\n"
-        "No se registrará nada en Notion. El modo prueba dura solo un mensaje."
+        "🧪 Sandbox activado — escribe gastos y correcciones libremente.\n"
+        "Nada se guarda en Notion.\n\n"
+        "→ Escribe un gasto para empezar · /cancelar para salir"
     )
     return PRUEBA_GASTO
 
@@ -3824,38 +3882,54 @@ async def handle_prueba(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return ConversationHandler.END
     texto = update.message.text.strip()
+    gasto_actual = context.user_data.get("prueba_gasto")
+
     try:
         gasto = None
         origen_label = ""
 
-        # ── Ruta Groq (si disponible y el mensaje parece NL) ─────────────────
+        # ── Ruta Groq ────────────────────────────────────────────────────────
         if GROQ_API_KEY and not _parece_gasto_estricto(texto):
-            tipo, payload = await asyncio.to_thread(clasificar_mensaje_groq, texto)
+            tipo, payload = await asyncio.to_thread(
+                clasificar_mensaje_groq, texto, gasto_actual
+            )
+
+            # Edición sobre gasto existente en sandbox
+            if tipo == "edicion" and payload and gasto_actual:
+                g = _editar_gasto_local(gasto_actual, payload)
+                context.user_data["prueba_gasto"] = g
+                await update.message.reply_text(_msg_sandbox(g, header="✏️ Gasto editado (simulado)"))
+                return PRUEBA_GASTO
+
+            # Multi-gasto
             if tipo == "multi_gasto" and payload:
                 lineas = [f"🧪 Multi-gasto detectado ({len(payload)} elementos)\n"]
                 for i, g in enumerate(payload, 1):
-                    lineas.append(f"#{i}  {g['concepto']} · ${g['monto']:,.2f}")
-                    lineas.append(f"     💳 {g['tarjeta']} · 🧾 {g['mes']} · 🏷️ {g['subcategoria']}")
-                lineas.append("\nNada fue registrado en Notion.")
-                await update.message.reply_text("\n".join(lineas))
-                return ConversationHandler.END
-            if tipo in ("consulta", "otro", "meta", "alias"):
+                    lineas.append(f"#{i}  📌 {g['concepto']} · 💵 ${g['monto']:,.2f}")
+                    lineas.append(f"     💳 {g['tarjeta']} · 🧾 {g['mes']} · 🏷️ {g['subcategoria']} · 🗂️ {g['presupuesto']}")
+                context.user_data["prueba_gasto"] = payload[0]
+                await update.message.reply_text("\n".join(lineas) + _FOOTER_SB)
+                return PRUEBA_GASTO
+
+            # Consulta / otro / no es gasto
+            if tipo in ("consulta", "otro", "meta", "alias", "ingreso"):
+                hint = "\n\nEscribe un gasto para empezar." if not gasto_actual else ""
                 await update.message.reply_text(
-                    f"🧪 Groq clasificó este mensaje como: *{tipo}*\n\n"
-                    "No se registraría como gasto.\nNada fue registrado en Notion.",
-                    parse_mode="Markdown"
+                    f"🧪 Groq clasificó esto como: {tipo}{hint}" + _FOOTER_SB
                 )
-                return ConversationHandler.END
+                return PRUEBA_GASTO
+
+            # Nuevo gasto via Groq
             if tipo == "gasto" and payload:
                 gasto = payload
                 sub, pre, seguro, ori_emoji, ori_txt = inferir_categoria_con_origen(gasto["concepto"])
-                gasto["subcategoria"] = sub; gasto["presupuesto"] = pre; gasto["seguro"] = seguro
-                origen_label = f"🤖 Groq + {ori_emoji} {ori_txt}"
+                gasto.update({"subcategoria": sub, "presupuesto": pre, "seguro": seguro})
+                origen_label = f"Groq + {ori_emoji} {ori_txt}"
 
-        # ── Ruta parser clásico (fallback o formato estricto) ────────────────
+        # ── Parser clásico (fallback o formato estricto) ─────────────────────
         if gasto is None:
-            tokens = texto.split()
             hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+            tokens = texto.split()
             fecha, tokens2 = parsear_fecha(tokens)
             texp,  tokens2 = parsear_tarjeta(tokens2)
             monto, tokens2 = parsear_monto(tokens2)
@@ -3865,29 +3939,24 @@ async def handle_prueba(update, context):
             tarjeta = calcular_tarjeta(fecha, texp)
             mes     = calcular_mes(fecha, tarjeta)
             sub, pre, seguro, ori_emoji, ori_txt = inferir_categoria_con_origen(concepto)
-            gasto = {"concepto": concepto.title(), "monto": monto,
-                     "fecha": fecha.strftime("%Y-%m-%d"), "tarjeta": tarjeta,
-                     "mes": mes, "subcategoria": sub, "presupuesto": pre}
+            gasto = {
+                "concepto": concepto.title(), "monto": monto,
+                "fecha": fecha.strftime("%Y-%m-%d"), "tarjeta": tarjeta,
+                "mes": mes, "subcategoria": sub, "presupuesto": pre,
+            }
             origen_label = f"{ori_emoji} {ori_txt}"
 
-        fecha_fmt = datetime.datetime.strptime(gasto["fecha"], "%Y-%m-%d").strftime("%d %b %Y").lower()
-        await update.message.reply_text(
-            f"🧪 Resultado de prueba\n\n"
-            f"📌 {gasto['concepto']}\n"
-            f"💵 ${gasto['monto']:,.2f}\n"
-            f"🗓️ {fecha_fmt}\n"
-            f"💳 {gasto['tarjeta']}\n"
-            f"🧾 {gasto['mes']}\n"
-            f"🏷️ {gasto['subcategoria']}\n"
-            f"🗂️ {gasto['presupuesto']}\n\n"
-            f"🔍 Origen: {origen_label}\n\n"
-            f"Nada fue registrado en Notion."
-        )
+        context.user_data["prueba_gasto"] = gasto
+        await update.message.reply_text(_msg_sandbox(gasto, origen=origen_label))
+        return PRUEBA_GASTO
+
     except ValueError as e:
-        await update.message.reply_text(f"❓ {e}\n\nEjemplo: Starbucks 150\n\nYa saliste del modo prueba.")
+        hint = "\n\nEjemplo: Starbucks 150" if not gasto_actual else ""
+        await update.message.reply_text(f"❓ {e}{hint}" + _FOOTER_SB)
+        return PRUEBA_GASTO
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}\n\nYa saliste del modo prueba.")
-    return ConversationHandler.END
+        await update.message.reply_text(f"❌ Error inesperado: {e}" + _FOOTER_SB)
+        return PRUEBA_GASTO
 
 async def cancelar(update,context):
     context.user_data.clear()
@@ -4666,7 +4735,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 26.3.0 — memoria persistente activa")
+    logger.info("Bot corriendo 26.4.0 — memoria persistente activa")
     server.serve_forever()
 
 if __name__ == "__main__":

@@ -2,17 +2,13 @@
 
 > Se sobreescribe al final de cada sesión. Responde: ¿dónde quedó el proyecto?
 > Para arquitectura técnica: `CLAUDE.md`. Para decisiones y lecciones: `memoria.md`.
->
-> **Al cerrar la sesión:** actualizar este archivo + los demás `.md` que correspondan según
-> lo que se hizo. Ver tabla en `CLAUDE.md → Protocolo de Cierre`. Luego commit + push.
-> Jordi no debería tener que pedir esto.
 
 ---
 
 ## Sesión cerrada: 2026-05-26
 
 ### Objetivo
-Corregir 3 bugs reportados por Jordi via screenshots del chat con el bot.
+Corregir 3 bugs reportados + implementar sandbox multi-turno en /prueba.
 
 ---
 
@@ -23,49 +19,47 @@ Corregir 3 bugs reportados por Jordi via screenshots del chat con el bot.
 | Último commit | pendiente — ver abajo |
 | GitHub | pendiente push |
 | Ruta local | `/Users/jordi/Documents/Claude/Projects/Bot-gastos/` |
-| Deploy en Render | ✅ **AUTO** — Render despliega automáticamente en cada push a `main` |
-| Bot en producción | pendiente deploy de esta sesión |
+| Deploy en Render | ✅ AUTO — push a main dispara deploy |
 
 ---
 
-### Qué cambió en esta sesión
-
-**3 bugs corregidos en bot.py (v26.1.0 → v26.3.0):**
+### Qué cambió en esta sesión (v26.1.0 → v26.4.0)
 
 **Bug 1 — Edición contextual no actualizaba presupuesto al cambiar subcategoría**
-- Síntoma: "Este último gasto tiene que ir en Treat y diversión" solo cambiaba la subcategoría (Treat) pero dejaba el presupuesto intacto.
-- Causa: `aplicar_edicion_contextual` manejaba `subcategoria` y `presupuesto` de forma independiente. Si Groq solo devolvía `subcategoria` sin `presupuesto`, el presupuesto nunca se actualizaba.
-- Fix: Cuando se cambia subcategoría sin presupuesto explícito, se auto-deriva desde `SUBCAT_PRESUPUESTO` y se aplica en el mismo PATCH a Notion.
+- `aplicar_edicion_contextual`: cuando se cambia subcategoría sin presupuesto explícito, ahora auto-deriva desde `SUBCAT_PRESUPUESTO`.
 
-**Bug 2 — Filas MEM_ aparecían en la lista de /corregir**
-- Síntoma: Al usar /corregir, aparecían "MEM_8093171397 · $0.00" y "MEM_8663298433 · $0.00" ocupando 2 de los 5 slots.
-- Causa: `cargar_historial_compartido()` consultaba Historial Bot sin filtro, y las filas MEM_ (UsuarioID=0) aparecían si eran las más recientes por `created_time`.
-- Fix: Agregado `{"property": "UsuarioID", "number": {"greater_than": 0}}` al query de `cargar_historial_compartido()`.
+**Bug 2 — Filas MEM_ aparecían en /corregir**
+- `cargar_historial_compartido()`: agregado filtro `UsuarioID > 0` para excluir filas de memoria.
 
 **Bug 3 — ID incorrecto para presupuesto "Personal"**
-- Síntoma: Gastos de "Corte de pelo" vinculaban el presupuesto a la página equivocada en Notion.
-- Causa: `PR["Personal"]` apuntaba a `3c42302c396c4f4abffa38bff79ccac6` (una página en "Categorias de Gastos", NO en la BD Presupuesto). El ID correcto es `829161723b0b49bf8787663a89c7248d` (la página que Jordi renombró de "Cuidado personal" a "Personal" en la BD Presupuesto).
-- Fix:
-  - `PR["Personal"]` → `829161723b0b49bf8787663a89c7248d`
-  - Eliminada entrada `"Cuidado personal"` del dict PR (ya no existe ese nombre en Notion)
-  - `SUBCAT_PRESUPUESTO["Cuidado personal"]` → `"Personal"` (antes era `"Cuidado personal"`)
-  - Regla hard-coded de sephora/perfumería actualizada: presupuesto `"Cuidado personal"` → `"Personal"`
-  - `PR_EMOJI`: eliminada entrada `"Cuidado personal":"💆"` (ya no hay clave con ese nombre)
-  - Actualizado en `NOTION_SCHEMA.md` y `REGLAS_NEGOCIO.md`
+- `PR["Personal"]` corregido a `829161723b0b49bf8787663a89c7248d` (BD Presupuesto).
+- Eliminada clave `"Cuidado personal"` de PR (Jordi renombró la página).
+- `SUBCAT_PRESUPUESTO["Cuidado personal"]` → `"Personal"`.
+- Regla hard-coded de sephora/perfumería actualizada.
+- `PR_EMOJI`: eliminada entrada `"Cuidado personal"`.
+
+**Feature — Sandbox multi-turno en /prueba**
+- `/prueba` ya no es un solo mensaje — abre un sandbox persistente.
+- Cada mensaje puede ser un nuevo gasto O una corrección conversacional del gasto anterior.
+- Nada toca Notion en ningún momento.
+- Helpers nuevos: `_FOOTER_SB`, `_msg_sandbox()`, `_editar_gasto_local()`.
+- Salida: `/cancelar` (mismo exit universal de todos los modos).
+- El `ConversationHandler` no cambió — `handle_prueba` ahora devuelve `PRUEBA_GASTO` siempre (loop) en vez de `END`.
 
 ---
 
 ### Pendiente de verificación (después del deploy)
 
-- [ ] Bug 1: Decirle al bot "Este gasto ponlo en Treat y Diversión" justo después de registrar → debe cambiar AMBOS campos
-- [ ] Bug 2: Usar /corregir → la lista debe mostrar solo gastos reales (sin MEM_*)
-- [ ] Bug 3: Registrar un gasto de "Corte de pelo" o "Sephora" → verificar en Notion que el presupuesto apunta a la página correcta (Personal en BD Presupuesto)
+- [ ] Bug 1: Registrar algo → "ponlo en Treat" → debe cambiar subcategoría Y presupuesto
+- [ ] Bug 2: /corregir → lista sin MEM_*
+- [ ] Bug 3: Registrar "Corte de pelo 150" → verificar en Notion que Presupuesto apunta a la página correcta
+- [ ] Sandbox: /prueba → registrar gasto → editar conversacionalmente → /cancelar
 
 ---
 
 ### Próximos pasos
 
-1. Verificar los 3 puntos de arriba en producción
+1. Verificar los 4 puntos de arriba en producción
 2. **Backlog** (sin urgencia):
    - Reconciliación email BBVA — postergado indefinidamente
    - Evaluar búsqueda híbrida ciclo+calendario para casos genuinamente ambiguos
