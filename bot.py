@@ -1766,6 +1766,21 @@ def _parece_gasto_estricto(texto: str) -> bool:
             pass
     return False
 
+def _leer_tarjeta(props: dict) -> str:
+    """Lee el valor de tarjeta de un gasto de Notion.
+    Orden de prioridad: Pago (select) → Estado de Cuenta (rich_text) → Tarjeta (rich_text).
+    El bot escribe a 'Estado de Cuenta' + 'Pago'; gastos manuales pueden usar 'Tarjeta'.
+    """
+    sel = props.get("Pago", {}).get("select")
+    if sel and sel.get("name"):
+        return sel["name"]
+    for campo in ("Estado de Cuenta", "Tarjeta"):
+        val = "".join(rt.get("plain_text", "")
+                      for rt in props.get(campo, {}).get("rich_text", []))
+        if val:
+            return val
+    return ""
+
 def _presupuesto_de_props(props) -> str:
     """Resuelve el nombre del presupuesto (PR) de un gasto de Notion, o '' si no tiene."""
     rel = props.get("Presupuesto", {}).get("relation", [])
@@ -1835,7 +1850,7 @@ def ejecutar_consulta_finanzas(plan: dict) -> dict:
                 if not any(r.get("id", "").replace("-", "") == subcategoria_id for r in rel_sc):
                     continue
             if tarjeta_filtro:
-                t_notion = "".join(rt.get("plain_text", "") for rt in props.get("Tarjeta", {}).get("rich_text", [])).upper()
+                t_notion = _leer_tarjeta(props).upper()
                 if tarjeta_filtro not in t_notion:
                     continue
             if comercio and comercio not in normalizar(concepto):
@@ -1873,7 +1888,7 @@ def ejecutar_consulta_finanzas(plan: dict) -> dict:
                 if not any(r.get("id", "").replace("-", "") == subcategoria_id for r in rel_sc):
                     continue
             if tarjeta_filtro:
-                t_notion = "".join(rt.get("plain_text", "") for rt in props.get("Tarjeta", {}).get("rich_text", [])).upper()
+                t_notion = _leer_tarjeta(props).upper()
                 if tarjeta_filtro not in t_notion:
                     continue
             if comercio and comercio not in normalizar(concepto):
@@ -1911,7 +1926,7 @@ def ejecutar_consulta_finanzas(plan: dict) -> dict:
                     if not any(r.get("id", "").replace("-", "") == subcategoria_id for r in rel_sc):
                         continue
                 if tarjeta_filtro:
-                    t_notion = "".join(rt.get("plain_text", "") for rt in props.get("Tarjeta", {}).get("rich_text", [])).upper()
+                    t_notion = _leer_tarjeta(props).upper()
                     if tarjeta_filtro not in t_notion:
                         continue
                 if comercio and comercio not in normalizar(concepto):
@@ -2685,8 +2700,13 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
                                      {"property": "Mes", "relation": {"contains": mid}}):
                 props = g.get("properties", {})
                 monto = props.get("Monto", {}).get("number", 0) or 0
-                tarjeta = "".join(rt.get("plain_text", "")
-                                  for rt in props.get("Tarjeta", {}).get("rich_text", [])) or "Sin tarjeta"
+                pago_sel = props.get("Pago", {}).get("select")
+                tarjeta = (pago_sel.get("name", "") if pago_sel else "") \
+                    or "".join(rt.get("plain_text", "")
+                               for rt in props.get("Estado de Cuenta", {}).get("rich_text", [])) \
+                    or "".join(rt.get("plain_text", "")
+                               for rt in props.get("Tarjeta", {}).get("rich_text", [])) \
+                    or "Sin tarjeta"
                 por_tarjeta[tarjeta] = por_tarjeta.get(tarjeta, 0) + monto
                 conteo_t[tarjeta] = conteo_t.get(tarjeta, 0) + 1
         if not por_tarjeta:
@@ -2840,8 +2860,7 @@ def _accion_preview(payload: dict) -> tuple:
                 titulo = props.get("Concepto", {}).get("title", [])
                 concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
                 fecha = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
-                tarjeta = "".join(rt.get("plain_text", "")
-                                  for rt in props.get("Tarjeta", {}).get("rich_text", []))
+                tarjeta = _leer_tarjeta(props)
                 if filtro_concepto and filtro_concepto not in normalizar(concepto):
                     continue
                 if filtro_sc_id:
@@ -4921,7 +4940,7 @@ def _agg_ciclo(mes: str) -> dict:
         pr = _presupuesto_de_props(props)
         if pr:
             cats[pr] = cats.get(pr, 0) + m
-        t = "".join(rt.get("plain_text", "") for rt in props.get("Tarjeta", {}).get("rich_text", [])) or "?"
+        t = _leer_tarjeta(props) or "?"
         tarjetas[t] = tarjetas.get(t, 0) + m
         titulo = props.get("Concepto", {}).get("title", [])
         concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
@@ -5443,7 +5462,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 27.0.0 — acciones masivas + 8 nuevos modos de consulta")
+    logger.info("Bot corriendo 27.1.0 — fix lectura de tarjeta (Pago/Estado de Cuenta)")
     server.serve_forever()
 
 if __name__ == "__main__":
