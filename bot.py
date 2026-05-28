@@ -2820,14 +2820,20 @@ def guardar_notion(gasto):
     pid=PR.get(gasto["presupuesto"])
     if pid: props["Presupuesto"]={"relation":[{"id":pid}]}
     cuerpo={"parent":{"database_id":NOTION_DATABASE_ID},"properties":props}
-    children=_bloques_productos(gasto.get("productos"))
-    if children:
-        cuerpo["children"]=children
     r=notion_request("POST",f"{NOTION_API_BASE}/pages",headers=nh(),
         json=cuerpo,timeout=NOTION_T_DEFAULT)
-    if r and r.status_code==200:
-        return True, r.json().get("id",""), ""
-    return False, "", (r.text if r else "Sin respuesta")
+    if not (r and r.status_code==200):
+        return False, "", (r.text if r else "Sin respuesta")
+    page_id = r.json().get("id","")
+    # La API create_page no soporta children anidados (tabla→filas).
+    # append_block_children sí soporta tabla+filas en una sola llamada.
+    children=_bloques_productos(gasto.get("productos"))
+    if children:
+        r2=notion_request("PATCH",f"{NOTION_API_BASE}/blocks/{page_id}/children",
+            headers=nh(),json={"children":children},timeout=NOTION_T_DEFAULT)
+        if not (r2 and r2.status_code==200):
+            logger.warning(f"Tabla de productos no guardada (page {page_id}): {r2.text if r2 else 'timeout'}")
+    return True, page_id, ""
 
 def _bloques_productos(productos):
     """Convierte una lista de productos [{nombre, precio}] en una tabla de Notion (Producto | Precio)."""
@@ -3242,6 +3248,7 @@ async def callback_foto(update, context):
         return ConversationHandler.END
     ok, nid, err = guardar_notion(gasto)
     if not ok:
+        logger.error(f"Error guardando ticket en Notion: {err}")
         await query.message.edit_text("❌ Error al guardar en Notion.")
         return ConversationHandler.END
     gasto_completo = {**gasto, "notion_id": nid}

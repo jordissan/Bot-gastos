@@ -5,10 +5,10 @@
 
 ---
 
-## Sesión cerrada: 2026-05-27
+## Sesión cerrada: 2026-05-28
 
 ### Objetivo
-Corregir 3 bugs + sandbox multi-turno + confirmación de edición + paridad sandbox/producción + estructura .claude/ + reorganización docs/.
+Fix: fotos de ticket fallan con "Error al guardar en Notion." al confirmar.
 
 ---
 
@@ -16,84 +16,57 @@ Corregir 3 bugs + sandbox multi-turno + confirmación de edición + paridad sand
 
 | Item | Estado |
 |------|--------|
-| Versión | 26.6.0 |
+| Versión | 26.7.0 |
 | Branch | main |
-| GitHub | ✅ sincronizado |
+| GitHub | ⏳ pendiente de push |
 | Deploy en Render | ✅ AUTO — push a main dispara deploy |
 | Ruta local | `/Users/jordi/Documents/Claude/Projects/Bot-gastos/` |
 
 ---
 
-### Qué cambió en esta sesión (v26.1.0 → v26.6.0)
+### Qué cambió en esta sesión (v26.6.0 → v26.7.0)
 
-**Bug 1 — Edición no actualizaba presupuesto al cambiar subcategoría**
-- `aplicar_edicion_contextual` y `_editar_gasto_local`: auto-deriva presupuesto desde `SUBCAT_PRESUPUESTO` si no viene explícito.
+**Bug — Foto de ticket falla al guardar en Notion**
 
-**Bug 2 — MEM_ aparecían en /corregir**
-- `cargar_historial_compartido()`: filtro `UsuarioID > 0`.
-
-**Bug 3 — ID incorrecto para presupuesto "Personal"**
-- `PR["Personal"]` corregido a `829161723b0b49bf8787663a89c7248d`.
-- Eliminada clave `"Cuidado personal"` de PR; SUBCAT_PRESUPUESTO y reglas hard-coded actualizadas.
-
-**Feature — Sandbox multi-turno en /prueba**
-- Loop persistente: registra y edita gastos sin guardar en Notion.
-- Helpers: `_FOOTER_SB`, `_msg_sandbox()`, `_editar_gasto_local()`.
-- Salida: `/cancelar`.
-
-**Feature — Confirmación antes de aplicar edición contextual (producción)**
-- Edición conversacional muestra propuesta con `[✅ Confirmar] [❌ Cancelar]` antes de tocar Notion.
-- Múltiples correcciones se acumulan en `_staged_edits[uid]` (merging de campos).
-- Solo al confirmar: PATCH a Notion + notificación a la pareja (un solo mensaje).
-- `callback_edicion` maneja `pattern="^edicion_"`.
-
-**Feature — Paridad sandbox/producción: confirmación en /prueba**
-- Las ediciones en sandbox también muestran propuesta con `[✅ Confirmar] [❌ Cancelar]`.
-- Al confirmar: solo actualiza `context.user_data["prueba_gasto"]`, sin Notion ni notificaciones.
-- `callback_sandbox_edicion` maneja `pattern="^sandbox_"`.
-
-**Infraestructura — Estructura .claude/**
-- `.claude/settings.json`: modelo fijado a claude-sonnet-4-6, permisos Bash pre-aprobados.
-- `.claude/hooks/SessionStart.sh`: carga automática de contexto al iniciar sesión.
-- `.claude/commands/deploy.md`: comando /deploy con receta de 5 pasos.
-- `.gitignore`: añadido `.claude/settings.local.json`.
-
-**Reorganización — docs/**
-- Movidos 7 archivos sueltos a carpeta `docs/`:
-  MEMORIA.md, NOTION_SCHEMA.md, REGLAS_NEGOCIO.md, DEBUGGING.md, TESTING.md, REFLEXION_IA.md, GROQ_INTEGRATION.md
-- `CLAUDE.md` actualizado con rutas `docs/` en sección de protocolo.
+- **Causa raíz:** `guardar_notion` incluía la tabla de productos (`_bloques_productos`) como `children` del `POST /pages`. La API Notion **no admite** children anidados (tabla → filas) en el endpoint `create_page` → devuelve 400 → el gasto entero fallaba.
+- **Fix:** `guardar_notion` ahora:
+  1. Crea la página sin `children`
+  2. Si hay productos, los agrega con `PATCH /blocks/{page_id}/children` (que sí soporta tabla+filas en una sola llamada)
+  3. Si la tabla falla, el gasto igual queda guardado (solo se pierde el desglose visual)
+- **Logging:** `callback_foto` ahora loggea el error real de Notion (`logger.error`) para facilitar debugging futuro.
 
 ---
 
-### Componentes clave (resumen)
+### Componentes clave modificados
 
-| Componente | Tipo | Propósito |
-|-----------|------|-----------|
-| `_staged_edits` | dict global | Staging de ediciones pendientes de confirmar (producción) |
-| `_construir_props_edicion(base, g)` | helper | Construye props Notion del diff base→g |
-| `callback_edicion` | handler | Confirm/cancel edición real — pattern `^edicion_` |
-| `callback_sandbox_edicion` | handler | Confirm/cancel edición en sandbox — pattern `^sandbox_` |
-| `_FOOTER_SB` | constante | Footer de sandbox |
-| `_msg_sandbox(gasto, header, origen)` | helper | Formatea gasto simulado con footer |
-| `_editar_gasto_local(gasto, campos)` | helper | Aplica campos sin tocar Notion (shared por sandbox y staging) |
+| Función | Cambio |
+|---------|--------|
+| `guardar_notion` | Separada creación de página de adición de tabla de productos |
+| `callback_foto` | Agregado `logger.error` con el error real de Notion |
 
 ---
 
 ### Pendiente de verificación (después del deploy)
 
-- [ ] Bug 1: "ponlo en Treat" → cambia subcategoría Y presupuesto
-- [ ] Bug 2: /corregir → sin MEM_*
-- [ ] Bug 3: "Corte de pelo 150" → presupuesto correcto en Notion
-- [ ] Producción: editar gasto → ver propuesta → confirmar → solo entonces llega notificación a pareja
-- [ ] Producción: 2 rondas de corrección → confirmar → un solo mensaje a pareja
-- [ ] Sandbox: /prueba → gasto → corrección → ver propuesta → confirmar → corrección 2 → confirmar → /cancelar
-- [ ] Sandbox: verificar que nada llega a Notion ni a la pareja en ningún momento
+- [ ] Enviar foto de ticket con productos → debe guardarse en Notion y mostrar confirmación
+- [ ] Tabla de productos visible en la página de Notion del gasto
+- [ ] Si tabla falla (raro), el gasto igual se guarda y aparece el warning en logs de Render
+
+---
+
+### Flujo de deploy
+
+1. Borrar webhook: `https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=true`
+2. Push a main → Render hace Auto Deploy automáticamente
+3. Verificar en logs: `[APScheduler] Scheduler iniciado.`
 
 ---
 
 ### Próximos pasos
 
-1. Verificar los 7 puntos de arriba en producción y sandbox
-2. **Backlog** (sin urgencia):
+1. Verificar fix con foto de ticket real
+2. **Nuevo flujo de mantenimiento:** Google Drive carpeta "Bot-gastos" — Jordi sube screenshots de errores ahí, y se corrigen en sesiones subsecuentes.
+3. **Backlog** (sin urgencia):
    - Reconciliación email BBVA — postergado indefinidamente
    - Evaluar búsqueda híbrida ciclo+calendario para casos genuinamente ambiguos
+   - Verificar los 7 puntos del handoff anterior (v26.6.0) que quedaron pendientes

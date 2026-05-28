@@ -129,6 +129,11 @@ t = props.get("Tarjeta", {}).get("select", {}).get("name", "")
 El nombre del campo en el filtro no coincide exactamente con el nombre en Notion (case-sensitive).
 Usar los nombres exactos de `NOTION_SCHEMA.md`.
 
+### Ticket con productos → "Error al guardar en Notion."
+
+**Causa:** La API `POST /pages` de Notion **no admite** children anidados (tabla → filas). Al incluir la tabla de productos en el mismo `create_page`, Notion devuelve 400.  
+**Solución (v26.7.0):** `guardar_notion` ahora crea la página sin children y luego agrega la tabla con `PATCH /blocks/{page_id}/children` (que sí soporta tabla+filas en una sola llamada). Si la tabla falla, el gasto igual queda guardado — solo se pierde el desglose; queda un `logger.warning` con el error real.
+
 ### Memoria persistente (`MEM_{uid}`) no carga entre sesiones
 
 **Síntoma:** el bot olvida contexto en cada conversación.
