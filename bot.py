@@ -2824,16 +2824,7 @@ def guardar_notion(gasto):
         json=cuerpo,timeout=NOTION_T_DEFAULT)
     if not (r and r.status_code==200):
         return False, "", (r.text if r else "Sin respuesta")
-    page_id = r.json().get("id","")
-    # La API create_page no soporta children anidados (tabla→filas).
-    # append_block_children sí soporta tabla+filas en una sola llamada.
-    children=_bloques_productos(gasto.get("productos"))
-    if children:
-        r2=notion_request("PATCH",f"{NOTION_API_BASE}/blocks/{page_id}/children",
-            headers=nh(),json={"children":children},timeout=NOTION_T_DEFAULT)
-        if not (r2 and r2.status_code==200):
-            logger.warning(f"Tabla de productos no guardada (page {page_id}): {r2.text if r2 else 'timeout'}")
-    return True, page_id, ""
+    return True, r.json().get("id",""), ""
 
 def _bloques_productos(productos):
     """Convierte una lista de productos [{nombre, precio}] en una tabla de Notion (Producto | Precio)."""
@@ -3256,7 +3247,7 @@ async def callback_foto(update, context):
         return ConversationHandler.END
     gasto_completo = {**gasto, "notion_id": nid}
     uid = query.from_user.id
-    guardar_contexto(uid, gasto_completo)  # habilita edición conversacional tras registrar por foto
+    guardar_contexto(uid, gasto_completo)
     threading.Thread(target=guardar_historial_notion, args=(gasto_completo, uid), daemon=True).start()
     asyncio.create_task(generar_insight_groq(gasto_completo, uid, context))
     asyncio.create_task(verificar_hormiga(gasto_completo, uid, context))
@@ -3265,7 +3256,28 @@ async def callback_foto(update, context):
     import random
     if random.randint(1, 50) == 1:
         threading.Thread(target=limpiar_aprendizaje, daemon=True).start()
+
+    # Intentar agregar tabla de productos a la página de Notion
+    tabla_err = ""
+    productos = gasto.get("productos") or []
+    if productos:
+        children = _bloques_productos(productos)
+        if children:
+            r_tabla = await asyncio.to_thread(
+                notion_request, "PATCH",
+                f"{NOTION_API_BASE}/blocks/{nid}/children",
+                headers=nh(), json={"children": children}, timeout=NOTION_T_DEFAULT
+            )
+            if not (r_tabla and r_tabla.status_code == 200):
+                tabla_err = (r_tabla.text[:300] if r_tabla else "timeout")
+                logger.error(f"Tabla no guardada (page {nid}): {tabla_err}")
+
     await query.message.edit_text(msg_gasto(gasto, notion_id=nid), parse_mode="Markdown")
+    if tabla_err:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"⚠️ Desglose no guardado en Notion.\nError: {tabla_err[:300]}"
+        )
     notif  = USUARIOS_NOTIFICAR.get(uid)
     nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
     if notif:
