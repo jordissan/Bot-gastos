@@ -3263,13 +3263,20 @@ async def callback_foto(update, context):
     if productos:
         children = _bloques_productos(productos)
         if children:
-            r_tabla = await asyncio.to_thread(
-                notion_request, "PATCH",
-                f"{NOTION_API_BASE}/blocks/{nid}/children",
-                headers=nh(), json={"children": children}, timeout=NOTION_T_DEFAULT
-            )
-            if not (r_tabla and r_tabla.status_code == 200):
-                tabla_err = (r_tabla.text[:300] if r_tabla else "timeout")
+            def _append_tabla():
+                try:
+                    r = requests.patch(
+                        f"{NOTION_API_BASE}/blocks/{nid}/children",
+                        headers=nh(), json={"children": children}, timeout=5
+                    )
+                    return r.status_code, r.text[:300]
+                except requests.exceptions.Timeout:
+                    return 0, "timeout (5s) — probablemente falta permiso 'Insert content' en la integración"
+                except Exception as e:
+                    return 0, str(e)[:200]
+            status, resp_text = await asyncio.to_thread(_append_tabla)
+            if status != 200:
+                tabla_err = f"HTTP {status}: {resp_text}" if status else resp_text
                 logger.error(f"Tabla no guardada (page {nid}): {tabla_err}")
 
     await query.message.edit_text(msg_gasto(gasto, notion_id=nid), parse_mode="Markdown")
