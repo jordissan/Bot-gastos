@@ -2855,8 +2855,7 @@ def _bloques_productos(productos):
         return None
     return [{
         "object": "block", "type": "table",
-        "table": {"table_width": 2, "has_column_header": True, "has_row_header": False},
-        "children": filas,
+        "table": {"table_width": 2, "has_column_header": True, "has_row_header": False, "children": filas},
     }]
 
 # ── MENSAJES ─────────────────────────────────────────────────────────────────
@@ -4899,7 +4898,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 26.9.0 — memoria persistente activa")
+    logger.info("Bot corriendo 26.10.0 — memoria persistente activa")
     server.serve_forever()
 
 if __name__ == "__main__":
