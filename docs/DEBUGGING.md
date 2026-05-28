@@ -151,6 +151,15 @@ Usar los nombres exactos de `NOTION_SCHEMA.md`.
 **Causa:** `conv_foto` no está registrado ANTES que `conv_gasto` en `main()`.
 El orden correcto: conv_prueba → conv_foto → conv_corregir → conv_eliminar → conv_gasto.
 
+### Botón Confirmar/Cancelar de foto queda en "Cargando..." infinito
+
+**Causa:** El bot se reinició (deploy, Render sleeping, crash) DESPUÉS de mostrar el preview. El `ConversationHandler` perdió el estado `FOTO_CONFIRMAR` en memoria. El callback `foto_confirmar` / `foto_cancelar` no tiene ningún handler que lo capture → Telegram muestra el spinner para siempre. `/cancelar` también queda mudo porque era solo fallback del ConversationHandler.
+
+**Solución (v26.8.0):**
+- Registrado `CallbackQueryHandler(callback_foto, pattern="^foto_")` como handler global DESPUÉS de `conv_foto`. Cuando el conv está activo, `conv_foto` lo reclama primero; cuando el estado está perdido, el global lo captura y muestra "⚠️ El bot se reinició. Vuelve a enviar la foto."
+- Registrado `CommandHandler("cancelar", cancelar)` globalmente. Funciona igual: el conv tiene prioridad si está activo, el global actúa si no.
+- `guardar_notion` ahora se llama con `asyncio.to_thread` en `callback_foto` para no bloquear el event loop (dos llamadas síncronas a Notion podían congelar el bot ~16s).
+
 ### Botones inline no responden (callback timeout)
 
 Telegram cancela callbacks después de ~60s. Si el bot tardó mucho en responder al mensaje inicial, el botón ya expiró. No hay forma de evitarlo — el usuario debe reenviar el mensaje.

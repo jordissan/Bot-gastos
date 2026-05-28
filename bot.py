@@ -3244,9 +3244,12 @@ async def callback_foto(update, context):
         return ConversationHandler.END
     gasto = context.user_data.pop("gasto_foto", None)
     if not gasto:
-        await query.message.edit_text("❌ Error: no se encontró el gasto.")
+        await query.message.edit_text(
+            "⚠️ El bot se reinició y perdió el ticket. Vuelve a enviar la foto para guardarlo.",
+            reply_markup=InlineKeyboardMarkup([])
+        )
         return ConversationHandler.END
-    ok, nid, err = guardar_notion(gasto)
+    ok, nid, err = await asyncio.to_thread(guardar_notion, gasto)
     if not ok:
         logger.error(f"Error guardando ticket en Notion: {err}")
         await query.message.edit_text("❌ Error al guardar en Notion.")
@@ -4849,6 +4852,10 @@ def main():
     app.add_handler(conv_corregir)
     app.add_handler(conv_eliminar)
     app.add_handler(conv_gasto)
+    # Fallbacks globales — actúan solo cuando ningún ConversationHandler activo los reclamó
+    # (ej. bot reiniciado; el estado de la conversación se perdió)
+    app.add_handler(CallbackQueryHandler(callback_foto, pattern="^foto_"))
+    app.add_handler(CommandHandler("cancelar", cancelar))
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)

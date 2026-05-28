@@ -8,7 +8,7 @@
 ## Sesión cerrada: 2026-05-28
 
 ### Objetivo
-Fix: fotos de ticket fallan con "Error al guardar en Notion." al confirmar.
+Fix: fotos de ticket — dos bugs consecutivos descubiertos vía carpeta Bot-gastos en Drive.
 
 ---
 
@@ -16,7 +16,7 @@ Fix: fotos de ticket fallan con "Error al guardar en Notion." al confirmar.
 
 | Item | Estado |
 |------|--------|
-| Versión | 26.7.0 |
+| Versión | 26.8.0 |
 | Branch | main |
 | GitHub | ⏳ pendiente de push |
 | Deploy en Render | ✅ AUTO — push a main dispara deploy |
@@ -24,33 +24,31 @@ Fix: fotos de ticket fallan con "Error al guardar en Notion." al confirmar.
 
 ---
 
-### Qué cambió en esta sesión (v26.6.0 → v26.7.0)
+### Qué cambió en esta sesión (v26.6.0 → v26.8.0)
 
-**Bug — Foto de ticket falla al guardar en Notion**
+**Bug 1 — Foto ticket → "Error al guardar en Notion." (v26.7.0)**
+- Causa: `POST /pages` de Notion no admite children anidados (tabla→filas).
+- Fix: `guardar_notion` crea la página sin children y luego usa `PATCH /blocks/{id}/children` para la tabla de productos. Si la tabla falla, el gasto igual queda guardado.
 
-- **Causa raíz:** `guardar_notion` incluía la tabla de productos (`_bloques_productos`) como `children` del `POST /pages`. La API Notion **no admite** children anidados (tabla → filas) en el endpoint `create_page` → devuelve 400 → el gasto entero fallaba.
-- **Fix:** `guardar_notion` ahora:
-  1. Crea la página sin `children`
-  2. Si hay productos, los agrega con `PATCH /blocks/{page_id}/children` (que sí soporta tabla+filas en una sola llamada)
-  3. Si la tabla falla, el gasto igual queda guardado (solo se pierde el desglose visual)
-- **Logging:** `callback_foto` ahora loggea el error real de Notion (`logger.error`) para facilitar debugging futuro.
+**Bug 2 — Confirmar/Cancelar foto queda en "Cargando..." infinito (v26.8.0)**
+- Causa: Bot se reinicia (deploy, Render sleeping) → estado del `ConversationHandler` se pierde → `foto_confirmar`/`foto_cancelar` callbacks no tienen handler → spinner eterno. `/cancelar` también mudo por la misma razón.
+- Fix 1: `CallbackQueryHandler(callback_foto, pattern="^foto_")` registrado como handler global DESPUÉS de `conv_foto`. Si el conv está activo lo reclama; si el estado está perdido, el global muestra "⚠️ El bot se reinició. Vuelve a enviar la foto."
+- Fix 2: `CommandHandler("cancelar", cancelar)` registrado globalmente como fallback.
+- Fix 3: `guardar_notion` ahora se llama con `asyncio.to_thread` en `callback_foto` para no bloquear el event loop durante las llamadas síncronas a Notion.
 
----
-
-### Componentes clave modificados
-
-| Función | Cambio |
-|---------|--------|
-| `guardar_notion` | Separada creación de página de adición de tabla de productos |
-| `callback_foto` | Agregado `logger.error` con el error real de Notion |
+**Flujo de mantenimiento establecido**
+- Carpeta "Bot-gastos" en Google Drive (ID `1tOuK2JpoeVIItaNimtuFEmvM7Llrh1YK`).
+- Política: máximo 10 capturas; al inicio de sesión limpiar excedentes más viejos.
+- Documentado en `CLAUDE.md` sección "Flujo de mantenimiento".
 
 ---
 
 ### Pendiente de verificación (después del deploy)
 
-- [ ] Enviar foto de ticket con productos → debe guardarse en Notion y mostrar confirmación
-- [ ] Tabla de productos visible en la página de Notion del gasto
-- [ ] Si tabla falla (raro), el gasto igual se guarda y aparece el warning en logs de Render
+- [ ] Enviar foto de ticket → ver preview → Confirmar → gasto guardado en Notion
+- [ ] Tabla de productos visible en la página de Notion
+- [ ] Enviar foto → ver preview → dejar el bot reiniciar → presionar Confirmar → mensaje "El bot se reinició. Vuelve a enviar la foto." (en lugar de spinner eterno)
+- [ ] `/cancelar` responde aunque no haya conversación activa
 
 ---
 
@@ -64,9 +62,8 @@ Fix: fotos de ticket fallan con "Error al guardar en Notion." al confirmar.
 
 ### Próximos pasos
 
-1. Verificar fix con foto de ticket real
-2. **Nuevo flujo de mantenimiento:** Google Drive carpeta "Bot-gastos" — Jordi sube screenshots de errores ahí, y se corrigen en sesiones subsecuentes.
-3. **Backlog** (sin urgencia):
+1. Verificar los puntos de arriba en producción
+2. **Backlog** (sin urgencia):
    - Reconciliación email BBVA — postergado indefinidamente
-   - Evaluar búsqueda híbrida ciclo+calendario para casos genuinamente ambiguos
-   - Verificar los 7 puntos del handoff anterior (v26.6.0) que quedaron pendientes
+   - Evaluar búsqueda híbrida ciclo+calendario
+   - Verificar los 7 puntos del handoff v26.6.0 que quedaron pendientes
