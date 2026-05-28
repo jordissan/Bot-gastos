@@ -2,12 +2,12 @@
 
 > **⚠️ PROTOCOLO DE INICIO DE SESIÓN — leer en este orden:**
 > 1. `handoff.md` — qué quedó pendiente, qué cambió, qué sigue.
-> 2. `memoria.md` — decisiones de diseño, conceptos del dominio, lecciones aprendidas.
+> 2. `docs/MEMORIA.md` — decisiones de diseño, conceptos del dominio, lecciones aprendidas.
 > 3. Este archivo — arquitectura técnica y referencia del bot.
-> 4. `NOTION_SCHEMA.md` — solo si vas a tocar código de Notion (schema, IDs, tipos de campos).
-> 5. `REGLAS_NEGOCIO.md` — solo si vas a tocar categorización, tarjetas o ciclos.
-> 6. `DEBUGGING.md` — solo si algo está fallando.
-> 7. `TESTING.md` — solo después de un deploy.
+> 4. `docs/NOTION_SCHEMA.md` — solo si vas a tocar código de Notion (schema, IDs, tipos de campos).
+> 5. `docs/REGLAS_NEGOCIO.md` — solo si vas a tocar categorización, tarjetas o ciclos.
+> 6. `docs/DEBUGGING.md` — solo si algo está fallando.
+> 7. `docs/TESTING.md` — solo después de un deploy.
 
 ---
 

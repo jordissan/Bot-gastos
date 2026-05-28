@@ -1,14 +1,14 @@
 # handoff.md — Estado operativo
 
 > Se sobreescribe al final de cada sesión. Responde: ¿dónde quedó el proyecto?
-> Para arquitectura técnica: `CLAUDE.md`. Para decisiones y lecciones: `memoria.md`.
+> Para arquitectura técnica: `CLAUDE.md`. Para decisiones y lecciones: `docs/MEMORIA.md`.
 
 ---
 
-## Sesión cerrada: 2026-05-26
+## Sesión cerrada: 2026-05-27
 
 ### Objetivo
-Corregir 3 bugs + sandbox multi-turno + confirmación de edición + paridad sandbox/producción.
+Corregir 3 bugs + sandbox multi-turno + confirmación de edición + paridad sandbox/producción + estructura .claude/ + reorganización docs/.
 
 ---
 
@@ -16,10 +16,11 @@ Corregir 3 bugs + sandbox multi-turno + confirmación de edición + paridad sand
 
 | Item | Estado |
 |------|--------|
-| Último commit | pendiente |
-| GitHub | pendiente push |
-| Ruta local | `/Users/jordi/Documents/Claude/Projects/Bot-gastos/` |
+| Versión | 26.6.0 |
+| Branch | main |
+| GitHub | ✅ sincronizado |
 | Deploy en Render | ✅ AUTO — push a main dispara deploy |
+| Ruta local | `/Users/jordi/Documents/Claude/Projects/Bot-gastos/` |
 
 ---
 
@@ -49,13 +50,22 @@ Corregir 3 bugs + sandbox multi-turno + confirmación de edición + paridad sand
 **Feature — Paridad sandbox/producción: confirmación en /prueba**
 - Las ediciones en sandbox también muestran propuesta con `[✅ Confirmar] [❌ Cancelar]`.
 - Al confirmar: solo actualiza `context.user_data["prueba_gasto"]`, sin Notion ni notificaciones.
-- Múltiples rondas se acumulan en `context.user_data["prueba_staged"]`.
 - `callback_sandbox_edicion` maneja `pattern="^sandbox_"`.
-- El sandbox refleja fielmente el comportamiento de producción.
+
+**Infraestructura — Estructura .claude/**
+- `.claude/settings.json`: modelo fijado a claude-sonnet-4-6, permisos Bash pre-aprobados.
+- `.claude/hooks/SessionStart.sh`: carga automática de contexto al iniciar sesión.
+- `.claude/commands/deploy.md`: comando /deploy con receta de 5 pasos.
+- `.gitignore`: añadido `.claude/settings.local.json`.
+
+**Reorganización — docs/**
+- Movidos 7 archivos sueltos a carpeta `docs/`:
+  MEMORIA.md, NOTION_SCHEMA.md, REGLAS_NEGOCIO.md, DEBUGGING.md, TESTING.md, REFLEXION_IA.md, GROQ_INTEGRATION.md
+- `CLAUDE.md` actualizado con rutas `docs/` en sección de protocolo.
 
 ---
 
-### Componentes nuevos (resumen)
+### Componentes clave (resumen)
 
 | Componente | Tipo | Propósito |
 |-----------|------|-----------|
