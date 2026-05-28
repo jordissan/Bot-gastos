@@ -393,6 +393,14 @@ Render está configurado con **Auto Deploy** desde GitHub. Cada push a `main` di
 - Deploy en orden: borrar webhook → push a GitHub → Manual Deploy en Render.
 - GitHub: arrastrar archivos — nunca copy-paste (evita comillas tipográficas que rompen el código Python).
 
+### Flujo de mantenimiento — Google Drive "Bot-gastos"
+
+Jordi sube capturas de pantalla de errores del bot a la carpeta **Bot-gastos** de Google Drive (ID: `1tOuK2JpoeVIItaNimtuFEmvM7Llrh1YK`). Al inicio de cada sesión de mantenimiento:
+
+1. Abrir la carpeta con el Google Drive MCP (`search_files` con `parentId = '1tOuK2JpoeVIItaNimtuFEmvM7Llrh1YK'`).
+2. **Limpieza:** si hay más de 10 archivos, borrar los más viejos (por `createdTime`) hasta dejar exactamente 10.
+3. Revisar las capturas nuevas y diagnosticar/corregir los errores encontrados.
+
 ---
 
 ## ⚠️ PROTOCOLO DE CIERRE DE SESIÓN — ejecutar siempre, sin esperar que Jordi lo pida
