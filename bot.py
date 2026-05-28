@@ -1379,6 +1379,23 @@ def guardar_alias(uid: int, trigger: str, resolved: str) -> bool:
         logger.error(f"Error guardando alias: {ex}")
         return False
 
+def borrar_alias(uid: int, trigger: str) -> bool:
+    """Elimina un alias por trigger. Retorna True si lo encontró y borró."""
+    trigger_norm = trigger.lower().strip()
+    alias_id = next((a["id"] for a in _cargar_aliases_uid(uid) if a["trigger"] == trigger_norm), None)
+    if not alias_id:
+        return False
+    try:
+        r = notion_request("PATCH", f"{NOTION_API_BASE}/pages/{alias_id}",
+                           headers=nh(), json={"archived": True}, timeout=NOTION_T_SHORT)
+        ok = bool(r and r.status_code == 200)
+        if ok:
+            _alias_cache.pop(uid, None)
+        return ok
+    except Exception as ex:
+        logger.error(f"Error borrando alias: {ex}")
+        return False
+
 def expandir_aliases(uid: int, texto: str) -> str:
     """Reemplaza triggers conocidos del usuario en el texto antes de procesar.
     No expande si el mensaje ES una definición de alias (evita sustituciones recursivas)."""
@@ -1586,6 +1603,39 @@ Decide la intención y responde SOLO con JSON válido, sin texto adicional ni ma
   Ej: "cuando digo el super es HEB" → {{"tipo": "alias", "trigger": "el super", "resolved": "HEB"}}
   Ej: "guarda que gasolina full = 700 BBVA12" → {{"tipo": "alias", "trigger": "gasolina full", "resolved": "700 BBVA12"}}
 
+- Si el usuario quiere VER sus aliases ("¿qué atajos tengo?", "muéstrame mis aliases", "¿cuáles son mis atajos?"):
+{{"tipo": "listar_aliases"}}
+
+- Si el usuario quiere BORRAR un alias ("olvida el alias X", "borra el atajo X", "elimina el alias Y"):
+{{"tipo": "borrar_alias", "trigger": "frase exacta del alias a borrar"}}
+
+- Si el usuario pide GENERAR UN REPORTE ("genera el reporte", "dame el reporte semanal", "reporte mensual"):
+{{"tipo": "reporte", "subtipo": "semanal"}}  o  {{"tipo": "reporte", "subtipo": "mensual"}}
+
+- Si el usuario quiere EJECUTAR UNA ACCIÓN MASIVA sobre gastos existentes (reclasificar, renombrar, cambiar tarjeta, borrar en bulk, ver sin categoría, etc.):
+{{"tipo": "accion",
+  "operacion": "reclasificar|renombrar|cambiar_tarjeta|borrar_chicos|sin_categoria|crear_meta_auto|cierre_ciclo",
+  "filtro_concepto": "texto a buscar en el concepto (ej. 'uber')" | null,
+  "filtro_subcategoria": "subcategoría EXACTA de la lista" | null,
+  "filtro_tarjeta": "BBVA05|BBVA12|HEYB25|BMEX04|EFVO" | null,
+  "filtro_monto_max": número | null,
+  "nueva_subcategoria": "subcategoría EXACTA destino" | null,
+  "nuevo_presupuesto": "presupuesto EXACTO destino" | null,
+  "nuevo_concepto": "texto destino" | null,
+  "nueva_tarjeta": "BBVA05|BBVA12|HEYB25|BMEX04|EFVO" | null,
+  "meses": ["MAY26"] | null
+}}
+  Operaciones:
+  - "reclasificar": cambiar subcategoría (y opcionalmente presupuesto) a gastos que coincidan
+  - "renombrar": cambiar el concepto de gastos que coincidan
+  - "cambiar_tarjeta": mover gastos de una tarjeta a otra
+  - "borrar_chicos": archivar/eliminar gastos pequeños (usa filtro_monto_max)
+  - "sin_categoria": mostrar gastos sin subcategoría asignada
+  - "crear_meta_auto": analizar el ciclo y proponer/crear una meta para la categoría con más gasto
+  - "cierre_ciclo": resumen del ciclo + archivar todos sus gastos
+  Presupuestos válidos: {', '.join(PR.keys())}
+  Subcategorías válidas: {', '.join(SC.keys())}
+
 - Si es un saludo, charla o algo no relacionado:
 {{"tipo": "otro"}}
 
@@ -1624,6 +1674,32 @@ IMPORTANTE: usa "multi_gasto" SOLO si hay 2+ gastos claramente distintos. Si es 
             trigger  = (data.get("trigger")  or "").strip()
             resolved = (data.get("resolved") or "").strip()
             return ("alias", {"trigger": trigger, "resolved": resolved}) if (trigger and resolved) else ("otro", None)
+        if tipo == "listar_aliases":
+            return ("listar_aliases", None)
+        if tipo == "borrar_alias":
+            trigger = (data.get("trigger") or "").strip().lower()
+            return ("borrar_alias", {"trigger": trigger}) if trigger else ("otro", None)
+        if tipo == "reporte":
+            subtipo = (data.get("subtipo") or "semanal").lower()
+            subtipo = "mensual" if "mens" in subtipo else "semanal"
+            return ("reporte", {"subtipo": subtipo})
+        if tipo == "accion":
+            operacion = (data.get("operacion") or "").strip().lower()
+            if not operacion:
+                return ("otro", None)
+            payload_accion = {
+                "operacion": operacion,
+                "filtro_concepto":    (data.get("filtro_concepto")    or "").strip() or None,
+                "filtro_subcategoria":(data.get("filtro_subcategoria") or "").strip() or None,
+                "filtro_tarjeta":     (data.get("filtro_tarjeta")     or "").strip().upper() or None,
+                "filtro_monto_max":   data.get("filtro_monto_max"),
+                "nueva_subcategoria": (data.get("nueva_subcategoria") or "").strip() or None,
+                "nuevo_presupuesto":  (data.get("nuevo_presupuesto")  or "").strip() or None,
+                "nuevo_concepto":     (data.get("nuevo_concepto")     or "").strip() or None,
+                "nueva_tarjeta":      (data.get("nueva_tarjeta")      or "").strip().upper() or None,
+                "meses":              [m.upper() for m in (data.get("meses") or [])],
+            }
+            return ("accion", payload_accion)
         if tipo == "edicion" and ultimo:
             campos = {k: data.get(k) for k in
                       ("monto", "concepto", "tarjeta", "fecha", "presupuesto", "subcategoria")
@@ -2469,6 +2545,208 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
                 partes.append(f"{mes}: gastado ${gasto:,.0f} (sin ingreso declarado)")
         return f"Ingresos estimados vs gasto (últimos 6 ciclos): {'; '.join(partes)}."
 
+    # ── NUEVOS MODOS v27 ─────────────────────────────────────────────────────
+
+    if modo == "ranking_monto":
+        meses_t = meses_plan or [mes_activo_str()]
+        n_top = int(plan.get("n_top") or 5)
+        items_raw = []
+        for mes in meses_t:
+            mid = buscar_mes_id(mes)
+            if not mid:
+                continue
+            for g in query_notion_db(NOTION_DATABASE_ID,
+                                     {"property": "Mes", "relation": {"contains": mid}}):
+                props = g.get("properties", {})
+                monto = props.get("Monto", {}).get("number", 0) or 0
+                titulo = props.get("Concepto", {}).get("title", [])
+                concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+                fecha = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
+                pr = _presupuesto_de_props(props)
+                if categoria and pr != categoria:
+                    continue
+                if subcategoria_id:
+                    rel_sc = props.get("Subcategoria", {}).get("relation", [])
+                    if not any(r.get("id", "").replace("-", "") == subcategoria_id for r in rel_sc):
+                        continue
+                items_raw.append((concepto, monto, fecha, pr))
+        if not items_raw:
+            return "Sin gastos para mostrar."
+        top = sorted(items_raw, key=lambda x: x[1], reverse=True)[:n_top]
+        detalle = "; ".join(f"{c} ${m:,.0f} ({f[:10] if f else '?'})" for c, m, f, _ in top)
+        cat_str = f" en {categoria}" if categoria else ""
+        return f"Top {len(top)} gastos más grandes{cat_str} ({', '.join(meses_t)}): {detalle}."
+
+    if modo == "duplicados":
+        meses_t = meses_plan or [mes_activo_str()]
+        items_raw = []
+        for mes in meses_t:
+            mid = buscar_mes_id(mes)
+            if not mid:
+                continue
+            for g in query_notion_db(NOTION_DATABASE_ID,
+                                     {"property": "Mes", "relation": {"contains": mid}}):
+                props = g.get("properties", {})
+                monto = props.get("Monto", {}).get("number", 0) or 0
+                titulo = props.get("Concepto", {}).get("title", [])
+                concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+                fecha = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
+                items_raw.append((normalizar(concepto)[:20], monto, fecha[:10] if fecha else ""))
+        agrupados: dict = {}
+        for c, m, f in items_raw:
+            clave = (c, m)
+            agrupados.setdefault(clave, []).append(f)
+        dupls = [(c, m, fechas) for (c, m), fechas in agrupados.items() if len(fechas) >= 2]
+        if not dupls:
+            return f"No encontré posibles duplicados en {', '.join(meses_t)}. ✅"
+        dupls.sort(key=lambda x: x[1], reverse=True)
+        partes = [f"'{c}' ${m:,.0f} × {len(f)} veces ({', '.join(sorted(f))})"
+                  for c, m, f in dupls[:8]]
+        return f"Posibles duplicados en {', '.join(meses_t)}: {'; '.join(partes)}."
+
+    if modo == "margen_presupuesto":
+        ciclo = (meses_plan or [mes_activo_str()])[0]
+        res = ejecutar_consulta_finanzas({"meses": [ciclo]})
+        gastos_pr = res.get("por_categoria", {})
+        partes = []
+        for pr_name in PR.keys():
+            gasto = gastos_pr.get(pr_name, 0)
+            meta = None
+            for u in USUARIOS_AUTORIZADOS:
+                v = cargar_meta(u, pr_name, ciclo)
+                if v:
+                    meta = v
+                    break
+            if meta:
+                pct = (gasto / meta * 100) if meta else 0
+                falta = meta - gasto
+                emoji = "🔴" if pct >= 100 else ("🟡" if pct >= 80 else "🟢")
+                partes.append(f"{emoji} {pr_name}: ${gasto:,.0f}/{meta:,.0f} ({pct:.0f}%"
+                              f"{', excedido' if falta < 0 else f', falta ${falta:,.0f}'})")
+            elif gasto > 0:
+                partes.append(f"⚪ {pr_name}: ${gasto:,.0f} (sin meta)")
+        if not partes:
+            return f"No hay gastos ni metas registradas en {ciclo}."
+        return f"Margen por presupuesto ({ciclo}): {'; '.join(partes)}."
+
+    if modo == "proyeccion_ciclo":
+        ciclo = mes_activo_str()
+        res = ejecutar_consulta_finanzas({"meses": [ciclo]})
+        gastado = res["total"]
+        hoy_l = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
+        dias_e = max(hoy_l.day, 1)
+        proj = gastado / dias_e * 30
+        tot = _totales_por_ciclo()
+        otros = [v for k, v in tot.items() if k != ciclo and v > 0]
+        resultado = (f"Ciclo {ciclo}: ${gastado:,.0f} en {dias_e} días. "
+                     f"Al ritmo actual proyectas ~${proj:,.0f} al cierre.")
+        if otros:
+            prom_hist = sum(otros) / len(otros)
+            dif = proj - prom_hist
+            resultado += (f" Promedio histórico: ${prom_hist:,.0f} → proyectas "
+                          f"${abs(dif):,.0f} {'más' if dif > 0 else 'menos'} que tu promedio.")
+        ingreso = None
+        for u in USUARIOS_AUTORIZADOS:
+            v = cargar_meta(u, "INGRESO", ciclo)
+            if v:
+                ingreso = v
+                break
+        if ingreso:
+            resultado += f" Con ingreso ${ingreso:,.0f}: ahorro proyectado ~${ingreso - proj:,.0f}."
+        return resultado
+
+    if modo == "fechas_futuras":
+        hoy_iso = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).strftime("%Y-%m-%d")
+        gastos = query_notion_db(NOTION_DATABASE_ID,
+                                 {"property": "Fecha", "date": {"after": hoy_iso}})
+        encontrados = []
+        for g in gastos:
+            props = g.get("properties", {})
+            titulo = props.get("Concepto", {}).get("title", [])
+            concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+            monto = props.get("Monto", {}).get("number", 0) or 0
+            fecha = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
+            encontrados.append((concepto, monto, fecha[:10] if fecha else "?"))
+        if not encontrados:
+            return "No encontré gastos con fechas futuras. ✅"
+        partes = [f"{c} ${m:,.0f} ({f})" for c, m, f in encontrados[:10]]
+        return (f"⚠️ {len(encontrados)} gasto(s) con fecha futura (posibles errores): "
+                f"{'; '.join(partes)}.")
+
+    if modo == "por_tarjeta":
+        meses_t = meses_plan or [mes_activo_str()]
+        por_tarjeta: dict = {}
+        conteo_t: dict = {}
+        for mes in meses_t:
+            mid = buscar_mes_id(mes)
+            if not mid:
+                continue
+            for g in query_notion_db(NOTION_DATABASE_ID,
+                                     {"property": "Mes", "relation": {"contains": mid}}):
+                props = g.get("properties", {})
+                monto = props.get("Monto", {}).get("number", 0) or 0
+                tarjeta = "".join(rt.get("plain_text", "")
+                                  for rt in props.get("Tarjeta", {}).get("rich_text", [])) or "Sin tarjeta"
+                por_tarjeta[tarjeta] = por_tarjeta.get(tarjeta, 0) + monto
+                conteo_t[tarjeta] = conteo_t.get(tarjeta, 0) + 1
+        if not por_tarjeta:
+            return "Sin gastos para agrupar por tarjeta."
+        total = sum(por_tarjeta.values())
+        ranking = sorted(por_tarjeta.items(), key=lambda x: x[1], reverse=True)
+        partes = [f"{t}: ${m:,.0f} ({conteo_t[t]} gastos, {m/total*100:.0f}%)" for t, m in ranking]
+        return f"Gasto por tarjeta ({', '.join(meses_t)}): {'; '.join(partes)}. Total: ${total:,.0f}."
+
+    if modo == "semana_mas_cara":
+        meses_t = meses_plan or _meses_recientes(2)
+        items = _gastos_recientes(len(meses_t), categoria=categoria,
+                                  meses_especificos=meses_t, subcategoria_id=subcategoria_id)
+        semanas: dict = {}
+        for c, m, f in items:
+            if not f:
+                continue
+            try:
+                d = datetime.date.fromisoformat(f[:10])
+                lunes = d - datetime.timedelta(days=d.weekday())
+                semanas[lunes.isoformat()] = semanas.get(lunes.isoformat(), 0) + m
+            except (ValueError, TypeError):
+                pass
+        if not semanas:
+            return "Sin suficientes gastos para analizar por semana."
+        mejor = max(semanas, key=semanas.get)
+        top = sorted(semanas.items(), key=lambda x: x[1], reverse=True)[:3]
+        cat_str = f" en {categoria}" if categoria else ""
+        domingo = (datetime.date.fromisoformat(mejor) + datetime.timedelta(days=6)).isoformat()
+        detalle = "; ".join(f"sem {l}: ${v:,.0f}" for l, v in top)
+        return (f"Semana más cara{cat_str} ({', '.join(meses_t)}): {mejor} al {domingo} "
+                f"(${semanas[mejor]:,.0f}). Top semanas: {detalle}.")
+
+    if modo == "comparar_ciclos":
+        meses_t = meses_plan or [mes_activo_str()]
+        if len(meses_t) < 2:
+            meses_t = [meses_t[0], _mes_anterior(meses_t[0])]
+        m1, m2 = meses_t[0], meses_t[1]
+        r1 = ejecutar_consulta_finanzas({"meses": [m1], "categoria": categoria,
+                                         "subcategoria": subcategoria})
+        r2 = ejecutar_consulta_finanzas({"meses": [m2], "categoria": categoria,
+                                         "subcategoria": subcategoria})
+        dif = r1["total"] - r2["total"]
+        pct = (dif / r2["total"] * 100) if r2["total"] else 0
+        cat_str = f" en {subcategoria or categoria}" if (subcategoria or categoria) else ""
+        icono = "📈" if dif > 0 else "📉"
+        resultado = (f"Comparación{cat_str}: {m1} ${r1['total']:,.0f} vs {m2} ${r2['total']:,.0f}. "
+                     f"{icono} {m1} tiene ${abs(dif):,.0f} {'más' if dif > 0 else 'menos'} ({pct:+.1f}%).")
+        if not (categoria or subcategoria) and r1["por_categoria"] and r2["por_categoria"]:
+            todas = set(r1["por_categoria"]) | set(r2["por_categoria"])
+            diffs = [(cat, r1["por_categoria"].get(cat, 0), r2["por_categoria"].get(cat, 0))
+                     for cat in todas]
+            diffs = [(c, v1, v2, v1 - v2) for c, v1, v2 in diffs if abs(v1 - v2) > 200]
+            if diffs:
+                diffs.sort(key=lambda x: abs(x[3]), reverse=True)
+                comp = "; ".join(f"{c} {'+' if d > 0 else ''}{d:,.0f}"
+                                 for c, _, _, d in diffs[:5])
+                resultado += f" Diferencias: {comp}."
+        return resultado
+
     return None
 
 def _es_finde(fecha_iso: str):
@@ -2477,6 +2755,224 @@ def _es_finde(fecha_iso: str):
         return datetime.date.fromisoformat(fecha_iso[:10]).weekday() >= 5
     except (ValueError, TypeError):
         return None
+
+# ── ACCIONES MASIVAS ─────────────────────────────────────────────────────────
+
+def _accion_preview(payload: dict) -> tuple:
+    """
+    Busca gastos afectados por la acción masiva pedida.
+    Retorna (texto_preview: str, gastos: list).
+    gastos vacío = no encontró nada → mostrar preview como mensaje final.
+    """
+    operacion          = payload.get("operacion", "")
+    filtro_concepto    = normalizar(payload.get("filtro_concepto") or "")
+    filtro_subcatname  = (payload.get("filtro_subcategoria") or "").strip()
+    filtro_tarjeta     = (payload.get("filtro_tarjeta") or "").upper()
+    filtro_monto_max   = payload.get("filtro_monto_max")
+    meses_p            = [m.upper() for m in (payload.get("meses") or [])] or [mes_activo_str()]
+    nueva_subcatname   = payload.get("nueva_subcategoria") or ""
+    nuevo_presup       = payload.get("nuevo_presupuesto") or ""
+    nuevo_concepto     = payload.get("nuevo_concepto") or ""
+    nueva_tarjeta      = (payload.get("nueva_tarjeta") or "").upper()
+
+    filtro_sc_id = SC.get(filtro_subcatname, "").replace("-", "") if filtro_subcatname else None
+    gastos_enc = []
+
+    if operacion == "sin_categoria":
+        for mes in meses_p:
+            mid = buscar_mes_id(mes)
+            if not mid:
+                continue
+            for g in query_notion_db(NOTION_DATABASE_ID,
+                                     {"property": "Mes", "relation": {"contains": mid}}):
+                props = g.get("properties", {})
+                if props.get("Subcategoria", {}).get("relation"):
+                    continue
+                titulo = props.get("Concepto", {}).get("title", [])
+                concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+                monto = props.get("Monto", {}).get("number", 0) or 0
+                fecha = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
+                gastos_enc.append({"id": g["id"], "concepto": concepto, "monto": monto,
+                                   "fecha": fecha[:10] if fecha else ""})
+    elif operacion == "crear_meta_auto":
+        ciclo = meses_p[0]
+        res = ejecutar_consulta_finanzas({"meses": [ciclo]})
+        pr_top = max(res["por_categoria"].items(), key=lambda x: x[1], default=(None, 0))
+        if not pr_top[0]:
+            return f"No encontré gastos en {ciclo} para sugerir una meta.", []
+        pr_name, pr_total = pr_top
+        meta_actual = None
+        for u in USUARIOS_AUTORIZADOS:
+            v = cargar_meta(u, pr_name, ciclo)
+            if v:
+                meta_actual = v
+                break
+        sugerencia = round(pr_total * 1.1 / 100) * 100  # +10% redondeado a 100
+        preview = (f"📊 La categoría con más gasto en {ciclo} es *{pr_name}* (${pr_total:,.0f}).\n\n"
+                   f"{'Meta actual: $' + f'{meta_actual:,.0f}' + chr(10) + chr(10) if meta_actual else ''}"
+                   f"¿Crear meta para *{pr_name}* en ${sugerencia:,.0f}?")
+        gastos_enc.append({"id": "_meta_", "concepto": pr_name, "monto": sugerencia,
+                           "fecha": ciclo, "_presupuesto": pr_name, "_ciclo": ciclo})
+        return preview, gastos_enc
+    elif operacion == "cierre_ciclo":
+        ciclo = meses_p[0]
+        mid = buscar_mes_id(ciclo)
+        if not mid:
+            return f"No encontré el ciclo {ciclo}.", []
+        for g in query_notion_db(NOTION_DATABASE_ID,
+                                 {"property": "Mes", "relation": {"contains": mid}}):
+            props = g.get("properties", {})
+            titulo = props.get("Concepto", {}).get("title", [])
+            concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+            monto = props.get("Monto", {}).get("number", 0) or 0
+            fecha = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
+            gastos_enc.append({"id": g["id"], "concepto": concepto, "monto": monto,
+                               "fecha": fecha[:10] if fecha else ""})
+    else:
+        for mes in meses_p:
+            mid = buscar_mes_id(mes)
+            if not mid:
+                continue
+            for g in query_notion_db(NOTION_DATABASE_ID,
+                                     {"property": "Mes", "relation": {"contains": mid}}):
+                props = g.get("properties", {})
+                monto = props.get("Monto", {}).get("number", 0) or 0
+                titulo = props.get("Concepto", {}).get("title", [])
+                concepto = titulo[0].get("text", {}).get("content", "") if titulo else ""
+                fecha = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
+                tarjeta = "".join(rt.get("plain_text", "")
+                                  for rt in props.get("Tarjeta", {}).get("rich_text", []))
+                if filtro_concepto and filtro_concepto not in normalizar(concepto):
+                    continue
+                if filtro_sc_id:
+                    rel_sc = props.get("Subcategoria", {}).get("relation", [])
+                    if not any(r.get("id", "").replace("-", "") == filtro_sc_id for r in rel_sc):
+                        continue
+                if filtro_tarjeta and filtro_tarjeta not in tarjeta.upper():
+                    continue
+                if filtro_monto_max is not None and monto > filtro_monto_max:
+                    continue
+                gastos_enc.append({"id": g["id"], "concepto": concepto, "monto": monto,
+                                   "fecha": fecha[:10] if fecha else "", "tarjeta": tarjeta})
+
+    if not gastos_enc:
+        return f"No encontré gastos que coincidan con el criterio en {', '.join(meses_p)}.", []
+
+    n = len(gastos_enc)
+    muestra = gastos_enc[:5]
+    lineas = "\n".join(f"• {g['concepto']} ${g['monto']:,.0f} ({g['fecha']})" for g in muestra)
+    if n > 5:
+        lineas += f"\n  … y {n - 5} más"
+
+    if operacion == "reclasificar":
+        accion_txt = f"Cambiar subcategoría → *{nueva_subcatname}*" + (
+            f" / presupuesto → *{nuevo_presup}*" if nuevo_presup else "")
+    elif operacion == "renombrar":
+        accion_txt = f"Renombrar concepto → *{nuevo_concepto}*"
+    elif operacion == "cambiar_tarjeta":
+        accion_txt = f"Cambiar tarjeta → *{nueva_tarjeta}*"
+    elif operacion in ("borrar_chicos", "borrar"):
+        accion_txt = "⚠️ Archivar (eliminar) estos gastos"
+    elif operacion == "sin_categoria":
+        accion_txt = "Solo mostrar (sin modificar)"
+    elif operacion == "cierre_ciclo":
+        total_c = sum(g["monto"] for g in gastos_enc)
+        accion_txt = f"⚠️ Archivar {n} gastos del ciclo {meses_p[0]} (total ${total_c:,.0f})"
+    else:
+        accion_txt = operacion
+
+    preview = (f"🔍 Encontré *{n} gasto(s)*:\n{lineas}\n\n"
+               f"Acción: {accion_txt}\n\n"
+               f"¿Confirmas?")
+    return preview, gastos_enc
+
+
+def _accion_ejecutar(payload: dict, gastos: list) -> str:
+    """Aplica la acción masiva. Retorna el mensaje de resultado."""
+    operacion        = payload.get("operacion", "")
+    nueva_subcatname = payload.get("nueva_subcategoria") or ""
+    nuevo_presup     = payload.get("nuevo_presupuesto") or ""
+    nuevo_concepto   = payload.get("nuevo_concepto") or ""
+    nueva_tarjeta    = (payload.get("nueva_tarjeta") or "").upper()
+    meses_p          = [m.upper() for m in (payload.get("meses") or [])] or [mes_activo_str()]
+
+    if operacion == "sin_categoria":
+        return f"📋 {len(gastos)} gasto(s) sin subcategoría listados arriba."
+
+    if operacion == "crear_meta_auto":
+        g0 = gastos[0]
+        pr_name = g0["_presupuesto"]
+        ciclo = g0["_ciclo"]
+        sugerencia = g0["monto"]
+        uid0 = next(iter(USUARIOS_AUTORIZADOS))
+        ok = guardar_meta(uid0, pr_name, sugerencia, ciclo)
+        return (f"🎯 Meta creada: *{pr_name}* ≤ ${sugerencia:,.0f} en {ciclo}." if ok
+                else "❌ No pude guardar la meta.")
+
+    n_ok, n_err = 0, 0
+    for g in gastos:
+        page_id = g["id"]
+        props_upd = {}
+        try:
+            if operacion == "reclasificar":
+                if nueva_subcatname:
+                    sid = SC.get(nueva_subcatname)
+                    if sid:
+                        props_upd["Subcategoria"] = {"relation": [{"id": sid}]}
+                if nuevo_presup or nueva_subcatname:
+                    pr_name = nuevo_presup or SUBCAT_PRESUPUESTO.get(nueva_subcatname, "")
+                    pid = PR.get(pr_name)
+                    if pid:
+                        props_upd["Presupuesto"] = {"relation": [{"id": pid}]}
+            elif operacion == "renombrar" and nuevo_concepto:
+                props_upd["Concepto"] = {"title": [{"text": {"content": nuevo_concepto}}]}
+            elif operacion == "cambiar_tarjeta" and nueva_tarjeta:
+                props_upd["Tarjeta"] = {"rich_text": [{"text": {"content": nueva_tarjeta}}]}
+                props_upd["Pago"]    = {"select": {"name": nueva_tarjeta}}
+            elif operacion in ("borrar_chicos", "borrar", "cierre_ciclo"):
+                r = notion_request("PATCH", f"{NOTION_API_BASE}/pages/{page_id}",
+                                   headers=nh(), json={"archived": True},
+                                   timeout=NOTION_T_DEFAULT)
+                (n_ok if r and r.status_code == 200 else n_err).__class__  # dummy
+                if r and r.status_code == 200:
+                    n_ok += 1
+                else:
+                    n_err += 1
+                continue
+
+            if props_upd:
+                r = notion_request("PATCH", f"{NOTION_API_BASE}/pages/{page_id}",
+                                   headers=nh(), json={"properties": props_upd},
+                                   timeout=NOTION_T_DEFAULT)
+                if r and r.status_code == 200:
+                    n_ok += 1
+                else:
+                    n_err += 1
+        except Exception as ex:
+            logger.error(f"accion_ejecutar error page {page_id}: {ex}")
+            n_err += 1
+
+    if n_err == 0:
+        return f"✅ {n_ok} gasto(s) actualizados correctamente."
+    return f"⚠️ {n_ok} actualizados, {n_err} con error."
+
+
+async def callback_accion(update, context):
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+    if query.data == "accion_cancelar":
+        context.user_data.pop("accion_pendiente", None)
+        await query.message.edit_text("❌ Acción cancelada.")
+        return
+    pendiente = context.user_data.pop("accion_pendiente", None)
+    if not pendiente:
+        await query.message.edit_text("⚠️ El bot se reinició y perdió el contexto. Repite la acción.")
+        return
+    await query.message.edit_text("⏳ Aplicando cambios en Notion…")
+    resultado = await asyncio.to_thread(_accion_ejecutar, pendiente["payload"], pendiente["gastos"])
+    await query.message.edit_text(resultado, parse_mode="Markdown")
+
 
 async def responder_consulta_groq(texto: str, user_id: int, update, context) -> bool:
     """
@@ -2568,6 +3064,14 @@ MODOS disponibles:
 - "oportunidades_ahorro": dónde puedo ahorrar, en qué categorías gasto de más vs mi historial.
 - "posicion_financiera": cuánto he gastado vs mi ingreso estimado del ciclo, cuánto me queda, proyección de ahorro del mes.
 - "tendencia_ingresos": ingresos estimados vs gasto real en los últimos 6 ciclos.
+- "ranking_monto": top gastos más caros del período. Acepta "categoria", "subcategoria", "meses". Usa "n_top" (número, default 5).
+- "duplicados": posibles gastos duplicados (mismo concepto y monto más de una vez). Acepta "meses".
+- "margen_presupuesto": cuánto falta para el límite de cada presupuesto en el ciclo. Acepta "meses" (1 ciclo).
+- "proyeccion_ciclo": extrapolación del gasto actual hasta fin de mes, compara con histórico.
+- "fechas_futuras": gastos registrados con fecha mayor a hoy (posibles errores).
+- "por_tarjeta": gasto total agrupado por tarjeta. Acepta "meses".
+- "semana_mas_cara": semana de 7 días con más gasto. Acepta "categoria", "meses".
+- "comparar_ciclos": comparación entre dos ciclos específicos. Usa "meses" con 2 elementos; sin especificar usa ciclo activo vs anterior.
 
 CAMPOS:
 - "fecha_desde"/"fecha_hasta" (YYYY-MM-DD): para días o rangos exactos (ayer, esta semana, el 15 mayo). Cuando se usan, "meses" se ignora.
@@ -3533,6 +4037,46 @@ async def _procesar_conversacion(update, context, texto, uid):
                 )
             else:
                 await update.message.reply_text("❌ No pude guardar el alias. Intenta de nuevo.")
+            return ConversationHandler.END
+        if tipo == "listar_aliases":
+            aliases = await asyncio.to_thread(_cargar_aliases_uid, uid)
+            if not aliases:
+                await update.message.reply_text("No tienes aliases guardados aún.")
+            else:
+                lineas = [f"• *{a['trigger']}* → _{a['resolved']}_" for a in aliases]
+                await update.message.reply_text(
+                    "📋 *Tus aliases:*\n" + "\n".join(lineas), parse_mode="Markdown")
+            return ConversationHandler.END
+        if tipo == "borrar_alias" and payload:
+            trigger_b = payload.get("trigger", "")
+            ok = await asyncio.to_thread(borrar_alias, uid, trigger_b)
+            if ok:
+                await update.message.reply_text(f"✅ Alias *{trigger_b}* eliminado.", parse_mode="Markdown")
+            else:
+                await update.message.reply_text(
+                    f"❌ No encontré el alias '{trigger_b}'. Usa '¿qué aliases tengo?' para ver la lista.")
+            return ConversationHandler.END
+        if tipo == "reporte" and payload:
+            subtipo_r = payload.get("subtipo", "semanal")
+            await update.message.reply_text(f"📊 Generando reporte {subtipo_r}…")
+            await enviar_reporte(subtipo_r, solo_a=uid)
+            if subtipo_r == "mensual":
+                ok_email = await enviar_reporte_email_mensual()
+                if ok_email:
+                    await update.message.reply_text("📧 Reporte detallado enviado a tu correo.")
+            return ConversationHandler.END
+        if tipo == "accion" and payload:
+            await update.message.reply_text("🔍 Buscando gastos afectados…")
+            preview, gastos = await asyncio.to_thread(_accion_preview, payload)
+            if not gastos:
+                await update.message.reply_text(preview)
+                return ConversationHandler.END
+            context.user_data["accion_pendiente"] = {"payload": payload, "gastos": gastos}
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Confirmar", callback_data="accion_confirmar"),
+                InlineKeyboardButton("❌ Cancelar",  callback_data="accion_cancelar"),
+            ]])
+            await update.message.reply_text(preview, reply_markup=kb, parse_mode="Markdown")
             return ConversationHandler.END
         if tipo == "gasto":
             gasto_groq = payload
@@ -4856,6 +5400,7 @@ def main():
     app.add_handler(CallbackQueryHandler(callback_edicion,         pattern="^edicion_"))
     app.add_handler(CallbackQueryHandler(callback_sandbox_edicion, pattern="^sandbox_"))
     app.add_handler(CallbackQueryHandler(callback_propuesta,       pattern="^propuesta_"))
+    app.add_handler(CallbackQueryHandler(callback_accion,          pattern="^accion_"))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("resumen", cmd_resumen))
     app.add_handler(CommandHandler("estadisticas", cmd_estadisticas))
@@ -4898,7 +5443,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 26.10.0 — memoria persistente activa")
+    logger.info("Bot corriendo 27.0.0 — acciones masivas + 8 nuevos modos de consulta")
     server.serve_forever()
 
 if __name__ == "__main__":
