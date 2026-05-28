@@ -360,8 +360,8 @@ Render está configurado con **Auto Deploy** desde GitHub. Cada push a `main` di
 
 | Archivo | Cuándo leer | Propósito |
 |---------|------------|-----------|
-| `handoff.md` | Siempre al inicio | Estado operativo de la última sesión |
-| `memoria.md` | Siempre al inicio | Decisiones, conceptos, lecciones |
+| `handoff.md` | Siempre al inicio (auto via hook) | Estado operativo de la última sesión |
+| `MEMORIA.md` | Al tomar decisiones de diseño | Decisiones, conceptos, lecciones |
 | `CLAUDE.md` | Siempre al inicio | Arquitectura técnica (este archivo) |
 | `NOTION_SCHEMA.md` | Al tocar código Notion | Schema completo, IDs, tipos de campos, dicts SC/PR |
 | `REGLAS_NEGOCIO.md` | Al tocar categorización/tarjetas | Reglas de dominio, casos especiales, gastos fijos |
@@ -371,11 +371,16 @@ Render está configurado con **Auto Deploy** desde GitHub. Cada push a `main` di
 | `requirements.txt` | Al cambiar dependencias | Dependencias Python |
 | `Dockerfile` | Al cambiar infra | Imagen Docker para Render |
 
-**Ruta local del proyecto:** `/Users/jordi/Documents/Claude/Projects/Bot-gastos/`
+### Estructura `.claude/` (Claude Code)
 
-Archivos externos relacionados:
-- `/Users/jordi/Documents/Claude/Projects/Hub Financiero/CLAUDE.md` — instrucciones del hub financiero
-- `/Users/jordi/Documents/Claude/Projects/Hub Financiero/plan_automatizacion_reportes.md` — referencia histórica
+| Archivo | Propósito |
+|---------|-----------|
+| `.claude/settings.json` | Modelo fijo (claude-sonnet-4-6) + permisos pre-aprobados para git/grep/ls |
+| `.claude/hooks/SessionStart.sh` | Carga automática de versión, git status y handoff.md al iniciar sesión |
+| `.claude/commands/deploy.md` | Slash command `/deploy` — flujo completo: borrar webhook → push → confirmar |
+| `.claude/settings.local.json` | Overrides personales — gitignored, no commitear |
+
+**Ruta local del proyecto:** `/Users/jordi/Documents/Claude/Projects/Bot-gastos/`
 
 ---
 
