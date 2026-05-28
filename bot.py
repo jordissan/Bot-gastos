@@ -3264,16 +3264,13 @@ async def callback_foto(update, context):
         children = _bloques_productos(productos)
         if children:
             def _append_tabla():
-                try:
-                    r = requests.patch(
-                        f"{NOTION_API_BASE}/blocks/{nid}/children",
-                        headers=nh(), json={"children": children}, timeout=5
-                    )
-                    return r.status_code, r.text[:300]
-                except requests.exceptions.Timeout:
-                    return 0, "timeout (5s) — probablemente falta permiso 'Insert content' en la integración"
-                except Exception as e:
-                    return 0, str(e)[:200]
+                r = notion_request(
+                    "PATCH", f"{NOTION_API_BASE}/blocks/{nid}/children",
+                    headers=nh(), json={"children": children}, timeout=NOTION_T_LONG
+                )
+                if r is None:
+                    return 0, "sin respuesta tras 3 intentos"
+                return r.status_code, r.text[:300]
             status, resp_text = await asyncio.to_thread(_append_tabla)
             if status != 200:
                 tabla_err = f"HTTP {status}: {resp_text}" if status else resp_text
@@ -4902,7 +4899,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 26.6.0 — memoria persistente activa")
+    logger.info("Bot corriendo 26.9.0 — memoria persistente activa")
     server.serve_forever()
 
 if __name__ == "__main__":
