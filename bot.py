@@ -4429,7 +4429,9 @@ async def _abrir_campo(query, context, campo, base, cambios):
         nombres = [k for k in PR.keys() if k != "Deudas"]   # evita el alias duplicado
         botones, fila = [], []
         for nombre in nombres:
-            fila.append(InlineKeyboardButton(nombre, callback_data=f"edit:v:pre:{nombre}"))
+            emoji = PR_EMOJI.get(nombre, "")
+            label = f"{emoji} {nombre}" if emoji else nombre
+            fila.append(InlineKeyboardButton(label, callback_data=f"edit:v:pre:{nombre}"))
             if len(fila) == 2:
                 botones.append(fila); fila = []
         if fila: botones.append(fila)
@@ -5471,7 +5473,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 27.3.0 — Shortcuts: campo 'resumen' en respuesta /log")
+    logger.info("Bot corriendo 27.4.0 — emojis en menú de presupuesto (/corregir)")
     server.serve_forever()
 
 if __name__ == "__main__":
