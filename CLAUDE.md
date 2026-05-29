@@ -15,7 +15,7 @@
 
 Bot de Telegram personal de Jordi y Nane para registrar gastos, conectado a Notion como fuente de verdad. Entiende lenguaje natural (texto y voz), lee tickets por foto, responde preguntas sobre finanzas y manda reportes automáticos. Corre 24/7 en Render.com con Docker.
 
-**Versión actual:** 26.6.0  
+**Versión actual:** 27.6.0
 **Esquema:** `MAJOR` = nuevo dominio/capacidad estructural · `MINOR` = feature individual · `PATCH` = fix o ajuste
 
 ---
@@ -213,7 +213,7 @@ MSIs con formato `"Concepto X/Total"` (ej. `"MacBook Pro 4/18"`).
 
 - **`/corregir`**: muestra últimos 5 gastos combinados (ambos usuarios). Eliges número → panel inline con 6 campos editables (monto, fecha, tarjeta, categoría, presupuesto, concepto). Todos los cambios en un solo PATCH.
 - **Edición contextual**: justo después de registrar, "cámbialo a 400" / "ponlo en restaurantes" edita el `last_gasto` en RAM.
-- Ambas rutas usan `aplicar_edicion_contextual` — única función de escritura.
+- `/corregir` y edición contextual comparten la misma ruta interna de PATCH (`base + campos`), para evitar divergencias.
 - **`/eliminar`**: archiva el último gasto (pide confirmación).
 
 ### 8. Reportes automáticos
@@ -257,7 +257,7 @@ estadisticas - 📈 Comparar este mes vs el anterior
 reporte      - 📰 Reporte semanal (o /reporte mensual)
 top          - 🏆 Top 5 gastos del mes
 buscar       - 🔍 Buscar gasto
-corregir     - ✏️ Corregir un gasto reciente
+corregir     - ✏️ Editar un gasto reciente
 eliminar     - 🗑️ Eliminar el último gasto
 prueba       - 🧪 Simular un gasto
 cancelar     - ❌ Cancelar acción en curso

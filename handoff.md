@@ -5,10 +5,12 @@
 
 ---
 
-## Sesión cerrada: 2026-05-28
+## Sesión cerrada: 2026-05-29
 
 ### Objetivo
-Fix: fotos de ticket — dos bugs consecutivos descubiertos vía carpeta Bot-gastos en Drive.
+1. Fix Bug 3: tabla de productos de ticket (resuelto en sesión anterior, v26.10.0)
+2. Feature: 20 nuevas capacidades de consulta y acción masiva (v27.0.0)
+3. Continuación: fixes v27.1–v27.2, mejoras UX v27.3–v27.5, refactor Codex v27.6.0
 
 ---
 
@@ -16,39 +18,66 @@ Fix: fotos de ticket — dos bugs consecutivos descubiertos vía carpeta Bot-gas
 
 | Item | Estado |
 |------|--------|
-| Versión | 26.8.0 |
+| Versión | 27.6.0 |
 | Branch | main |
-| GitHub | ⏳ pendiente de push |
+| GitHub | ✅ pushed |
 | Deploy en Render | ✅ AUTO — push a main dispara deploy |
 | Ruta local | `/Users/jordi/Documents/Claude/Projects/Bot-gastos/` |
 
 ---
 
-### Qué cambió en esta sesión (v26.6.0 → v26.8.0)
+### Qué cambió en esta sesión (v27.0.0 → v27.6.0)
 
-**Bug 1 — Foto ticket → "Error al guardar en Notion." (v26.7.0)**
-- Causa: `POST /pages` de Notion no admite children anidados (tabla→filas).
-- Fix: `guardar_notion` crea la página sin children y luego usa `PATCH /blocks/{id}/children` para la tabla de productos. Si la tabla falla, el gasto igual queda guardado.
+**v27.1.0 — Fix `por_tarjeta` mostraba "Sin tarjeta" en todos los gastos**
+- Causa: bot escribe tarjeta a `Pago` (select) + `Estado de Cuenta` (rich_text), pero código leía `Tarjeta` (campo distinto, vacío en gastos del bot).
+- Fix: helper `_leer_tarjeta(props)` con cadena de prioridad: Pago → Estado de Cuenta → Tarjeta. Aplicado en las 6 ubicaciones de lectura.
 
-**Bug 2 — Confirmar/Cancelar foto queda en "Cargando..." infinito (v26.8.0)**
-- Causa: Bot se reinicia (deploy, Render sleeping) → estado del `ConversationHandler` se pierde → `foto_confirmar`/`foto_cancelar` callbacks no tienen handler → spinner eterno. `/cancelar` también mudo por la misma razón.
-- Fix 1: `CallbackQueryHandler(callback_foto, pattern="^foto_")` registrado como handler global DESPUÉS de `conv_foto`. Si el conv está activo lo reclama; si el estado está perdido, el global muestra "⚠️ El bot se reinició. Vuelve a enviar la foto."
-- Fix 2: `CommandHandler("cancelar", cancelar)` registrado globalmente como fallback.
-- Fix 3: `guardar_notion` ahora se llama con `asyncio.to_thread` en `callback_foto` para no bloquear el event loop durante las llamadas síncronas a Notion.
+**v27.2.0 — Dos fixes de prompt**
+- "último gasto de autolavado" usaba `modo:"ultimo"` en lugar de `ultima_visita` + comercio. Fix: regla explícita en prompt — `"ultimo"` nunca cuando se menciona un comercio específico.
+- "efectivo" no se mapeaba a `tarjeta: "EFVO"`. Fix: regla en secciones registro y edición del prompt.
 
-**Flujo de mantenimiento establecido**
-- Carpeta "Bot-gastos" en Google Drive (ID `1tOuK2JpoeVIItaNimtuFEmvM7Llrh1YK`).
-- Política: máximo 10 capturas; al inicio de sesión limpiar excedentes más viejos.
-- Documentado en `CLAUDE.md` sección "Flujo de mantenimiento".
+**v27.3.0 — Shortcuts: campo `resumen` en respuesta `/log`**
+- `registrar_via_shortcut` ahora devuelve 3-tuple `(ok, msg, resumen)`.
+- `resumen` = línea compacta `"Concepto $monto · Tarjeta · Subcategoría"` lista para mostrar en iOS.
+- El endpoint `/log` incluye `"resumen"` en el JSON de respuesta.
+- iOS: añadir acción "Obtener valor del diccionario" con clave `resumen` + "Mostrar notificación" para confirmación nativa.
+
+**v27.4.0 — Emojis en menú de presupuesto (`/corregir`)**
+- Botones del sub-menú "Elige el presupuesto" usan `PR_EMOJI` (ej: `🛒 Despensa`).
+
+**v27.5.0 — Emojis en todos los menús de `/corregir`**
+- `TARJETA_EMOJI`: 🔵 BBVA05/12, 🟣 HEYB25, 🔴 BMEX04, 💵 EFVO.
+- `SC_EMOJI`: emoji único para cada una de las ~35 subcategorías.
+- Menú tarjeta: layout 2 columnas + emoji.
+- Submenú subcategoría nivel 2: layout 2 columnas + emoji.
+
+**v27.6.0 — Refactor Codex: deduplicación de notificación y ruta de edición**
+- `notificar_pareja(context, uid, texto, **kw)`: helper único que reemplaza 6 bloques idénticos de notificación al cónyuge.
+- `_aplicar_edicion_notion(base, campos)`: unifica la ruta de PATCH que estaba duplicada entre `aplicar_edicion_contextual` (texto/voz) y `callback_edicion` (botones inline). Ahora ambas usan la misma función.
+- `_edicion_cambio_categoria(props)`: `guardar_aprendizaje` solo se llama cuando de verdad cambia subcategoría o presupuesto (antes se llamaba siempre, incluso al editar monto).
+- Eliminada línea muerta `.__class__` en `_accion_ejecutar`.
+- Comportamiento externo idéntico; solo refactor interno.
 
 ---
 
 ### Pendiente de verificación (después del deploy)
 
-- [ ] Enviar foto de ticket → ver preview → Confirmar → gasto guardado en Notion
-- [ ] Tabla de productos visible en la página de Notion
-- [ ] Enviar foto → ver preview → dejar el bot reiniciar → presionar Confirmar → mensaje "El bot se reinició. Vuelve a enviar la foto." (en lugar de spinner eterno)
-- [ ] `/cancelar` responde aunque no haya conversación activa
+- [ ] Enviar foto de ticket con productos → tabla de productos aparece en la página de Notion
+- [ ] "¿Cuáles son mis 5 gastos más grandes de mayo?" → ranking_monto
+- [ ] "¿Hay duplicados este mes?" → duplicados
+- [ ] "¿Cuánto me falta en cada presupuesto?" → margen_presupuesto
+- [ ] "¿A cuánto voy a llegar este mes?" → proyeccion_ciclo
+- [ ] "¿Cuánto gasté en cada tarjeta?" → por_tarjeta (fix v27.1)
+- [ ] "Compara mayo con abril" → comparar_ciclos
+- [ ] "¿Qué aliases tengo?" → listar_aliases
+- [ ] "Olvida el alias X" → borrar_alias
+- [ ] "Genera el reporte semanal" → reporte on demand
+- [ ] "Cambia todos los gastos de Uber a Transporte" → accion reclasificar + confirmación
+- [ ] "Muéstrame los gastos sin categoría" → sin_categoria
+- [ ] "Último gasto de autolavado" → ultima_visita (fix v27.2)
+- [ ] Pagar en efectivo → tarjeta EFVO, no aparece "efectivo" en concepto (fix v27.2)
+- [ ] iOS Shortcut: respuesta `/log` incluye campo `resumen` para confirmación nativa (v27.3)
+- [ ] `/corregir` → todos los menús muestran emojis (tarjeta, subcategoría, presupuesto) (v27.4–v27.5)
 
 ---
 
@@ -66,4 +95,4 @@ Fix: fotos de ticket — dos bugs consecutivos descubiertos vía carpeta Bot-gas
 2. **Backlog** (sin urgencia):
    - Reconciliación email BBVA — postergado indefinidamente
    - Evaluar búsqueda híbrida ciclo+calendario
-   - Verificar los 7 puntos del handoff v26.6.0 que quedaron pendientes
+   - iOS Shortcuts: añadir "Obtener valor del diccionario" (`resumen`) + "Mostrar notificación" tras el POST `/log`

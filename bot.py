@@ -3001,7 +3001,6 @@ def _accion_ejecutar(payload: dict, gastos: list) -> str:
                 r = notion_request("PATCH", f"{NOTION_API_BASE}/pages/{page_id}",
                                    headers=nh(), json={"archived": True},
                                    timeout=NOTION_T_DEFAULT)
-                (n_ok if r and r.status_code == 200 else n_err).__class__  # dummy
                 if r and r.status_code == 200:
                     n_ok += 1
                 else:
@@ -3471,13 +3470,11 @@ async def registrar_y_notificar(update, context, gasto):
         msg_gasto(gasto, notion_id=nid),
         reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown"
     )
-    notif = USUARIOS_NOTIFICAR.get(uid)
     nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
-    if notif:
-        await context.bot.send_message(
-            chat_id=notif, text=msg_gasto(gasto, nombre=nombre, notion_id=nid),
-            parse_mode="Markdown"
-        )
+    await notificar_pareja(context, uid,
+        msg_gasto(gasto, nombre=nombre, notion_id=nid),
+        parse_mode="Markdown"
+    )
 
 # ── EDICIÓN CONTEXTUAL ("cámbialo a 400", "ponlo en restaurantes") ─────────────
 async def _responder(update, context, text, **kw):
@@ -3499,62 +3496,17 @@ async def aplicar_edicion_contextual(update, context, campos: dict, base: dict):
     if not nid:
         await _responder(update, context, "🤔 No tengo un gasto reciente para editar. Usa /corregir.")
         return
-    g = dict(base)
-    props, recompute_mes = {}, False
-
-    if campos.get("monto") is not None:
-        try:
-            g["monto"] = float(campos["monto"]); props["Monto"] = {"number": g["monto"]}
-        except (ValueError, TypeError):
-            pass
-    if campos.get("concepto"):
-        g["concepto"] = str(campos["concepto"]).title()
-        props["Concepto"] = {"title": [{"text": {"content": g["concepto"]}}]}
-    if campos.get("tarjeta") in TARJETAS_VALIDAS:
-        g["tarjeta"] = campos["tarjeta"]
-        props["Estado de Cuenta"] = {"rich_text": [{"text": {"content": g["tarjeta"]}}]}
-        props["Pago"] = {"select": {"name": g["tarjeta"]}}
-        recompute_mes = True
-    if campos.get("fecha"):
-        try:
-            f = datetime.date.fromisoformat(campos["fecha"])
-            g["fecha"] = f.strftime("%Y-%m-%d"); props["Fecha"] = {"date": {"start": g["fecha"]}}
-            recompute_mes = True
-        except (ValueError, TypeError):
-            pass
-    if recompute_mes:
-        f = datetime.date.fromisoformat(g["fecha"])
-        g["mes"] = calcular_mes(f, g["tarjeta"])
-        mid = buscar_mes_id(g["mes"])
-        if mid:
-            props["Mes"] = {"relation": [{"id": mid}]}
-    cat_cambio = False
-    if campos.get("presupuesto") in PR:
-        g["presupuesto"] = campos["presupuesto"]
-        props["Presupuesto"] = {"relation": [{"id": PR[g["presupuesto"]]}]}; cat_cambio = True
-    if campos.get("subcategoria") in SC:
-        g["subcategoria"] = campos["subcategoria"]
-        props["Subcategoria"] = {"relation": [{"id": SC[g["subcategoria"]]}]}; cat_cambio = True
-        # Si no se especificó presupuesto explícito, derivarlo desde la nueva subcategoría
-        if not campos.get("presupuesto") and g["subcategoria"] in SUBCAT_PRESUPUESTO:
-            pr_derivado = SUBCAT_PRESUPUESTO[g["subcategoria"]]
-            if pr_derivado in PR:
-                g["presupuesto"] = pr_derivado
-                props["Presupuesto"] = {"relation": [{"id": PR[pr_derivado]}]}
-
-    if not props:
+    ok, g, props, err = _aplicar_edicion_notion(base, campos)
+    if err == "sin_cambios":
         await _responder(update, context, "🤔 No entendí qué cambiar del último gasto.")
         return
-
-    r = notion_request("PATCH", f"{NOTION_API_BASE}/pages/{nid}",
-                       headers=nh(), json={"properties": props}, timeout=NOTION_T_DEFAULT)
-    if not (r and r.status_code == 200):
+    if not ok:
         await _responder(update, context, "❌ No pude actualizar el gasto en Notion.")
         return
 
     g["seguro"] = True
     guardar_contexto(uid, g)
-    if cat_cambio:
+    if _edicion_cambio_categoria(props):
         guardar_aprendizaje(g["concepto"].lower(), g["subcategoria"], g["presupuesto"])
     await _responder(update, context,
         msg_gasto(g, notion_id=nid, header="✏️ Gasto actualizado"),
@@ -3590,6 +3542,24 @@ def _construir_props_edicion(base: dict, g: dict) -> dict:
         props["Subcategoria"] = {"relation": [{"id": SC[g["subcategoria"]]}]}
     return props
 
+def _edicion_cambio_categoria(props: dict) -> bool:
+    return "Subcategoria" in props or "Presupuesto" in props
+
+def _aplicar_edicion_notion(base: dict, campos: dict):
+    """Aplica una edición real a Notion desde base+campos. Devuelve (ok, gasto, props, error)."""
+    nid = base.get("notion_id")
+    if not nid:
+        return False, dict(base), {}, "sin_notion_id"
+    g = _editar_gasto_local(base, campos)
+    props = _construir_props_edicion(base, g)
+    if not props:
+        return False, g, props, "sin_cambios"
+    r = notion_request("PATCH", f"{NOTION_API_BASE}/pages/{nid}",
+                       headers=nh(), json={"properties": props}, timeout=NOTION_T_DEFAULT)
+    if not (r and r.status_code == 200):
+        return False, g, props, "notion_error"
+    return True, g, props, ""
+
 async def callback_edicion(update, context):
     """Maneja los botones inline de confirmación de edición (Confirmar / Cancelar)."""
     query = update.callback_query
@@ -3618,22 +3588,19 @@ async def callback_edicion(update, context):
         await query.message.reply_text("⚠️ No encontré el gasto para editar. Usa /corregir.")
         return
 
-    g     = _editar_gasto_local(base, campos)
-    props = _construir_props_edicion(base, g)
-    if not props:
+    ok, g, props, err = _aplicar_edicion_notion(base, campos)
+    if err == "sin_cambios":
         await query.edit_message_reply_markup(reply_markup=None)
         await query.message.reply_text("🤔 No detecté cambios para aplicar.")
         return
-
-    r = notion_request("PATCH", f"{NOTION_API_BASE}/pages/{nid}",
-                       headers=nh(), json={"properties": props}, timeout=NOTION_T_DEFAULT)
-    if not (r and r.status_code == 200):
+    if not ok:
         await query.message.reply_text("❌ No pude actualizar el gasto en Notion.")
         return
 
     g["seguro"] = True
     guardar_contexto(uid, g)
-    guardar_aprendizaje(g["concepto"].lower(), g["subcategoria"], g["presupuesto"])
+    if _edicion_cambio_categoria(props):
+        guardar_aprendizaje(g["concepto"].lower(), g["subcategoria"], g["presupuesto"])
 
     await query.edit_message_reply_markup(reply_markup=None)
     nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
@@ -3710,13 +3677,11 @@ async def registrar_via_shortcut(texto: str, user_id: int):
     if not gasto.get("seguro"):
         msg += "\n\n⚠️ Categoría inferida — usa /corregir si no es correcta."
     await app.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
-    notif = USUARIOS_NOTIFICAR.get(user_id)
     nombre = USUARIOS_NOMBRES.get(user_id, "Alguien")
-    if notif:
-        await app.bot.send_message(
-            chat_id=notif, text=msg_gasto(gasto, nombre=nombre, notion_id=nid),
-            parse_mode="Markdown"
-        )
+    await notificar_pareja(ctx, user_id,
+        msg_gasto(gasto, nombre=nombre, notion_id=nid),
+        parse_mode="Markdown"
+    )
     # Línea compacta para mostrar en iOS Shortcuts como confirmación nativa
     resumen = f"{gasto['concepto']} ${gasto['monto']:,.2f} · {gasto['tarjeta']} · {gasto['subcategoria']}"
     return True, msg, resumen
@@ -3859,13 +3824,11 @@ async def callback_foto(update, context):
             chat_id=query.message.chat_id,
             text=f"⚠️ Desglose no guardado en Notion.\nError: {tabla_err[:300]}"
         )
-    notif  = USUARIOS_NOTIFICAR.get(uid)
     nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
-    if notif:
-        await context.bot.send_message(
-            chat_id=notif, text=msg_gasto(gasto, nombre=nombre, notion_id=nid),
-            parse_mode="Markdown"
-        )
+    await notificar_pareja(context, uid,
+        msg_gasto(gasto, nombre=nombre, notion_id=nid),
+        parse_mode="Markdown"
+    )
     return ConversationHandler.END
 
 # ── CONV GASTO ───────────────────────────────────────────────────────────────
@@ -3914,11 +3877,10 @@ async def _registrar_multiples(update, context, gastos, uid):
     encabezado = f"✅ {len(ok_list)} gastos registrados" if len(ok_list) != 1 else "✅ 1 gasto registrado"
     await update.message.reply_text(encabezado + "\n" + "\n".join(lineas), reply_markup=ReplyKeyboardRemove())
     nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
-    notif  = USUARIOS_NOTIFICAR.get(uid)
-    if notif and ok_list:
+    if ok_list:
         for g in ok_list:
-            await context.bot.send_message(
-                chat_id=notif, text=msg_gasto(g, nombre=nombre, notion_id=g["notion_id"]),
+            await notificar_pareja(context, uid,
+                msg_gasto(g, nombre=nombre, notion_id=g["notion_id"]),
                 parse_mode="Markdown"
             )
 
@@ -4178,12 +4140,11 @@ async def _procesar_conversacion(update, context, texto, uid):
             except ValueError as e:
                 lineas.append(f"❌ {parte.strip()[:20]} ({e})")
         await update.message.reply_text("\n".join(lineas), reply_markup=ReplyKeyboardRemove())
-        notif  = USUARIOS_NOTIFICAR.get(uid)
         nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
-        if notif and gastos_ok:
+        if gastos_ok:
             for g in gastos_ok:
-                await context.bot.send_message(
-                    chat_id=notif, text=msg_gasto(g, nombre=nombre, notion_id=g["notion_id"]),
+                await notificar_pareja(context, uid,
+                    msg_gasto(g, nombre=nombre, notion_id=g["notion_id"]),
                     parse_mode="Markdown"
                 )
         return ConversationHandler.END
@@ -5425,7 +5386,7 @@ async def setup_webhook(app):
         BotCommand("reporte",      "📰 Reporte semanal o mensual"),
         BotCommand("top",          "🏆 Top 5 gastos del mes"),
         BotCommand("buscar",       "🔍 Buscar gastos por concepto"),
-        BotCommand("corregir",     "✏️ Corregir categoría o monto"),
+        BotCommand("corregir",     "✏️ Editar un gasto reciente"),
         BotCommand("eliminar",     "🗑️ Eliminar el último gasto"),
         BotCommand("prueba",       "🧪 Simular un gasto sin registrar"),
         BotCommand("cancelar",     "❌ Cancelar acción en curso"),
@@ -5534,7 +5495,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 27.5.0 — emojis en todos los menús de /corregir")
+    logger.info("Bot corriendo 27.6.0 — refactor: notificar_pareja + ruta edición unificada")
     server.serve_forever()
 
 if __name__ == "__main__":
