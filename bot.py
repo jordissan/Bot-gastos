@@ -1532,6 +1532,52 @@ def parsear_mensaje(texto):
 # ── CLASIFICACIÓN + PARSEO CON GROQ (LLM) ─────────────────────────────────────
 TARJETAS_VALIDAS = ["BBVA05", "BBVA12", "HEYB25", "BMEX04", "EFVO"]
 
+TARJETA_EMOJI = {
+    "BBVA05": "🔵",   # BBVA azul, corte día 5
+    "BBVA12": "🔵",   # BBVA azul, corte día 12
+    "HEYB25": "🟣",   # Hey Banco, morado
+    "BMEX04": "🔴",   # Banorte, rojo
+    "EFVO":   "💵",   # Efectivo
+}
+
+SC_EMOJI = {
+    # Automovil
+    "Gasolina": "⛽", "Estacionamento": "🅿️", "Mantenimiento": "🔧",
+    "VW POLO": "🚗", "Seguro Auto": "🛡️",
+    # Personal
+    "Ropa": "👕", "Calzado": "👟", "Doctor": "🩺", "Medicina": "💊",
+    "Gimnasio": "🏋️", "Corte de pelo": "✂️", "Cuidado personal": "🧴",
+    "Gasto personal": "👤",
+    # Despensa
+    "Super": "🛒", "Abarrotes": "🥫", "Carniceria": "🥩", "Mercado": "🏪",
+    "Comida": "🍱",
+    # Deudas
+    "MSI": "💳", "Deudas": "🏦", "EFI": "🏦", "DBMEX": "🏦",
+    "PDHB25": "🏦", "PRP": "🏦", "Impuestos": "📊",
+    # Diversión
+    "Salidas": "🎊", "Treat": "🍭", "Cine": "🎬", "Conciertos": "🎵",
+    "Tiempo de calidad": "❤️",
+    # Educación
+    "Libros": "📖", "Cursos": "🎓",
+    # Emergencias
+    "Emergencias": "🚨",
+    # Ezra
+    "Ezra": "👶",
+    # Generosidad
+    "Regalos": "🎁", "Ofrenda": "🙏", "Diezmo": "⛪",
+    # Iglesia
+    "Iglesia": "⛪",
+    # Otros
+    "Otros": "📦", "Vacaciones": "🏖️",
+    # Restaurantes
+    "Restaurantes": "🍽️",
+    # Servicios
+    "Servicios": "⚡", "Streaming": "📺", "Internet": "🌐",
+    "Telefonia Celular": "📱", "Luz": "💡", "Agua": "💧",
+    # Departamento
+    "Renta": "🏠", "Muebles": "🛋️", "Decoracion": "🖼️",
+}
+
 def clasificar_mensaje_groq(texto: str, ultimo: dict = None, historial: list = None):
     """
     Clasifica un mensaje con Groq/Llama 3.3 70B. Devuelve (tipo, payload):
@@ -4411,7 +4457,14 @@ async def _abrir_campo(query, context, campo, base, cambios):
         await query.edit_message_text(_con_cambios(prompts[campo], base, cambios), reply_markup=kb)
         return CORREGIR_PANEL
     if campo == "tarjeta":
-        botones = [[InlineKeyboardButton(t, callback_data=f"edit:v:tarjeta:{t}")] for t in TARJETAS_VALIDAS]
+        botones = []
+        fila = []
+        for t in TARJETAS_VALIDAS:
+            emoji = TARJETA_EMOJI.get(t, "💳")
+            fila.append(InlineKeyboardButton(f"{emoji} {t}", callback_data=f"edit:v:tarjeta:{t}"))
+            if len(fila) == 2:
+                botones.append(fila); fila = []
+        if fila: botones.append(fila)
         botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="edit:back")])
         await query.edit_message_text(_con_cambios("💳 Elige la tarjeta:", base, cambios), reply_markup=InlineKeyboardMarkup(botones))
         return CORREGIR_PANEL
@@ -4483,7 +4536,15 @@ async def panel_callback(update, context):
             context.user_data["corr_cambios"] = cambios
             await _editar_panel(query, base, cambios)
             return CORREGIR_PANEL
-        botones = [[InlineKeyboardButton(s, callback_data=f"edit:v:sub:{s}")] for s in subcats]
+        botones = []
+        fila_s = []
+        for s in subcats:
+            emoji_s = SC_EMOJI.get(s, "")
+            label_s = f"{emoji_s} {s}" if emoji_s else s
+            fila_s.append(InlineKeyboardButton(label_s, callback_data=f"edit:v:sub:{s}"))
+            if len(fila_s) == 2:
+                botones.append(fila_s); fila_s = []
+        if fila_s: botones.append(fila_s)
         botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="edit:f:subcategoria")])
         await query.edit_message_text(_con_cambios(f"🏷️ {grp} — elige la subcategoría:", base, cambios), reply_markup=InlineKeyboardMarkup(botones))
         return CORREGIR_PANEL
@@ -5473,7 +5534,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 27.4.0 — emojis en menú de presupuesto (/corregir)")
+    logger.info("Bot corriendo 27.5.0 — emojis en todos los menús de /corregir")
     server.serve_forever()
 
 if __name__ == "__main__":
