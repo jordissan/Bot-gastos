@@ -1563,6 +1563,7 @@ def clasificar_mensaje_groq(texto: str, ultimo: dict = None, historial: list = N
 - Si el usuario quiere MODIFICAR el último gasto registrado (usa "cámbialo", "ponlo en", "era", "más bien", "corrige"):
 {{"tipo": "edicion", "monto": número o null, "concepto": texto o null, "tarjeta": "{'/'.join(TARJETAS_VALIDAS)} o null", "fecha": "YYYY-MM-DD o null", "presupuesto": "un presupuesto exacto de la lista o null", "subcategoria": "una subcategoría exacta de la lista o null"}}
   (incluye SOLO los campos que el usuario pide cambiar; el resto null)
+  Si el usuario dice "pagué en efectivo" / "no usé tarjeta" / "fue en efectivo" → tarjeta: "EFVO".
   Último gasto: {ultimo.get('concepto')} ${ultimo.get('monto')} — {ultimo.get('subcategoria')}/{ultimo.get('presupuesto')}
   Presupuestos válidos: {', '.join(PR.keys())}
   Subcategorías válidas: {', '.join(SC.keys())}
@@ -1643,6 +1644,8 @@ Reglas para "gasto":
 - Concepto conciso: "Starbucks", "Super", "Comida", "Gasolina".
 - "ayer" resta 1 día a hoy. Sin fecha = hoy.
 - Montos aproximados ("como 350", "unos 400") → usa ese número. Dos montos del MISMO gasto → el mayor.
+- Si el usuario menciona "efectivo", "en efectivo", "cash", "no usé tarjeta", "pagué en efectivo" → tarjeta: "EFVO". NO incluir la palabra "efectivo" en el concepto.
+- Si el usuario menciona "efectivo" en el contexto de edición → campo tarjeta: "EFVO".
 IMPORTANTE: si hay duda y el mensaje tiene forma de pregunta, elige "consulta". Nunca registres un gasto cuando el usuario está preguntando.
 IMPORTANTE: usa "multi_gasto" SOLO si hay 2+ gastos claramente distintos. Si es un solo gasto (aunque mencione varios montos o productos), usa "gasto"."""
 
@@ -3063,7 +3066,7 @@ Devuelve SOLO JSON válido:
 MODOS disponibles:
 - "detalle": totales por meses o rango de fechas. Para "¿cuántas veces fui a X?" usa comercio.
 - "por_anio": gasto por año ("¿qué año gasté más?").
-- "primero"/"ultimo"/"mayor": gasto más antiguo/reciente/caro de la historia. "ultimo" es SOLO para "el último gasto que hice", NUNCA para "ayer".
+- "primero"/"ultimo"/"mayor": gasto más antiguo/reciente/caro de la historia. "ultimo" es SOLO para "el último gasto que hice" (sin mencionar ningún comercio ni categoría). NUNCA usar "ultimo" cuando el usuario menciona un comercio específico — en ese caso usar "ultima_visita" con comercio.
 - "ranking_categorias": top categorías por monto ("¿en qué gasto más?").
 - "ranking_frecuencia": top categorías por número de compras ("¿dónde compro más seguido?", "¿qué categoría tiene más transacciones?").
 - "promedio_mensual": promedio de gasto por mes. Acepta "categoria".
@@ -3077,7 +3080,7 @@ MODOS disponibles:
 - "hormiga": gastos pequeños (<$150). Acepta "categoria" y "meses".
 - "recurrentes": gastos que se repiten cada mes ("¿cuáles son mis gastos fijos?").
 - "dias_sin_gasto": días desde el último gasto en una categoría. Requiere "categoria".
-- "ultima_visita": última vez que fui a un comercio. Requiere "comercio".
+- "ultima_visita": última vez que gasté en un comercio o lugar específico. Requiere "comercio". Usar cuando el usuario pregunta "¿cuál fue mi último gasto de X?", "¿cuándo fui por última vez a X?", "¿cuándo fue la última vez que compré en X?". Ej: "último gasto de autolavado" → ultima_visita + comercio:"autolavado".
 - "proyeccion_ahorro": cuánto ahorraría si dejara un hábito. Requiere "comercio".
 - "msi_tracker": cuántos meses sin intereses tengo activos, cuánto debo en total, cuándo terminan.
 - "oportunidades_ahorro": dónde puedo ahorrar, en qué categorías gasto de más vs mi historial.
@@ -5462,7 +5465,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 27.1.0 — fix lectura de tarjeta (Pago/Estado de Cuenta)")
+    logger.info("Bot corriendo 27.2.0 — fix ultima_visita + efectivo→EFVO")
     server.serve_forever()
 
 if __name__ == "__main__":
