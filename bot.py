@@ -3627,25 +3627,29 @@ async def callback_sandbox_edicion(update, context):
 
 # ── REGISTRAR VIA SHORTCUT (iOS) ─────────────────────────────────────────────
 async def registrar_via_shortcut(texto: str, user_id: int):
+    """Registra un gasto vía Shortcut/Siri.
+    Devuelve (ok: bool, msg: str, resumen: str).
+    'resumen' es una línea compacta lista para mostrar en iOS (ej: "Oxxo $45.00 · BBVA12 · Despensa").
+    """
     import random
     app = get_app()
     if not app:
-        return False, "Bot no disponible"
+        return False, "Bot no disponible", ""
     try:
         tipo, payload = clasificar_mensaje_groq(texto) if (GROQ_API_KEY and not _parece_gasto_estricto(texto)) else (None, None)
         # Vía Shortcut/Siri el intent es registrar; si Groq no devolvió un gasto, usar regex
         gasto = payload if tipo == "gasto" else parsear_mensaje(texto)
     except ValueError as e:
         await app.bot.send_message(chat_id=user_id, text=f"❓ {e}\n\nEjemplo: Oxxo 45")
-        return False, str(e)
+        return False, str(e), ""
     except Exception as e:
         await app.bot.send_message(chat_id=user_id, text=f"❌ Error al procesar: {e}")
-        return False, str(e)
+        return False, str(e), ""
     ok, nid, err = guardar_notion(gasto)
     if not ok:
         logger.error(f"Error Notion via shortcut: {err}")
         await app.bot.send_message(chat_id=user_id, text="❌ Error al guardar en Notion. Intenta de nuevo.")
-        return False, f"Error Notion: {err}"
+        return False, f"Error Notion: {err}", ""
     gasto_completo = {**gasto, "notion_id": nid}
     threading.Thread(target=guardar_historial_notion, args=(gasto_completo, user_id), daemon=True).start()
     guardar_contexto(user_id, gasto_completo)
@@ -3667,7 +3671,9 @@ async def registrar_via_shortcut(texto: str, user_id: int):
             chat_id=notif, text=msg_gasto(gasto, nombre=nombre, notion_id=nid),
             parse_mode="Markdown"
         )
-    return True, msg
+    # Línea compacta para mostrar en iOS Shortcuts como confirmación nativa
+    resumen = f"{gasto['concepto']} ${gasto['monto']:,.2f} · {gasto['tarjeta']} · {gasto['subcategoria']}"
+    return True, msg, resumen
 
 class _BotCtx:
     """Wrapper mínimo para pasar app.bot a funciones que esperan context.bot
@@ -5302,10 +5308,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 loop = getattr(getattr(app, "update_processor", None), "_loop", None)
                 if loop:
                     future  = asyncio.run_coroutine_threadsafe(registrar_via_shortcut(texto, user_id), loop)
-                    ok, msg = future.result(timeout=NOTION_T_LONG)
+                    ok, msg, resumen = future.result(timeout=NOTION_T_LONG)
                 else:
-                    logger.error("/log: loop no disponible"); ok, msg = False, "Loop no disponible"
-                resp = json.dumps({"ok": ok, "msg": msg}, ensure_ascii=False).encode()
+                    logger.error("/log: loop no disponible"); ok, msg, resumen = False, "Loop no disponible", ""
+                resp = json.dumps({"ok": ok, "msg": msg, "resumen": resumen}, ensure_ascii=False).encode()
                 self.send_response(200); self.send_header("Content-Type","application/json")
                 self.send_header("Content-Length", str(len(resp))); self.end_headers(); self.wfile.write(resp)
             except Exception as e:
@@ -5465,7 +5471,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 27.2.0 — fix ultima_visita + efectivo→EFVO")
+    logger.info("Bot corriendo 27.3.0 — Shortcuts: campo 'resumen' en respuesta /log")
     server.serve_forever()
 
 if __name__ == "__main__":
