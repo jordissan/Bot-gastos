@@ -3174,16 +3174,21 @@ CAMPOS:
         res = await asyncio.to_thread(ejecutar_consulta_finanzas, plan)
         datos = _formatear_datos_consulta(res)
 
-    prompt_resp = f"""Eres el asistente del bot de gastos de Jordi y Nani. Responde en español mexicano, claro y directo (máx 3 oraciones). Usa $ con separador de miles. Emojis con moderación.
+    prompt_resp = f"""Eres el asistente del bot de gastos de Jordi y Nani. Responde en español mexicano, claro y directo. Usa $ con separador de miles. Emojis con moderación.
 
 Pregunta del usuario: "{texto}"
 
 Datos reales consultados en Notion ahora mismo:
 {datos}
 
+REGLAS DE FORMATO:
+- Si los datos contienen una lista de gastos individuales (varios conceptos con monto y fecha), respóndela como bullet list: • Concepto $monto · Fecha. Luego una línea de total o resumen al final.
+- Si los datos son un agregado o resumen (una sola cifra, ranking de categorías, comparativa), responde en 2-3 oraciones fluidas, sin bullets.
+- Nunca mezcles ambos estilos en la misma respuesta.
+
 REGLA CRÍTICA: responde ÚNICAMENTE con los datos mostrados arriba. PROHIBIDO usar información de mensajes anteriores, inventar cifras o mencionar meses/gastos que no aparezcan en esos datos. Si los datos dicen "Sin gastos que coincidan", dilo tal cual — no menciones otros meses ni datos de turnos previos."""
 
-    respuesta = await asyncio.to_thread(groq_completar, prompt_resp, 200)
+    respuesta = await asyncio.to_thread(groq_completar, prompt_resp, 400)
     if respuesta:
         mem_add_turn(user_id, "u", texto)
         mem_add_turn(user_id, "b", respuesta)
@@ -5006,7 +5011,7 @@ def _datos_reporte(tipo: str = "semanal") -> dict:
             pr = _presupuesto_de_props(props)
             if pr:
                 cats[pr] = cats.get(pr, 0) + m
-            t = "".join(rt.get("plain_text", "") for rt in props.get("Tarjeta", {}).get("rich_text", [])) or "?"
+            t = _leer_tarjeta(props) or "?"
             tarjetas[t] = tarjetas.get(t, 0) + m
         return total, len(gastos), cats, tarjetas
 
@@ -5034,13 +5039,21 @@ async def enviar_reporte(tipo: str = "semanal", solo_a: int = None):
         texto = None
         if GROQ_API_KEY:
             tarj_block = f"\n- Por tarjeta: {resumen_tarj}" if resumen_tarj else ""
-            prompt = f"""Escribe un reporte de gastos de {d['periodo']} para Jordi y Nani, en español mexicano, cálido y breve (3-4 oraciones, 1-2 emojis).
-Datos reales (no inventes nada):
-- Total: ${d['total']:,.0f} en {d['conteo']} gastos
-- Periodo anterior: ${d['total_prev']:,.0f} (diferencia ${diff:+,.0f})
-- Por categoría: {resumen_cats}{tarj_block}
-Menciona el total, cómo va contra el periodo anterior, en qué categoría se fue más, y si hay desglose por tarjeta menciónalo brevemente. Cierra con un comentario útil o de ánimo."""
-            texto = await asyncio.to_thread(groq_completar, prompt, 250)
+            prompt = f"""Escribe el reporte semanal de gastos de Jordi y Nani en español mexicano. Tono cálido y directo. Máximo 180 palabras.
+
+Datos reales (NO inventes nada que no esté aquí):
+- Total {d['periodo']}: ${d['total']:,.0f} en {d['conteo']} gastos
+- Periodo anterior: ${d['total_prev']:,.0f} (diferencia ${diff:+,.0f}){tarj_block}
+- Por categoría (mayor a menor): {resumen_cats}
+
+Estructura obligatoria:
+1. Encabezado con saludo, total y comparativa vs semana anterior (1 oración).
+2. Desglose por categoría en bullet list (• Categoría: $monto) — solo las que tengan datos.
+3. Si hay desglose por tarjeta, un bullet list corto con eso también.
+4. Cierra con 1 observación financiera concreta basada en los datos (no genérica) y 1 emoji de cierre.
+
+Usa $ con separador de miles. No menciones datos que no aparezcan arriba."""
+            texto = await asyncio.to_thread(groq_completar, prompt, 450)
         if not texto:
             flecha = "🔺" if diff > 0 else ("🔻" if diff < 0 else "➡️")
             tarj_line = f"\n💳 Tarjetas: {resumen_tarj}" if resumen_tarj else ""
@@ -5495,7 +5508,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 27.6.0 — refactor: notificar_pareja + ruta edición unificada")
+    logger.info("Bot corriendo 27.7.0 — reporte semanal rico + bullet lists en consultas")
     server.serve_forever()
 
 if __name__ == "__main__":
