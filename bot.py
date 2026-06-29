@@ -5459,7 +5459,8 @@ def main():
             CONFIRMAR_SUBCAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_subcat)],
         },
         fallbacks=[CommandHandler("cancelar", cancelar), CommandHandler("start", start)],
-        allow_reentry=True,
+        # allow_reentry=False (default): el entry_point es TEXT genérico, si fuera True
+        # cada texto en estado CONFIRMAR_CAT reinicaría la conv en lugar de ir a confirmar_cat
     )
     conv_corregir = ConversationHandler(
         entry_points=[CommandHandler("corregir", cmd_corregir)],
@@ -5524,7 +5525,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 27.8.0 — fix: confirmar_cat pierde estado por duplicados Telegram")
+    logger.info("Bot corriendo 27.9.0 — fix: allow_reentry=True en conv_gasto rompía CONFIRMAR_CAT")
     server.serve_forever()
 
 if __name__ == "__main__":
