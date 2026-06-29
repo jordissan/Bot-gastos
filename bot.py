@@ -4205,7 +4205,14 @@ async def confirmar_cat(update, context):
         await update.message.reply_text("Error.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     grp = grupo_key(txt)
-    subcats = GRUPOS_CAT.get(grp, [grp])
+    if grp not in GRUPOS_CAT:
+        # Texto no reconocido como grupo válido (p.ej. duplicado de webhook o mensaje libre)
+        # Quedamos en CONFIRMAR_CAT sin tocar gasto_pendiente
+        await update.message.reply_text(
+            "❓ Elige una categoría con los botones:",
+            reply_markup=ReplyKeyboardMarkup(menu_grupos(), one_time_keyboard=True, resize_keyboard=True))
+        return CONFIRMAR_CAT
+    subcats = GRUPOS_CAT.get(grp)
     context.user_data["grupo_pendiente"] = grp
     if len(subcats) > 1:
         menu = [[s] for s in subcats] + [[BTN_CANCELAR]]
@@ -4225,8 +4232,17 @@ async def confirmar_subcat(update, context):
     txt = update.message.text.strip()
     if txt == BTN_CANCELAR:
         return await _cancelar_conv(update, context)
+    grp = context.user_data.get("grupo_pendiente", "")
+    subcats_validas = GRUPOS_CAT.get(grp, [])
+    if subcats_validas and txt not in subcats_validas:
+        # Texto no es una subcategoría válida — repetir menú sin tocar gasto_pendiente
+        menu = [[s] for s in subcats_validas] + [[BTN_CANCELAR]]
+        await update.message.reply_text(
+            "❓ Elige una subcategoría con los botones:",
+            reply_markup=ReplyKeyboardMarkup(menu, one_time_keyboard=True, resize_keyboard=True))
+        return CONFIRMAR_SUBCAT
     gasto = context.user_data.pop("gasto_pendiente", None)
-    grp   = context.user_data.pop("grupo_pendiente", txt)
+    context.user_data.pop("grupo_pendiente", None)
     if not gasto:
         await update.message.reply_text("Error.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
@@ -5508,7 +5524,7 @@ def main():
     logger.info(f"HTTP en {port}")
     server = HTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 27.7.0 — reporte semanal rico + bullet lists en consultas")
+    logger.info("Bot corriendo 27.8.0 — fix: confirmar_cat pierde estado por duplicados Telegram")
     server.serve_forever()
 
 if __name__ == "__main__":
