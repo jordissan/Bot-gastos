@@ -1,3 +1,4 @@
+from __future__ import annotations  # anotaciones lazy — permite correr tests en Python 3.9 local
 import os, re, datetime, requests, threading, unicodedata, json, logging, time, base64, zoneinfo, asyncio
 from difflib import SequenceMatcher
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
