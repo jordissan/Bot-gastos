@@ -1,6 +1,6 @@
 import os, re, datetime, requests, threading, unicodedata, json, logging, time, base64, zoneinfo, asyncio
 from difflib import SequenceMatcher
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
@@ -564,14 +564,14 @@ async def cmd_resumen(update, context):
     args = context.args
     mes = args[0].upper() if args else mes_activo_str()
 
-    mid = buscar_mes_id(mes)
+    mid = await asyncio.to_thread(buscar_mes_id, mes)
     if not mid:
         await update.message.reply_text(f"❌ No encontré el mes {mes} en Notion.")
         return
 
     await update.message.reply_text(f"⏳ Calculando resumen de {mes}…")
 
-    gastos = query_notion_db(NOTION_DATABASE_ID,
+    gastos = await asyncio.to_thread(query_notion_db, NOTION_DATABASE_ID,
                              {"property": "Mes", "relation": {"contains": mid}})
     if not gastos:
         await update.message.reply_text(f"📭 No hay gastos registrados en {mes}.")
@@ -3290,10 +3290,10 @@ async def verificar_metas(gasto: dict, uid: int, context) -> None:
         ciclo = gasto.get("mes", "")
         if not ciclo:
             return
-        metas = await asyncio.get_event_loop().run_in_executor(None, cargar_metas_ciclo, uid, ciclo)
+        metas = await asyncio.to_thread(cargar_metas_ciclo, uid, ciclo)
         if not metas:
             return
-        mid = buscar_mes_id(ciclo)
+        mid = await asyncio.to_thread(buscar_mes_id, ciclo)
         if not mid:
             return
         gastos_mes = await asyncio.to_thread(query_notion_db, NOTION_DATABASE_ID,
@@ -3347,7 +3347,7 @@ async def generar_insight_groq(gasto: dict, user_id: int, context) -> None:
         return
 
     try:
-        mid = buscar_mes_id(mes_actual)
+        mid = await asyncio.to_thread(buscar_mes_id, mes_actual)
         if not mid:
             return
         gastos_mes = await asyncio.to_thread(
@@ -3454,7 +3454,7 @@ def msg_gasto(g, nombre=None, notion_id=None, header=None):
 
 # ── REGISTRAR Y NOTIFICAR ────────────────────────────────────────────────────
 async def registrar_y_notificar(update, context, gasto):
-    ok, nid, err = guardar_notion(gasto)
+    ok, nid, err = await asyncio.to_thread(guardar_notion, gasto)
     if not ok:
         logger.error(f"Error guardando en Notion: {err}")
         await _responder(update, context, "❌ Error al guardar en Notion. Intenta de nuevo.", reply_markup=ReplyKeyboardRemove())
@@ -3501,7 +3501,7 @@ async def aplicar_edicion_contextual(update, context, campos: dict, base: dict):
     if not nid:
         await _responder(update, context, "🤔 No tengo un gasto reciente para editar. Usa /corregir.")
         return
-    ok, g, props, err = _aplicar_edicion_notion(base, campos)
+    ok, g, props, err = await asyncio.to_thread(_aplicar_edicion_notion, base, campos)
     if err == "sin_cambios":
         await _responder(update, context, "🤔 No entendí qué cambiar del último gasto.")
         return
@@ -3512,7 +3512,7 @@ async def aplicar_edicion_contextual(update, context, campos: dict, base: dict):
     g["seguro"] = True
     guardar_contexto(uid, g)
     if _edicion_cambio_categoria(props):
-        guardar_aprendizaje(g["concepto"].lower(), g["subcategoria"], g["presupuesto"])
+        await asyncio.to_thread(guardar_aprendizaje, g["concepto"].lower(), g["subcategoria"], g["presupuesto"])
     await _responder(update, context,
         msg_gasto(g, notion_id=nid, header="✏️ Gasto actualizado"),
         reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
@@ -3593,7 +3593,7 @@ async def callback_edicion(update, context):
         await query.message.reply_text("⚠️ No encontré el gasto para editar. Usa /corregir.")
         return
 
-    ok, g, props, err = _aplicar_edicion_notion(base, campos)
+    ok, g, props, err = await asyncio.to_thread(_aplicar_edicion_notion, base, campos)
     if err == "sin_cambios":
         await query.edit_message_reply_markup(reply_markup=None)
         await query.message.reply_text("🤔 No detecté cambios para aplicar.")
@@ -3605,7 +3605,7 @@ async def callback_edicion(update, context):
     g["seguro"] = True
     guardar_contexto(uid, g)
     if _edicion_cambio_categoria(props):
-        guardar_aprendizaje(g["concepto"].lower(), g["subcategoria"], g["presupuesto"])
+        await asyncio.to_thread(guardar_aprendizaje, g["concepto"].lower(), g["subcategoria"], g["presupuesto"])
 
     await query.edit_message_reply_markup(reply_markup=None)
     nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
@@ -3654,16 +3654,19 @@ async def registrar_via_shortcut(texto: str, user_id: int):
     if not app:
         return False, "Bot no disponible", ""
     try:
-        tipo, payload = clasificar_mensaje_groq(texto) if (GROQ_API_KEY and not _parece_gasto_estricto(texto)) else (None, None)
+        if GROQ_API_KEY and not _parece_gasto_estricto(texto):
+            tipo, payload = await asyncio.to_thread(clasificar_mensaje_groq, texto)
+        else:
+            tipo, payload = None, None
         # Vía Shortcut/Siri el intent es registrar; si Groq no devolvió un gasto, usar regex
-        gasto = payload if tipo == "gasto" else parsear_mensaje(texto)
+        gasto = payload if tipo == "gasto" else await asyncio.to_thread(parsear_mensaje, texto)
     except ValueError as e:
         await app.bot.send_message(chat_id=user_id, text=f"❓ {e}\n\nEjemplo: Oxxo 45")
         return False, str(e), ""
     except Exception as e:
         await app.bot.send_message(chat_id=user_id, text=f"❌ Error al procesar: {e}")
         return False, str(e), ""
-    ok, nid, err = guardar_notion(gasto)
+    ok, nid, err = await asyncio.to_thread(guardar_notion, gasto)
     if not ok:
         logger.error(f"Error Notion via shortcut: {err}")
         await app.bot.send_message(chat_id=user_id, text="❌ Error al guardar en Notion. Intenta de nuevo.")
@@ -3719,7 +3722,7 @@ async def handle_foto(update, context):
 
     # Fallback a Google Vision si Groq no está disponible o falla
     if datos is None:
-        texto_ocr = ocr_ticket(bytes(image_bytes))
+        texto_ocr = await asyncio.to_thread(ocr_ticket, bytes(image_bytes))
         if not texto_ocr:
             await msg_espera.edit_text("❌ No pude leer el ticket. Intenta con mejor iluminación o más cerca.")
             return ConversationHandler.END
@@ -3731,7 +3734,7 @@ async def handle_foto(update, context):
     fecha   = datos["fecha"]
     tarjeta = calcular_tarjeta(fecha)
     mes     = calcular_mes(fecha, tarjeta)
-    sub, pre, seguro = inferir_categoria(datos["concepto"])
+    sub, pre, seguro = await asyncio.to_thread(inferir_categoria, datos["concepto"])
     productos = datos.get("productos") or []
     concepto_foto = datos["concepto"] + ("*" if productos else "")
     gasto = {
@@ -3870,7 +3873,7 @@ async def _registrar_multiples(update, context, gastos, uid):
     """Registra una lista de gastos ya construidos (de Groq) y manda confirmación agrupada."""
     lineas, ok_list = [], []
     for g in gastos[:5]:
-        ok, nid, err = guardar_notion(g)
+        ok, nid, err = await asyncio.to_thread(guardar_notion, g)
         if ok:
             gc = {**g, "notion_id": nid}
             threading.Thread(target=guardar_historial_notion, args=(gc, uid), daemon=True).start()
@@ -3998,11 +4001,11 @@ async def _procesar_conversacion(update, context, texto, uid):
     gasto_groq = None
     groq_fue_llamado = False
     # Expandir aliases ANTES de clasificar (solo si no es una definición de alias)
-    texto = expandir_aliases(uid, texto)
+    texto = await asyncio.to_thread(expandir_aliases, uid, texto)
     if GROQ_API_KEY and not _parece_gasto_estricto(texto):
         groq_fue_llamado = True
         ultimo = obtener_contexto(uid)
-        tipo, payload = clasificar_mensaje_groq(texto, ultimo, obtener_historial(uid))
+        tipo, payload = await asyncio.to_thread(clasificar_mensaje_groq, texto, ultimo, obtener_historial(uid))
         if tipo == "consulta":
             if await responder_consulta_groq(texto, uid, update, context):
                 return ConversationHandler.END
@@ -4133,8 +4136,8 @@ async def _procesar_conversacion(update, context, texto, uid):
         gastos_ok = []
         for parte in partes:
             try:
-                gasto = parsear_mensaje(parte)
-                ok, nid, err = guardar_notion(gasto)
+                gasto = await asyncio.to_thread(parsear_mensaje, parte)
+                ok, nid, err = await asyncio.to_thread(guardar_notion, gasto)
                 if ok:
                     gasto_completo = {**gasto, "notion_id": nid}
                     threading.Thread(target=guardar_historial_notion, args=(gasto_completo, uid), daemon=True).start()
@@ -4156,7 +4159,7 @@ async def _procesar_conversacion(update, context, texto, uid):
 
     # 3) Gasto único (de Groq o del parser estricto/regex)
     try:
-        gasto = gasto_groq or parsear_mensaje(texto)
+        gasto = gasto_groq or await asyncio.to_thread(parsear_mensaje, texto)
         if gasto["monto"]>=MONTO_INUSUAL:
             context.user_data["gasto_pendiente"]=gasto
             kb = InlineKeyboardMarkup([[
@@ -4224,7 +4227,7 @@ async def confirmar_cat(update, context):
     gasto = context.user_data.pop("gasto_pendiente")
     gasto["subcategoria"] = subcats[0]
     gasto["presupuesto"] = limpiar_emoji(grp)
-    guardar_aprendizaje(gasto["concepto"].lower(), gasto["subcategoria"], gasto["presupuesto"])
+    await asyncio.to_thread(guardar_aprendizaje, gasto["concepto"].lower(), gasto["subcategoria"], gasto["presupuesto"])
     await registrar_y_notificar(update, context, gasto)
     return ConversationHandler.END
 
@@ -4248,7 +4251,7 @@ async def confirmar_subcat(update, context):
         return ConversationHandler.END
     gasto["subcategoria"] = txt
     gasto["presupuesto"]  = limpiar_emoji(grp)
-    guardar_aprendizaje(gasto["concepto"].lower(), txt, limpiar_emoji(grp))
+    await asyncio.to_thread(guardar_aprendizaje, gasto["concepto"].lower(), txt, limpiar_emoji(grp))
     await registrar_y_notificar(update, context, gasto)
     context.user_data.clear()
     return ConversationHandler.END
@@ -4266,7 +4269,7 @@ def _lista_corregir(ultimos):
 async def cmd_corregir(update,context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS: return ConversationHandler.END
     uid = update.effective_user.id
-    ultimos = cargar_historial_compartido()
+    ultimos = await asyncio.to_thread(cargar_historial_compartido)
     if not ultimos:
         await update.message.reply_text("No hay gastos recientes para corregir."); return ConversationHandler.END
     context.user_data["historial_corregir"]=ultimos
@@ -4696,7 +4699,7 @@ async def handle_prueba(update, context):
             # Nuevo gasto via Groq
             if tipo == "gasto" and payload:
                 gasto = payload
-                sub, pre, seguro, ori_emoji, ori_txt = inferir_categoria_con_origen(gasto["concepto"])
+                sub, pre, seguro, ori_emoji, ori_txt = await asyncio.to_thread(inferir_categoria_con_origen, gasto["concepto"])
                 gasto.update({"subcategoria": sub, "presupuesto": pre, "seguro": seguro})
                 origen_label = f"Groq + {ori_emoji} {ori_txt}"
 
@@ -4712,7 +4715,7 @@ async def handle_prueba(update, context):
             if monto is None: raise ValueError("No encontré el monto")
             tarjeta = calcular_tarjeta(fecha, texp)
             mes     = calcular_mes(fecha, tarjeta)
-            sub, pre, seguro, ori_emoji, ori_txt = inferir_categoria_con_origen(concepto)
+            sub, pre, seguro, ori_emoji, ori_txt = await asyncio.to_thread(inferir_categoria_con_origen, concepto)
             gasto = {
                 "concepto": concepto.title(), "monto": monto,
                 "fecha": fecha.strftime("%Y-%m-%d"), "tarjeta": tarjeta,
@@ -4925,7 +4928,7 @@ async def cmd_top(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return
     mes = context.args[0].upper() if context.args else mes_activo_str()
-    mid = buscar_mes_id(mes)
+    mid = await asyncio.to_thread(buscar_mes_id, mes)
     if not mid:
         await update.message.reply_text(f"❌ No encontré el mes {mes} en Notion.")
         return
@@ -5263,7 +5266,7 @@ async def callback_eliminar(update, context):
     if not gasto or not gasto.get("notion_id"):
         await query.edit_message_text("❌ No se encontró el gasto en Notion.")
         return ConversationHandler.END
-    r = notion_request("PATCH", f"{NOTION_API_BASE}/pages/{gasto['notion_id']}",
+    r = await asyncio.to_thread(notion_request, "PATCH", f"{NOTION_API_BASE}/pages/{gasto['notion_id']}",
         headers=nh(), json={"archived": True}, timeout=NOTION_T_DEFAULT)
     if r and r.status_code == 200:
         await query.edit_message_text(
@@ -5523,7 +5526,9 @@ def main():
 
     port = int(os.environ.get("PORT", 10000))
     logger.info(f"HTTP en {port}")
-    server = HTTPServer(("0.0.0.0", port), WebhookHandler)
+    # ThreadingHTTPServer: cada request en su propio hilo — un /log lento o un
+    # webhook pesado ya no bloquea el health check de UptimeRobot ni otros webhooks.
+    server = ThreadingHTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
     logger.info("Bot corriendo 27.9.0 — fix: allow_reentry=True en conv_gasto rompía CONFIRMAR_CAT")
     server.serve_forever()
