@@ -15,7 +15,7 @@
 
 Bot de Telegram personal de Jordi y Nane para registrar gastos, conectado a Notion como fuente de verdad. Entiende lenguaje natural (texto y voz), lee tickets por foto, responde preguntas sobre finanzas y manda reportes automáticos. Corre 24/7 en Render.com con Docker.
 
-**Versión actual:** 27.6.0
+**Versión actual:** 28.0.0
 **Esquema:** `MAJOR` = nuevo dominio/capacidad estructural · `MINOR` = feature individual · `PATCH` = fix o ajuste
 
 ---
@@ -367,9 +367,12 @@ Render está configurado con **Auto Deploy** desde GitHub. Cada push a `main` di
 | `REGLAS_NEGOCIO.md` | Al tocar categorización/tarjetas | Reglas de dominio, casos especiales, gastos fijos |
 | `DEBUGGING.md` | Cuando algo falla | Síntomas → causas → soluciones |
 | `TESTING.md` | Después de un deploy | Checklist de verificación manual |
-| `bot.py` | Al escribir código | Código principal — todo el bot |
+| `bot.py` | Al escribir código | Código principal — handlers, IA, reportes, main |
+| `config.py` | Al tocar constantes/dicts | Env vars, IDs, diccionarios de dominio (SC/PR/emojis/reglas) — solo datos |
+| `notion_api.py` | Al tocar la capa HTTP Notion | nh, notion_request, query_notion_db, cache de meses |
+| `tests/test_core.py` | Antes de cada deploy | 36 tests de reglas de negocio — correr `.venv/bin/pytest tests/ -q` |
 | `requirements.txt` | Al cambiar dependencias | Dependencias Python |
-| `Dockerfile` | Al cambiar infra | Imagen Docker para Render |
+| `Dockerfile` | Al cambiar infra | Imagen Docker para Render (copia bot.py + config.py + notion_api.py) |
 
 ### Estructura `.claude/` (Claude Code)
 

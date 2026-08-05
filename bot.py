@@ -5179,7 +5179,7 @@ def main():
     # webhook pesado ya no bloquea el health check de UptimeRobot ni otros webhooks.
     server = ThreadingHTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 27.9.0 — fix: allow_reentry=True en conv_gasto rompía CONFIRMAR_CAT")
+    logger.info("Bot corriendo 28.0.0 — async correcto + ThreadingHTTPServer + módulos config/notion_api + tests")
     server.serve_forever()
 
 if __name__ == "__main__":

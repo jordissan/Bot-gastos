@@ -5,12 +5,11 @@
 
 ---
 
-## Sesión cerrada: 2026-05-29
+## Sesión cerrada: 2026-06-29
 
 ### Objetivo
-1. Fix Bug 3: tabla de productos de ticket (resuelto en sesión anterior, v26.10.0)
-2. Feature: 20 nuevas capacidades de consulta y acción masiva (v27.0.0)
-3. Continuación: fixes v27.1–v27.2, mejoras UX v27.3–v27.5, refactor Codex v27.6.0
+1. Fix: selección de categoría rota ("Iglesia" → "No reconoci 'Iglesia'") — v27.8/27.9
+2. Diagnóstico completo del código + ejecución del plan: async, tests, limpieza, modularización — v28.0.0
 
 ---
 
@@ -18,66 +17,62 @@
 
 | Item | Estado |
 |------|--------|
-| Versión | 27.6.0 |
+| Versión | 28.0.0 |
 | Branch | main |
 | GitHub | ✅ pushed |
 | Deploy en Render | ✅ AUTO — push a main dispara deploy |
 | Ruta local | `/Users/jordi/Documents/Claude/Projects/Bot-gastos/` |
+| Tests | ✅ 36/36 — `.venv/bin/pytest tests/ -q` |
 
 ---
 
-### Qué cambió en esta sesión (v27.0.0 → v27.6.0)
+### Qué cambió en esta sesión (v27.7 → v28.0.0)
 
-**v27.1.0 — Fix `por_tarjeta` mostraba "Sin tarjeta" en todos los gastos**
-- Causa: bot escribe tarjeta a `Pago` (select) + `Estado de Cuenta` (rich_text), pero código leía `Tarjeta` (campo distinto, vacío en gastos del bot).
-- Fix: helper `_leer_tarjeta(props)` con cadena de prioridad: Pago → Estado de Cuenta → Tarjeta. Aplicado en las 6 ubicaciones de lectura.
+**v27.7.0 — Reporte semanal rico + bullet lists en consultas**
+- Fix: el agg() semanal leía tarjeta del campo "Tarjeta" (vacío) → ahora `_leer_tarjeta()`.
+- Prompt del reporte: estructura obligatoria con bullets por categoría y por tarjeta + observación concreta.
+- prompt_resp de consultas: listados → bullet list; agregados → prosa. Tokens 200→400.
 
-**v27.2.0 — Dos fixes de prompt**
-- "último gasto de autolavado" usaba `modo:"ultimo"` en lugar de `ultima_visita` + comercio. Fix: regla explícita en prompt — `"ultimo"` nunca cuando se menciona un comercio específico.
-- "efectivo" no se mapeaba a `tarjeta: "EFVO"`. Fix: regla en secciones registro y edición del prompt.
+**v27.8.0 — confirmar_cat robusto ante textos no válidos**
+- Si el texto no es un grupo de GRUPOS_CAT, repite el teclado sin perder gasto_pendiente.
 
-**v27.3.0 — Shortcuts: campo `resumen` en respuesta `/log`**
-- `registrar_via_shortcut` ahora devuelve 3-tuple `(ok, msg, resumen)`.
-- `resumen` = línea compacta `"Concepto $monto · Tarjeta · Subcategoría"` lista para mostrar en iOS.
-- El endpoint `/log` incluye `"resumen"` en el JSON de respuesta.
-- iOS: añadir acción "Obtener valor del diccionario" con clave `resumen` + "Mostrar notificación" para confirmación nativa.
+**v27.9.0 — LA CAUSA RAÍZ del bug de categoría**
+- `allow_reentry=True` en conv_gasto hacía que todo texto (p.ej. "⛪ Iglesia") matcheara
+  el entry_point (TEXT genérico) y reiniciara la conv en vez de ir a confirmar_cat.
+- Fix: quitar allow_reentry de conv_gasto (los demás convs lo conservan — sus entry
+  points son comandos).
 
-**v27.4.0 — Emojis en menú de presupuesto (`/corregir`)**
-- Botones del sub-menú "Elige el presupuesto" usan `PR_EMOJI` (ej: `🛒 Despensa`).
+**v28.0.0 — Diagnóstico + 4 puntos ejecutados**
 
-**v27.5.0 — Emojis en todos los menús de `/corregir`**
-- `TARJETA_EMOJI`: 🔵 BBVA05/12, 🟣 HEYB25, 🔴 BMEX04, 💵 EFVO.
-- `SC_EMOJI`: emoji único para cada una de las ~35 subcategorías.
-- Menú tarjeta: layout 2 columnas + emoji.
-- Submenú subcategoría nivel 2: layout 2 columnas + emoji.
+*1. Async correcto (perf):*
+- ~20 llamadas bloqueantes (Notion/Groq/Maps, hasta 15s×3) ahora van por `asyncio.to_thread`:
+  clasificar_mensaje_groq (¡cada mensaje!), guardar_notion ×5, parsear_mensaje/inferir_categoria,
+  buscar_mes_id, _aplicar_edicion_notion, guardar_aprendizaje, etc.
+- `HTTPServer` → `ThreadingHTTPServer`.
+- Esto ataca la raíz de: lag, webhooks duplicados de Telegram, estados perdidos, botones colgados.
 
-**v27.6.0 — Refactor Codex: deduplicación de notificación y ruta de edición**
-- `notificar_pareja(context, uid, texto, **kw)`: helper único que reemplaza 6 bloques idénticos de notificación al cónyuge.
-- `_aplicar_edicion_notion(base, campos)`: unifica la ruta de PATCH que estaba duplicada entre `aplicar_edicion_contextual` (texto/voz) y `callback_edicion` (botones inline). Ahora ambas usan la misma función.
-- `_edicion_cambio_categoria(props)`: `guardar_aprendizaje` solo se llama cuando de verdad cambia subcategoría o presupuesto (antes se llamaba siempre, incluso al editar monto).
-- Eliminada línea muerta `.__class__` en `_accion_ejecutar`.
-- Comportamiento externo idéntico; solo refactor interno.
+*2. Tests (36, sin red):* ciclos de tarjeta, parseo, categorización por reglas, _leer_tarjeta,
+edición local, formato. `tests/conftest.py` pone env vars dummy.
+`from __future__ import annotations` en bot.py para correrlos en el Python 3.9 local.
+
+*3. Limpieza:* eliminada `_ciclo_a_rango_calendario` (muerta); `_agg_gastos()` deduplica
+_agg_ciclo y el agg() semanal. Los excepts silenciosos auditados: todos benignos.
+
+*4. Modularización:*
+- `config.py` — solo datos: env vars, IDs, SC/PR/emojis/GRUPOS_CAT/REGLAS_CONCEPTO/tarjetas.
+- `notion_api.py` — capa HTTP: nh, notion_request, query_notion_db, cache de meses.
+- bot.py 5,532 → 5,186 líneas. **Dockerfile actualizado** (copiaba solo bot.py — habría roto el deploy).
 
 ---
 
 ### Pendiente de verificación (después del deploy)
 
-- [ ] Enviar foto de ticket con productos → tabla de productos aparece en la página de Notion
-- [ ] "¿Cuáles son mis 5 gastos más grandes de mayo?" → ranking_monto
-- [ ] "¿Hay duplicados este mes?" → duplicados
-- [ ] "¿Cuánto me falta en cada presupuesto?" → margen_presupuesto
-- [ ] "¿A cuánto voy a llegar este mes?" → proyeccion_ciclo
-- [ ] "¿Cuánto gasté en cada tarjeta?" → por_tarjeta (fix v27.1)
-- [ ] "Compara mayo con abril" → comparar_ciclos
-- [ ] "¿Qué aliases tengo?" → listar_aliases
-- [ ] "Olvida el alias X" → borrar_alias
-- [ ] "Genera el reporte semanal" → reporte on demand
-- [ ] "Cambia todos los gastos de Uber a Transporte" → accion reclasificar + confirmación
-- [ ] "Muéstrame los gastos sin categoría" → sin_categoria
-- [ ] "Último gasto de autolavado" → ultima_visita (fix v27.2)
-- [ ] Pagar en efectivo → tarjeta EFVO, no aparece "efectivo" en concepto (fix v27.2)
-- [ ] iOS Shortcut: respuesta `/log` incluye campo `resumen` para confirmación nativa (v27.3)
-- [ ] `/corregir` → todos los menús muestran emojis (tarjeta, subcategoría, presupuesto) (v27.4–v27.5)
+- [ ] Gasto desconocido → teclado de categorías → tocar categoría → subcategoría → guardado (fix v27.9)
+- [ ] Mandar 2 mensajes seguidos rápido → el bot responde ambos sin congelarse (async v28)
+- [ ] Reporte semanal del lunes: bullets por categoría + por tarjeta + observación (v27.7)
+- [ ] Consulta "mis últimos 5 gastos de super" → bullet list (v27.7)
+- [ ] Log de Render: "Bot corriendo 28.0.0"
+- [ ] Pendientes de v27.x listados en el handoff anterior (ver git history si hace falta)
 
 ---
 
@@ -86,13 +81,16 @@
 1. Borrar webhook: `https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=true`
 2. Push a main → Render hace Auto Deploy automáticamente
 3. Verificar en logs: `[APScheduler] Scheduler iniciado.`
+4. **Nuevo:** correr `.venv/bin/pytest tests/ -q` ANTES de cada push
 
 ---
 
 ### Próximos pasos
 
 1. Verificar los puntos de arriba en producción
-2. **Backlog** (sin urgencia):
+2. **Punto ciego identificado (aprobado conceptualmente, sin trabajar aún):** bot proactivo —
+   avisos tipo "vas al 80% de Despensa y quedan 10 días" usando metas+scheduler ya existentes
+3. **Backlog** (sin urgencia):
    - Reconciliación email BBVA — postergado indefinidamente
    - Evaluar búsqueda híbrida ciclo+calendario
-   - iOS Shortcuts: añadir "Obtener valor del diccionario" (`resumen`) + "Mostrar notificación" tras el POST `/log`
+   - Partir handlers de bot.py en más módulos (handlers/, reportes.py) si sigue creciendo
