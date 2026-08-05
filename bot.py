@@ -2025,24 +2025,6 @@ def _formatear_datos_consulta(res: dict) -> str:
             f"{c} ${m:,.0f} ({_fecha_compacta(f)})" for c, m, f, _ in res["top"]))
     return "\n".join(partes)
 
-def _ciclo_a_rango_calendario(ciclo: str):
-    """
-    Convierte un código de ciclo de pago (ej. "JUN26") al rango de fechas del mes calendario.
-    Devuelve (date_inicio, date_fin) o (None, None) si el formato no es reconocido.
-    Ejemplo: "JUN26" → (date(2026,6,1), date(2026,6,30))
-    """
-    import calendar as _cal
-    ciclo = (ciclo or "").strip().upper()
-    _MESES_INV = {v: k for k, v in MESES_ESP.items()}
-    mes_str = ciclo[:3]
-    anio_str = ciclo[3:]
-    mes_num = _MESES_INV.get(mes_str)
-    if not mes_num or not anio_str.isdigit():
-        return None, None
-    anio = int("20" + anio_str) if len(anio_str) == 2 else int(anio_str)
-    ultimo_dia = _cal.monthrange(anio, mes_num)[1]
-    return datetime.date(anio, mes_num, 1), datetime.date(anio, mes_num, ultimo_dia)
-
 def _agg_por_anio() -> dict:
     """Gasto total por año, leído de los rollups de la BD Balance (1 query, eficiente)."""
     if not NOTION_BALANCE_ID:
@@ -4983,12 +4965,8 @@ def _mes_anterior(codigo: str) -> str:
         num -= 1
     return f"{MESES_ESP[num]}{str(anio)[-2:]}"
 
-def _agg_ciclo(mes: str) -> dict:
-    """Agrega los gastos de un ciclo (relación Mes) de Notion."""
-    mid = buscar_mes_id(mes)
-    if not mid:
-        return {"total": 0.0, "conteo": 0, "por_categoria": {}, "por_tarjeta": {}, "items": []}
-    gastos = query_notion_db(NOTION_DATABASE_ID, {"property": "Mes", "relation": {"contains": mid}})
+def _agg_gastos(gastos: list) -> dict:
+    """Agrega una lista de páginas de gastos de Notion: total, por categoría, por tarjeta, items."""
     total, cats, tarjetas, items = 0.0, {}, {}, []
     for g in gastos:
         props = g.get("properties", {})
@@ -5004,6 +4982,14 @@ def _agg_ciclo(mes: str) -> dict:
         fecha = (props.get("Fecha", {}).get("date", {}) or {}).get("start", "")
         items.append((concepto, m, fecha))
     return {"total": total, "conteo": len(items), "por_categoria": cats, "por_tarjeta": tarjetas, "items": items}
+
+def _agg_ciclo(mes: str) -> dict:
+    """Agrega los gastos de un ciclo (relación Mes) de Notion."""
+    mid = buscar_mes_id(mes)
+    if not mid:
+        return {"total": 0.0, "conteo": 0, "por_categoria": {}, "por_tarjeta": {}, "items": []}
+    gastos = query_notion_db(NOTION_DATABASE_ID, {"property": "Mes", "relation": {"contains": mid}})
+    return _agg_gastos(gastos)
 
 def _datos_reporte(tipo: str = "semanal") -> dict:
     """Datos para el reporte simple (Telegram). Semanal=últimos 7 días; Mensual=ciclo recién cerrado."""
@@ -5022,17 +5008,8 @@ def _datos_reporte(tipo: str = "semanal") -> dict:
         gastos = query_notion_db(NOTION_DATABASE_ID, {"and": [
             {"property": "Fecha", "date": {"on_or_after": d1.isoformat()}},
             {"property": "Fecha", "date": {"on_or_before": d2.isoformat()}}]})
-        total, cats, tarjetas = 0.0, {}, {}
-        for g in gastos:
-            props = g.get("properties", {})
-            m = props.get("Monto", {}).get("number", 0) or 0
-            total += m
-            pr = _presupuesto_de_props(props)
-            if pr:
-                cats[pr] = cats.get(pr, 0) + m
-            t = _leer_tarjeta(props) or "?"
-            tarjetas[t] = tarjetas.get(t, 0) + m
-        return total, len(gastos), cats, tarjetas
+        a = _agg_gastos(gastos)
+        return a["total"], a["conteo"], a["por_categoria"], a["por_tarjeta"]
 
     total, n, cats, tarjetas_sem = agg(ini, hoy)
     total_prev, _, _, _ = agg(ini_prev, fin_prev)

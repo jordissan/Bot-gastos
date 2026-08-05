@@ -304,7 +304,7 @@ cancelar     - ❌ Cancelar acción en curso
 | `mem_cargar(uid)` / `mem_guardar(uid)` | Memoria persistente Notion |
 | `_manejar_referencia()` | Intercepta referencias contextuales antes de Groq |
 | `enviar_reporte(tipo)` | Reporte Telegram + correo; incluye desglose por tarjeta |
-| `_ciclo_a_rango_calendario(ciclo)` | Helper: "JUN26" → (date(2026,6,1), date(2026,6,30)) |
+| `_agg_gastos(gastos)` | Agregación compartida: total, por_categoria, por_tarjeta, items |
 
 ### ConversationHandlers (el orden importa)
 
