@@ -18,7 +18,7 @@ RENDER_EXTERNAL_URL   = os.environ.get("RENDER_EXTERNAL_URL", "")
 NOTION_BALANCE_ID     = os.environ.get("NOTION_BALANCE_ID", "")
 GROQ_API_KEY          = os.environ.get("GROQ_API_KEY", "")
 
-VERSION = "28.2.0"   # única fuente del número de versión (lo usa /diagnostico y el log de arranque)
+VERSION = "28.2.1"   # única fuente del número de versión (lo usa /diagnostico y el log de arranque)
 
 # ── Modelos de Groq ──────────────────────────────────────────────────────────
 # Groq RETIRA modelos sin previo aviso: en agosto/2026 murieron llama-3.3-70b-versatile

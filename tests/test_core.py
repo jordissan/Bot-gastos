@@ -303,3 +303,23 @@ class TestExtraerJsonRazonamiento:
 
     def test_json_pelado(self):
         assert bot._extraer_json('{"a":1}') == {"a": 1}
+
+
+# ── Orden cronológico de ciclos (v28.2.1) ────────────────────────────────────
+# Los códigos MES+AA no se pueden ordenar como texto: alfabéticamente
+# "ABR22" < "AGO22" < "DIC25" < "ENE26", que no es el orden real.
+
+class TestCicloOrden:
+    def test_ordena_por_fecha_no_alfabeticamente(self):
+        meses = ["AGO26", "ABR22", "DIC25", "ENE26", "ABR26"]
+        assert sorted(meses, key=bot._ciclo_orden) == ["ABR22", "DIC25", "ENE26", "ABR26", "AGO26"]
+
+    def test_abril_antes_que_agosto_del_mismo_anio(self):
+        assert bot._ciclo_orden("ABR26") < bot._ciclo_orden("AGO26")
+
+    def test_cruce_de_anio(self):
+        assert bot._ciclo_orden("DIC25") < bot._ciclo_orden("ENE26")
+
+    def test_codigo_invalido_no_revienta(self):
+        assert bot._ciclo_orden("XXX") == (0, 0)
+        assert bot._ciclo_orden("") == (0, 0)

@@ -4936,6 +4936,13 @@ async def cmd_reporte(update, context):
         await update.message.reply_text("📧 Reporte detallado enviado a tu correo." if ok
                                         else "⚠️ No pude enviar el correo (revisa RESEND_API_KEY).")
 
+def _ciclo_orden(codigo: str):
+    """Clave de orden cronológico para un ciclo: 'ABR26' → (2026, 4).
+    Los códigos MES+AA no se pueden ordenar como texto (ABR22 < AGO22 < DIC25)."""
+    nombre, aa = codigo[:3].upper(), codigo[3:]
+    mes = next((k for k, v in MESES_ESP.items() if v == nombre), 0)
+    return (int("20" + aa) if aa.isdigit() and len(aa) == 2 else 0, mes)
+
 def _chequeo_servicios() -> str:
     """Verifica que los servicios externos respondan. Groq retira modelos sin aviso
     (agosto/2026: llama-3.3-70b y llama-4-scout) y el bot se degrada en silencio."""
@@ -4967,8 +4974,14 @@ def _chequeo_servicios() -> str:
     except Exception as e:
         lineas.append(f"🔴 Notion: {str(e)[:60]}")
 
-    meses = meses_conocidos()
-    lineas.append(f"{'🟢' if meses else '🟡'} Ciclos en cache: {', '.join(meses[:6]) or 'ninguno'}")
+    # Ordenados por fecha, no alfabéticamente: "ABR22" < "AGO22" < "DIC25" en orden
+    # alfabético mostraría solo abriles y agostos, que no dice nada del estado del cache.
+    meses = sorted(meses_conocidos(), key=_ciclo_orden, reverse=True)
+    if meses:
+        lineas.append(f"🟢 Ciclos en cache: {len(meses)} "
+                      f"({meses[-1]} → {meses[0]}) · recientes: {', '.join(meses[:4])}")
+    else:
+        lineas.append("🟡 Ciclos en cache: ninguno (se llenan al primer uso)")
     return "\n".join(lineas)
 
 async def cmd_diagnostico(update, context):
