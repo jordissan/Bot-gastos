@@ -14,7 +14,9 @@ logger = logging.getLogger(__name__)
 from config import (
     BTN_CANCELAR, BTN_REGRESAR, CONFIRMAR_CAT, CONFIRMAR_MONTO, CONFIRMAR_SUBCAT,
     CORREGIR_ELEGIR, CORREGIR_PANEL, ELIMINAR_CONFIRM, EMOJI_ESTRECHO, FOTO_CONFIRMAR,
-    GOOGLE_MAPS_API_KEY, GOOGLE_VISION_API_KEY, GROQ_API_KEY, GRUPOS_CAT, HORMIGA_SUBCATS,
+    GOOGLE_MAPS_API_KEY, GOOGLE_VISION_API_KEY, GROQ_API_KEY, GROQ_MIN_TOKENS,
+    GROQ_MODELO_AUDIO, GROQ_MODELO_TEXTO, GROQ_MODELO_VISION, GROQ_REASONING_EFFORT,
+    GROQ_VISION_EFFORT, VERSION, GRUPOS_CAT, HORMIGA_SUBCATS,
     MESES_ESP, MESES_TEXTO, MONTO_INUSUAL, MX_TZ, NOMBRES_AMBIGUOS, NOTION_ALIAS_ID,
     NOTION_API_BASE, NOTION_APRENDIZAJE_ID, NOTION_BALANCE_ID, NOTION_DATABASE_ID,
     NOTION_HISTORIAL_ID, NOTION_METAS_ID, NOTION_T_DEFAULT, NOTION_T_LONG, NOTION_T_SHORT, PR,
@@ -45,48 +47,52 @@ def get_groq():
             logger.error(f"Error inicializando Groq: {e}")
     return _groq_client
 
+def _groq_chat(modelo: str, mensajes: list, max_tokens: int, effort: str):
+    """Chat completion con control del razonamiento. Si el modelo rechaza el valor de
+    `reasoning_effort` (cada familia acepta los suyos y responde 400), reintenta sin él
+    en vez de dejar al bot sin LLM."""
+    client = get_groq()
+    kwargs = dict(model=modelo, messages=mensajes, temperature=0.1,
+                  # El razonamiento consume tokens: con un presupuesto corto el
+                  # modelo devuelve "" en lugar de la respuesta.
+                  max_tokens=max(max_tokens, GROQ_MIN_TOKENS))
+    try:
+        r = client.chat.completions.create(**kwargs, extra_body={"reasoning_effort": effort})
+    except Exception as e:
+        if "reasoning_effort" not in str(e):
+            raise
+        logger.warning(f"{modelo} rechazó reasoning_effort='{effort}'; reintentando sin él")
+        r = client.chat.completions.create(**kwargs)
+    return (r.choices[0].message.content or "").strip() or None
+
 def groq_completar(prompt: str, max_tokens: int = 300):
     """Llamada síncrona a Groq (texto). Retorna el texto generado o None si falla."""
-    client = get_groq()
-    if not client:
+    if not get_groq():
         return None
     try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=max_tokens,
-        )
-        return response.choices[0].message.content.strip()
+        return _groq_chat(GROQ_MODELO_TEXTO, [{"role": "user", "content": prompt}],
+                          max_tokens, GROQ_REASONING_EFFORT)
     except Exception as e:
-        logger.warning(f"Groq texto error: {e}")
+        logger.warning(f"Groq texto error ({GROQ_MODELO_TEXTO}): {e}")
         return None
 
 def groq_vision(image_bytes: bytes, prompt: str, max_tokens: int = 200):
-    """Llamada síncrona a Groq con imagen (Llama 4 Scout). Retorna texto o None si falla."""
+    """Llamada síncrona a Groq con imagen (GROQ_MODELO_VISION). Texto o None si falla."""
     client = get_groq()
     if not client:
         return None
     try:
         img_b64 = base64.b64encode(image_bytes).decode()
-        response = client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
-                    },
-                    {"type": "text", "text": prompt},
-                ],
-            }],
-            temperature=0.1,
-            max_tokens=max_tokens,
-        )
-        return response.choices[0].message.content.strip()
+        return _groq_chat(GROQ_MODELO_VISION, [{
+            "role": "user",
+            "content": [
+                {"type": "image_url",
+                 "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                {"type": "text", "text": prompt},
+            ],
+        }], max_tokens, GROQ_VISION_EFFORT)
     except Exception as e:
-        logger.warning(f"Groq vision error: {e}")
+        logger.warning(f"Groq vision error ({GROQ_MODELO_VISION}): {e}")
         return None
 
 def groq_transcribir(audio_bytes: bytes, filename: str = "audio.ogg"):
@@ -97,12 +103,12 @@ def groq_transcribir(audio_bytes: bytes, filename: str = "audio.ogg"):
     try:
         result = client.audio.transcriptions.create(
             file=(filename, audio_bytes),
-            model="whisper-large-v3-turbo",
+            model=GROQ_MODELO_AUDIO,
             language="es",
         )
         return (result.text or "").strip()
     except Exception as e:
-        logger.warning(f"Groq transcripción error: {e}")
+        logger.warning(f"Groq transcripción error ({GROQ_MODELO_AUDIO}): {e}")
         return None
 
 def _extraer_json(raw):
@@ -110,7 +116,11 @@ def _extraer_json(raw):
     if not raw:
         return None
     import re as _re
-    s = _re.sub(r'^```(?:json)?\s*', '', raw.strip())
+    # Los modelos de razonamiento (qwen, gpt-oss) anteponen su cadena de pensamiento;
+    # puede contener llaves que romperían el recorte por primer "{".
+    s = _re.sub(r'<think>.*?</think>', '', raw, flags=_re.DOTALL)
+    s = _re.sub(r'^<think>.*', '', s, flags=_re.DOTALL)   # bloque sin cerrar (truncado)
+    s = _re.sub(r'^```(?:json)?\s*', '', s.strip())
     s = _re.sub(r'\s*```$', '', s.strip())
     try:
         return json.loads(s)
@@ -4926,6 +4936,49 @@ async def cmd_reporte(update, context):
         await update.message.reply_text("📧 Reporte detallado enviado a tu correo." if ok
                                         else "⚠️ No pude enviar el correo (revisa RESEND_API_KEY).")
 
+def _chequeo_servicios() -> str:
+    """Verifica que los servicios externos respondan. Groq retira modelos sin aviso
+    (agosto/2026: llama-3.3-70b y llama-4-scout) y el bot se degrada en silencio."""
+    lineas = []
+
+    # Groq — texto: es el que sostiene clasificación, planner y redacción
+    if not GROQ_API_KEY:
+        lineas.append("⚪ Groq: sin GROQ_API_KEY (bot en modo parser clásico)")
+    else:
+        r = groq_completar("Responde solo: OK", 20)
+        lineas.append(f"{'🟢' if r else '🔴'} Texto · `{GROQ_MODELO_TEXTO}`"
+                      + ("" if r else " — NO RESPONDE, las consultas no funcionan"))
+        try:
+            ids = [m.id for m in get_groq().models.list().data]
+            for etiqueta, modelo in (("Visión", GROQ_MODELO_VISION), ("Audio", GROQ_MODELO_AUDIO)):
+                vivo = modelo in ids
+                lineas.append(f"{'🟢' if vivo else '🔴'} {etiqueta} · `{modelo}`"
+                              + ("" if vivo else " — YA NO EXISTE en Groq"))
+        except Exception as e:
+            lineas.append(f"🔴 No pude listar modelos de Groq: {str(e)[:60]}")
+
+    # Notion — fuente de verdad
+    try:
+        r = notion_request("POST", f"{NOTION_API_BASE}/databases/{NOTION_DATABASE_ID}/query",
+                           headers=nh(), json={"page_size": 1}, timeout=NOTION_T_DEFAULT)
+        ok = bool(r and r.status_code == 200)
+        lineas.append(f"{'🟢' if ok else '🔴'} Notion · BD Gastos"
+                      + ("" if ok else f" — HTTP {r.status_code if r else 'sin respuesta'}"))
+    except Exception as e:
+        lineas.append(f"🔴 Notion: {str(e)[:60]}")
+
+    meses = meses_conocidos()
+    lineas.append(f"{'🟢' if meses else '🟡'} Ciclos en cache: {', '.join(meses[:6]) or 'ninguno'}")
+    return "\n".join(lineas)
+
+async def cmd_diagnostico(update, context):
+    """/diagnostico — estado de los servicios de los que depende el bot."""
+    if update.effective_user.id not in USUARIOS_AUTORIZADOS:
+        return
+    espera = await update.message.reply_text("🩺 Revisando servicios…")
+    reporte = await asyncio.to_thread(_chequeo_servicios)
+    await espera.edit_text(f"🩺 *Diagnóstico* — v{VERSION}\n\n{reporte}", parse_mode="Markdown")
+
 async def cmd_eliminar(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return ConversationHandler.END
@@ -5139,6 +5192,7 @@ async def setup_webhook(app):
         BotCommand("resumen",      "📊 Resumen del mes activo"),
         BotCommand("estadisticas", "📈 Este mes vs el anterior"),
         BotCommand("reporte",      "📰 Reporte semanal o mensual"),
+        BotCommand("diagnostico",  "🩺 Estado de los servicios del bot"),
         BotCommand("top",          "🏆 Top 5 gastos del mes"),
         BotCommand("buscar",       "🔍 Buscar gastos por concepto"),
         BotCommand("corregir",     "✏️ Editar un gasto reciente"),
@@ -5215,6 +5269,7 @@ def main():
     app.add_handler(CommandHandler("buscar", cmd_buscar))
     app.add_handler(CommandHandler("top", cmd_top))
     app.add_handler(CommandHandler("reporte", cmd_reporte))
+    app.add_handler(CommandHandler("diagnostico", cmd_diagnostico))
     app.add_handler(conv_prueba)
     app.add_handler(conv_foto)
     app.add_handler(conv_corregir)
@@ -5256,7 +5311,7 @@ def main():
     # webhook pesado ya no bloquea el health check de UptimeRobot ni otros webhooks.
     server = ThreadingHTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 28.1.0 — fix consultas rotas (_meses_cache) + error handler global + transparencia")
+    logger.info(f"Bot corriendo {VERSION} — modelos Groq actualizados (texto={GROQ_MODELO_TEXTO}) + /diagnostico")
     server.serve_forever()
 
 if __name__ == "__main__":

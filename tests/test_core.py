@@ -242,3 +242,64 @@ class TestDescribirPlan:
 
     def test_plan_vacio_no_revienta(self):
         assert bot._describir_plan({}) == "detalle"
+
+
+# ── Modelos de Groq (v28.2.0) ────────────────────────────────────────────────
+# Groq retiró llama-3.3-70b-versatile y llama-4-scout en agosto/2026: el bot quedó
+# inutilizable porque toda clasificación devolvía 404 y caía al parser clásico.
+
+class TestModelosGroq:
+    MUERTOS = ("llama-3.3-70b-versatile", "meta-llama/llama-4-scout-17b-16e-instruct",
+               "llama3-70b-8192", "mixtral-8x7b-32768")
+
+    def test_no_se_usan_modelos_retirados(self):
+        """Busca solo en literales de código — las menciones en comentarios y
+        docstrings son documentación histórica y deben poder quedarse."""
+        import ast
+        raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for ruta in ("bot.py", "config.py"):
+            tree = ast.parse(open(os.path.join(raiz, ruta)).read())
+            docstrings = set()
+            for nodo in ast.walk(tree):
+                if isinstance(nodo, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    doc = ast.get_docstring(nodo, clean=False)
+                    if doc:
+                        docstrings.add(doc)
+            for nodo in ast.walk(tree):
+                if isinstance(nodo, ast.Constant) and isinstance(nodo.value, str) \
+                        and nodo.value not in docstrings:
+                    for muerto in self.MUERTOS:
+                        assert muerto not in nodo.value, \
+                            f"{ruta}:{nodo.lineno} usa el modelo retirado {muerto}"
+
+    def test_modelos_vienen_de_config_no_hardcodeados(self):
+        import inspect
+        for fn, const in ((bot.groq_completar, "GROQ_MODELO_TEXTO"),
+                          (bot.groq_vision,    "GROQ_MODELO_VISION"),
+                          (bot.groq_transcribir, "GROQ_MODELO_AUDIO")):
+            src = inspect.getsource(fn)
+            assert const in src, f"{fn.__name__} debe usar {const}, no un literal"
+
+    def test_min_tokens_protege_el_razonamiento(self):
+        # Con presupuesto corto los modelos de razonamiento devuelven "" en vez de texto.
+        assert bot.GROQ_MIN_TOKENS >= 500
+
+    def test_efforts_distintos_por_familia(self):
+        # gpt-oss acepta low/medium/high; qwen solo none/default. Mandar el valor
+        # equivocado da HTTP 400, por eso son constantes separadas.
+        assert bot.GROQ_REASONING_EFFORT != bot.GROQ_VISION_EFFORT
+
+
+class TestExtraerJsonRazonamiento:
+    def test_quita_bloque_think(self):
+        crudo = '<think>El usuario {quiere} X</think>\n{"tipo":"consulta"}'
+        assert bot._extraer_json(crudo) == {"tipo": "consulta"}
+
+    def test_think_truncado_no_revienta(self):
+        assert bot._extraer_json("<think>sin cerrar…") is None
+
+    def test_sigue_soportando_fences(self):
+        assert bot._extraer_json('```json\n{"a":1}\n```') == {"a": 1}
+
+    def test_json_pelado(self):
+        assert bot._extraer_json('{"a":1}') == {"a": 1}

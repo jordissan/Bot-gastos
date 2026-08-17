@@ -17,6 +17,24 @@ WEBHOOK_SECRET        = os.environ.get("WEBHOOK_SECRET", "")
 RENDER_EXTERNAL_URL   = os.environ.get("RENDER_EXTERNAL_URL", "")
 NOTION_BALANCE_ID     = os.environ.get("NOTION_BALANCE_ID", "")
 GROQ_API_KEY          = os.environ.get("GROQ_API_KEY", "")
+
+VERSION = "28.2.0"   # única fuente del número de versión (lo usa /diagnostico y el log de arranque)
+
+# ── Modelos de Groq ──────────────────────────────────────────────────────────
+# Groq RETIRA modelos sin previo aviso: en agosto/2026 murieron llama-3.3-70b-versatile
+# y llama-4-scout, y el bot quedó inutilizado (toda clasificación fallaba en silencio).
+# Se leen de env para poder cambiarlos desde Render sin re-deploy, y `/diagnostico`
+# verifica que sigan vivos. Catálogo actual: https://console.groq.com/docs/models
+GROQ_MODELO_TEXTO  = os.environ.get("GROQ_MODELO_TEXTO",  "openai/gpt-oss-20b")
+GROQ_MODELO_VISION = os.environ.get("GROQ_MODELO_VISION", "qwen/qwen3.6-27b")
+GROQ_MODELO_AUDIO  = os.environ.get("GROQ_MODELO_AUDIO",  "whisper-large-v3-turbo")
+# Los modelos razonan antes de responder: sin limitarlo tardan ~16 s y, con pocos
+# max_tokens, devuelven cadena vacía (el razonamiento se come el presupuesto).
+# Cada familia acepta valores distintos —gpt-oss: low/medium/high · qwen: none/default—
+# y mandar uno inválido da HTTP 400, así que groq_completar reintenta sin el parámetro.
+GROQ_REASONING_EFFORT = os.environ.get("GROQ_REASONING_EFFORT", "low")     # texto (gpt-oss)
+GROQ_VISION_EFFORT    = os.environ.get("GROQ_VISION_EFFORT",    "none")    # visión (qwen)
+GROQ_MIN_TOKENS       = 700   # piso de max_tokens: deja espacio al razonamiento
 RESEND_API_KEY        = os.environ.get("RESEND_API_KEY", "")
 REPORTE_EMAIL         = os.environ.get("REPORTE_EMAIL", "jor.jorwww@gmail.com")
 SHORTCUT_SECRET       = os.environ.get("SHORTCUT_SECRET", "")

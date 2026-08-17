@@ -8,8 +8,8 @@
 ## Sesión cerrada: 2026-08-17
 
 ### Objetivo
-Nivel 1 del plan "que el bot deje de ser mudo": el bot no respondía NADA a consultas
-en lenguaje natural (captura del 16/AGO: "En promedio cuánto gasto de Ezra al mes?" → silencio).
+El bot no respondía a consultas en lenguaje natural. Resultaron **dos bugs
+independientes y superpuestos**, uno tapando al otro.
 
 ---
 
@@ -17,101 +17,111 @@ en lenguaje natural (captura del 16/AGO: "En promedio cuánto gasto de Ezra al m
 
 | Item | Estado |
 |------|--------|
-| Versión | 28.1.0 |
+| Versión | 28.2.0 |
 | Branch | main |
 | GitHub | ✅ pushed |
-| Deploy en Render | ✅ AUTO — push a main dispara deploy |
-| Tests | ✅ 47/47 — `.venv/bin/pytest tests/ -q` |
+| Deploy en Render | ✅ AUTO |
+| Tests | ✅ 55/55 — `.venv/bin/pytest tests/ -q` |
 
 ---
 
-### 🔴 Causa raíz del silencio — regresión introducida en v28.0.0
+### 🔴 Bug 1 (v28.1.0) — `_meses_cache` indefinido
 
-La modularización de la sesión anterior partió `bot.py` en `config.py` + `notion_api.py`
-usando `from X import *`. **`import *` no trae nombres que empiezan con `_`.**
-`_meses_cache` quedó indefinido en bot.py, y se usa en `responder_consulta_groq`:
+Regresión propia de v28.0.0: la modularización usó `from X import *`, que **no trae
+nombres con `_` inicial**. `_meses_cache` quedó indefinido y toda consulta moría con
+`NameError`. Sin error handler global, PTB se lo tragaba → **silencio total**.
+`py_compile` no lo ve porque `NameError` es de runtime.
 
-```python
-meses_disp = ", ".join(sorted(_meses_cache.keys()))   # NameError
-```
+### 🔴 Bug 2 (v28.2.0) — Groq retiró los modelos
 
-Toda consulta en lenguaje natural moría con `NameError`. Y como **no había error handler
-global**, PTB se lo tragaba: silencio absoluto. Por eso `/buscar` y `/cancelar` sí
-respondían (no tocan ese código) pero ninguna pregunta funcionaba.
+**Groq eliminó `llama-3.3-70b-versatile` y `meta-llama/llama-4-scout`.** La API
+devolvía `404 model_not_found` en cada llamada. Con Bug 1 arreglado el síntoma cambió
+de silencio a *"No pude registrar ese gasto"*: al fallar la clasificación, el bot caía
+al parser clásico y trataba la pregunta como un gasto.
 
-`py_compile` no lo detecta — `NameError` es de runtime, no de sintaxis. Esa fue la brecha.
+Verificado contra la API real: el catálogo entero cambió. Ya no hay ningún modelo Llama.
 
 ---
 
-### Qué cambió (v28.1.0)
+### Qué cambió (v28.2.0)
 
-**Fix de la regresión**
-- `notion_api.meses_conocidos()`: accesor público del cache (el privado no viajaba).
-- **Todos los `import *` reemplazados por imports explícitos** (50 nombres de config,
-  8 de notion_api). Sin esto el análisis estático es ciego.
+**Modelos nuevos** — elegidos midiendo contra la API real, no por intuición:
 
-**Nunca más silencio**
-- `error_handler` global registrado en PTB: cualquier excepción no capturada ahora
-  responde al usuario con el tipo de error, y loguea el traceback completo.
-- El camino de consulta tiene try/except propio con mensaje accionable.
-- Si Groq falla al redactar pero los datos de Notion ya se calcularon, se muestran
-  crudos (antes se perdía un resultado ya listo y el usuario veía "no pude consultar").
+| Uso | Modelo | Nota |
+|-----|--------|------|
+| Texto | `openai/gpt-oss-20b` | 5/5 aciertos de clasificación · ~0.6 s |
+| Visión | `qwen/qwen3.6-27b` | único multimodal del catálogo |
+| Audio | `whisper-large-v3-turbo` | sin cambios, sigue vivo |
 
-**Transparencia — para no depender de mandar capturas**
-- `_describir_plan()`: cada consulta abre con `🔍 promedio mensual · Ezra · AGO26…`,
-  que revela qué entendió el bot. Ese mismo mensaje se **edita** con la respuesta
-  final (un solo mensaje, sin spam). Si algo falla, se edita con el error + la
-  interpretación → se ve al instante si el planner entendió mal.
+Descartados con datos: `compound-mini` (rate limit 429 inmediato),
+`gpt-oss-120b` (16 s/llamada), `qwen` para texto (contamina con `<think>`).
 
-**Bugs de datos**
-- `NOMBRES_AMBIGUOS` en config.py: los 10 nombres que están en SC y PR con IDs
-  distintos, calculados automáticamente e inyectados al prompt del planner. Antes
-  solo se advertía de "Restaurantes"; los otros 9 (incluido **Ezra**) iban a ciegas.
-- `promedio_mensual` ignoraba `subcategoria`: con "Ezra" devolvía el promedio
-  **global** disfrazado de promedio de Ezra — una cifra creíble pero falsa.
+**`reasoning_effort` — el hallazgo que hace esto viable**
+Los modelos nuevos razonan antes de responder. Sin limitarlo tardan **~16 s** y con
+`max_tokens` bajo devuelven **cadena vacía** (el razonamiento agota el presupuesto).
+Con `reasoning_effort=low`: **0.6 s**. Cada familia acepta valores distintos
+(gpt-oss: low/medium/high · qwen: none/default) y uno inválido da HTTP 400, así que
+`_groq_chat()` **reintenta sin el parámetro** en vez de dejar al bot sin LLM.
+`GROQ_MIN_TOKENS=700` es el piso que protege la respuesta del razonamiento.
 
-**Tests: 36 → 47**
-- `tests/test_nombres.py` (nuevo): valida por AST que todo nombre global que se lee
-  existe de verdad, y prohíbe `import *`. **Verificado que detecta el bug original**
-  (se reintrodujo a propósito: py_compile pasó, el test falló).
-- Regresiones de NOMBRES_AMBIGUOS y `_describir_plan`.
+**Modelos configurables sin re-deploy**
+Viven en `config.py` y se leen de env: si Groq vuelve a retirar uno, se cambia desde
+el panel de Render sin tocar código.
+
+**`/diagnostico` (nuevo)** — el comando que rompe el ciclo "captura → mandar → arreglar":
+verifica que el modelo de texto responda, que visión y audio existan en el catálogo,
+que Notion conteste y qué ciclos hay en cache. Con esto el fallo se ve en 5 segundos.
+
+**Otros**
+- `_extraer_json` limpia bloques `<think>` (incluidos los truncados sin cerrar).
+- `VERSION` en config.py: una sola fuente para el log de arranque y `/diagnostico`.
+
+**Tests 47 → 55:** modelos retirados no pueden reaparecer (busca en literales de
+código, ignora comentarios), los modelos vienen de config y no hardcodeados,
+`GROQ_MIN_TOKENS` suficiente, efforts distintos por familia, `_extraer_json` con
+`<think>`. **Verificado que el test falla** al inyectar un modelo muerto.
 
 ---
 
 ### Pendiente de verificación (después del deploy)
 
-- [ ] Log de Render: `Bot corriendo 28.1.0`
-- [ ] **"En promedio cuánto gasto de Ezra al mes?"** → responde (la pregunta de la captura)
-- [ ] Se ve el mensaje `🔍 promedio mensual · Ezra…` antes de la respuesta
-- [ ] Cualquier consulta NL vuelve a funcionar (estaban TODAS rotas desde v28.0.0)
-- [ ] Provocar un error → el bot responde con el tipo de error en vez de callarse
+- [ ] `/diagnostico` → todo 🟢 (si algo sale 🔴, ahí está el problema)
+- [ ] **"En promedio cuánto gasto de Ezra al mes?"** → responde con la cifra real
+- [ ] Se ve `🔍 promedio mensual · Ezra…` antes de la respuesta
+- [ ] Foto de ticket → extrae comercio y monto (visión con qwen, **sin verificar aún
+      contra una foto real** — qwen dio 503 por sobrecarga durante las pruebas)
+- [ ] Nota de voz → transcribe
+- [ ] Log de Render: `Bot corriendo 28.2.0`
 
 ---
 
 ### Flujo de deploy
 
-1. `.venv/bin/pytest tests/ -q` ← **obligatorio**, atrapa NameError cross-módulo
+1. `.venv/bin/pytest tests/ -q` ← obligatorio
 2. Borrar webhook: `https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=true`
 3. Push a main → Render Auto Deploy
-4. Verificar en logs: `[APScheduler] Scheduler iniciado.`
+4. `/diagnostico` en Telegram para confirmar que todo quedó 🟢
 
 ---
 
 ### Próximos pasos
 
-1. Verificar los puntos de arriba en producción
-2. **Nivel 2 (pendiente de decisión):** sustituir los 39 modos hardcodeados por
-   tool calling — 4-5 herramientas genéricas (filtrar, agregar, comparar, promediar)
-   que el LLM combina. Hoy cada pregunta fuera de los 39 modos exige una sesión de
-   desarrollo; con tool calling el modelo las resuelve encadenando herramientas.
-   Estimado 2-3 sesiones. Los modos actuales quedarían como respaldo.
+1. Verificar la lista de arriba, sobre todo **fotos de ticket** (visión sin probar en real)
+2. **Nivel 2 (pendiente de decisión):** sustituir los 39 modos hardcodeados por tool
+   calling — 4-5 herramientas genéricas que el LLM combina. Hoy cada pregunta fuera
+   de esos modos exige una sesión de desarrollo. Estimado 2-3 sesiones.
 3. **Backlog:** bot proactivo (avisos de metas), reconciliación email BBVA (postergado)
 
 ---
 
-### Lección para futuras sesiones
+### Lecciones
 
-Un refactor que "compila y pasa los tests" puede estar completamente roto en runtime
-si los tests no ejercitan el camino afectado. La modularización de v28.0.0 pasó
-`py_compile` y 36 tests, y aun así dejó al bot mudo durante semanas. Cuando se muevan
-símbolos entre módulos, validar resolución de nombres en runtime — no solo sintaxis.
+1. **Un proveedor de LLM puede retirar un modelo y dejar la app muerta.** No había
+   ninguna alerta: el bot se degradaba en silencio al parser clásico. De ahí
+   `/diagnostico` y los modelos por env var.
+2. **Dos bugs pueden taparse mutuamente.** Al arreglar el `NameError`, el síntoma
+   cambió y reveló el 404 que estaba debajo. Arreglar el primero no "no sirvió" —
+   fue lo que permitió ver el segundo.
+3. **Medir antes de elegir.** El candidato obvio (`compound-mini`, que respondía
+   perfecto en la primera prueba) era inservible por rate limit; el que parecía
+   lento (`gpt-oss`) resultó el bueno al descubrir `reasoning_effort`.
