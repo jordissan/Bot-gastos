@@ -202,3 +202,43 @@ class TestFechaCompacta:
 
     def test_vacia(self):
         assert bot._fecha_compacta("") == ""
+
+
+# ── Nombres ambiguos SC∩PR (bug "Ezra": v28.1.0) ─────────────────────────────
+
+class TestNombresAmbiguos:
+    def test_ezra_y_restaurantes_son_ambiguos(self):
+        assert "Ezra" in bot.NOMBRES_AMBIGUOS
+        assert "Restaurantes" in bot.NOMBRES_AMBIGUOS
+
+    def test_se_calcula_de_la_interseccion_real(self):
+        assert bot.NOMBRES_AMBIGUOS == sorted(set(bot.SC) & set(bot.PR))
+
+    def test_los_ambiguos_tienen_ids_distintos(self):
+        # Si los IDs coincidieran no habría riesgo; el bug existe porque difieren.
+        for nombre in bot.NOMBRES_AMBIGUOS:
+            assert bot.SC[nombre] != bot.PR[nombre], f"{nombre} ya no es ambiguo"
+
+    def test_el_prompt_los_lista(self):
+        import inspect
+        src = inspect.getsource(bot.responder_consulta_groq)
+        assert "NOMBRES_AMBIGUOS" in src
+
+
+# ── Descripción del plan (transparencia v28.1.0) ─────────────────────────────
+
+class TestDescribirPlan:
+    def test_modo_legible_sin_guion_bajo(self):
+        assert bot._describir_plan({"modo": "promedio_mensual"}) == "promedio mensual"
+
+    def test_incluye_subcategoria_y_meses(self):
+        d = bot._describir_plan({"modo": "promedio_mensual", "subcategoria": "Ezra",
+                                 "meses": ["AGO26"]})
+        assert "promedio mensual" in d and "Ezra" in d and "AGO26" in d
+
+    def test_historico_gana_sobre_meses(self):
+        d = bot._describir_plan({"modo": "detalle", "historico": True, "meses": ["AGO26"]})
+        assert "toda la historia" in d and "AGO26" not in d
+
+    def test_plan_vacio_no_revienta(self):
+        assert bot._describir_plan({}) == "detalle"

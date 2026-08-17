@@ -15,7 +15,7 @@
 
 Bot de Telegram personal de Jordi y Nane para registrar gastos, conectado a Notion como fuente de verdad. Entiende lenguaje natural (texto y voz), lee tickets por foto, responde preguntas sobre finanzas y manda reportes automáticos. Corre 24/7 en Render.com con Docker.
 
-**Versión actual:** 28.0.0
+**Versión actual:** 28.1.0
 **Esquema:** `MAJOR` = nuevo dominio/capacidad estructural · `MINOR` = feature individual · `PATCH` = fix o ajuste
 
 ---
@@ -330,7 +330,8 @@ cancelar     - ❌ Cancelar acción en curso
 
 1. **IDs de relación Notion:** llegan con guiones → `.replace("-", "")` antes de comparar con `SC`/`PR`.
 2. **Tarjeta en Notion:** campo `rich_text` (no select) → `props.get("Tarjeta", {}).get("rich_text", [])`.
-3. **Restaurantes en SC y PR:** existe en ambos dicts. El planner usa `subcategoria=Restaurantes` por default. Nunca poner `subcategoria` + `categoria` simultáneamente.
+3. **Nombres ambiguos SC ∩ PR:** hay 10 (Deudas, Emergencias, Ezra, Impuestos, MSI, Otros, Renta, Restaurantes, Servicios, Vacaciones) que existen en ambos dicts con **IDs distintos**. `config.NOMBRES_AMBIGUOS` los calcula solo y el prompt del planner los inyecta: siempre van en `subcategoria`, con `categoria=null`. Nunca poner ambos a la vez.
+3b. **Nunca usar `import *` entre módulos:** no trae nombres con `_` inicial y ciega al análisis estático. Causó el bug de v28.0.0 (`_meses_cache` indefinido → toda consulta NL moría). `tests/test_nombres.py` lo verifica.
 4. **Ingreso estimado:** `presupuesto="INGRESO"` en Metas Bot. Se busca en ambos UIDs (finanzas conjuntas).
 5. **MSI formato:** regex `^(.+?)\s+(\d{1,2})\s*/\s*(\d{1,2})\s*$` sobre el concepto.
 6. **gastos_raw:** máximo 20 resultados, ordenados por monto desc.
@@ -370,7 +371,8 @@ Render está configurado con **Auto Deploy** desde GitHub. Cada push a `main` di
 | `bot.py` | Al escribir código | Código principal — handlers, IA, reportes, main |
 | `config.py` | Al tocar constantes/dicts | Env vars, IDs, diccionarios de dominio (SC/PR/emojis/reglas) — solo datos |
 | `notion_api.py` | Al tocar la capa HTTP Notion | nh, notion_request, query_notion_db, cache de meses |
-| `tests/test_core.py` | Antes de cada deploy | 36 tests de reglas de negocio — correr `.venv/bin/pytest tests/ -q` |
+| `tests/test_core.py` | Antes de cada deploy | Reglas de negocio: ciclos, parseo, categorización, edición |
+| `tests/test_nombres.py` | Antes de cada deploy | Detecta NameError cross-módulo que `py_compile` no ve |
 | `requirements.txt` | Al cambiar dependencias | Dependencias Python |
 | `Dockerfile` | Al cambiar infra | Imagen Docker para Render (copia bot.py + config.py + notion_api.py) |
 

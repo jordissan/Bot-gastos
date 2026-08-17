@@ -11,8 +11,22 @@ from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQu
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from config import *          # env vars, IDs, diccionarios de dominio, constantes
-from notion_api import *      # nh, notion_request, query_notion_db, precargar_meses, buscar_mes_id
+from config import (
+    BTN_CANCELAR, BTN_REGRESAR, CONFIRMAR_CAT, CONFIRMAR_MONTO, CONFIRMAR_SUBCAT,
+    CORREGIR_ELEGIR, CORREGIR_PANEL, ELIMINAR_CONFIRM, EMOJI_ESTRECHO, FOTO_CONFIRMAR,
+    GOOGLE_MAPS_API_KEY, GOOGLE_VISION_API_KEY, GROQ_API_KEY, GRUPOS_CAT, HORMIGA_SUBCATS,
+    MESES_ESP, MESES_TEXTO, MONTO_INUSUAL, MX_TZ, NOMBRES_AMBIGUOS, NOTION_ALIAS_ID,
+    NOTION_API_BASE, NOTION_APRENDIZAJE_ID, NOTION_BALANCE_ID, NOTION_DATABASE_ID,
+    NOTION_HISTORIAL_ID, NOTION_METAS_ID, NOTION_T_DEFAULT, NOTION_T_LONG, NOTION_T_SHORT, PR,
+    PRUEBA_GASTO, PR_EMOJI, PR_INV, REGLAS_CONCEPTO, RENDER_EXTERNAL_URL, REPORTE_EMAIL,
+    RESEND_API_KEY, SC, SC_EMOJI, SC_INV, SHORTCUT_SECRET, SUBCAT_PRESUPUESTO,
+    TARJETAS_VALIDAS, TARJETA_EMOJI, TELEGRAM_TOKEN, USUARIOS_AUTORIZADOS, USUARIOS_NOMBRES,
+    USUARIOS_NOTIFICAR, WEBHOOK_SECRET
+)
+from notion_api import (
+    buscar_mes_id, meses_conocidos, nh, notion_deep_link, notion_request, notion_rich_text,
+    precargar_meses, query_notion_db
+)
 
 # Memoria persistente: filas especiales en NOTION_HISTORIAL_ID con UsuarioID=0
 # Concepto = MEM_{uid} · JSON en campo NotionID · filas ya existen en Historial Bot
@@ -1836,8 +1850,10 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
         detalle = ", ".join(f"{k}=${v:,.0f}" for k, v in cats[:8])
         return f"En qué se va el dinero (últimos 3 meses, {', '.join(res['meses'])}): {detalle}. Total ${res['total']:,.0f}."
     if modo == "promedio_mensual":
-        if categoria:
-            # Promedio mensual de una categoría específica
+        # Nombres como "Ezra" llegan en subcategoria (ver NOMBRES_AMBIGUOS): si solo
+        # se mirara categoria, se devolvería el promedio GLOBAL como si fuera el suyo.
+        etiqueta = categoria or subcategoria
+        if etiqueta:
             meses_hist = _meses_recientes(12)
             totales_cat = []
             for mes in meses_hist:
@@ -1845,9 +1861,10 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
                 if r["total"] > 0:
                     totales_cat.append(r["total"])
             if not totales_cat:
-                return f"Sin gastos en {categoria} para calcular promedio."
+                return f"Sin gastos en {etiqueta} en los últimos 12 ciclos para calcular un promedio."
             prom = sum(totales_cat) / len(totales_cat)
-            return f"Promedio mensual en {categoria}: ${prom:,.0f} (sobre {len(totales_cat)} meses con registro)."
+            return (f"Promedio mensual en {etiqueta}: ${prom:,.0f} "
+                    f"(sobre {len(totales_cat)} meses con registro, total ${sum(totales_cat):,.0f}).")
         d = _promedio_mensual()
         if not d:
             return "Sin datos para calcular el promedio."
@@ -2007,7 +2024,8 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
         anio_str = str(plan.get("anio") or hoy_local.year)
         anio_2d  = anio_str[-2:]
         orden    = ["ENE","FEB","MAR","ABR","MAY","JUN","JUL","AGO","SEP","OCT","NOV","DIC"]
-        meses_anio = [f"{m}{anio_2d}" for m in orden if f"{m}{anio_2d}" in _meses_cache]
+        conocidos  = meses_conocidos()
+        meses_anio = [f"{m}{anio_2d}" for m in orden if f"{m}{anio_2d}" in conocidos]
         if not meses_anio:
             return f"No encontré meses del año {anio_str} en los registros."
         res = ejecutar_consulta_finanzas({"meses": meses_anio, "categoria": categoria, "subcategoria": subcategoria})
@@ -2697,6 +2715,23 @@ async def callback_accion(update, context):
     await query.message.edit_text(resultado, parse_mode="Markdown")
 
 
+def _describir_plan(plan: dict) -> str:
+    """Traduce el plan del LLM a una línea legible: qué entendió el bot de la pregunta.
+    Se muestra mientras consulta, para poder detectar una mala interpretación sin ver logs."""
+    partes = [(plan.get("modo") or "detalle").replace("_", " ")]
+    for campo in ("subcategoria", "categoria", "tarjeta", "comercio"):
+        if plan.get(campo):
+            partes.append(str(plan[campo]))
+    if plan.get("historico"):
+        partes.append("toda la historia")
+    elif plan.get("fecha_desde") or plan.get("fecha_hasta"):
+        partes.append(f"{plan.get('fecha_desde') or '…'} a {plan.get('fecha_hasta') or '…'}")
+    elif plan.get("anio"):
+        partes.append(str(plan["anio"]))
+    elif plan.get("meses"):
+        partes.append(", ".join(plan["meses"]))
+    return " · ".join(partes)
+
 async def responder_consulta_groq(texto: str, user_id: int, update, context) -> bool:
     """
     Responde una consulta en lenguaje natural con datos reales de Notion, en 2 pasos:
@@ -2710,7 +2745,7 @@ async def responder_consulta_groq(texto: str, user_id: int, update, context) -> 
 
     hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
     activo = mes_activo_str()
-    meses_disp = ", ".join(sorted(_meses_cache.keys())) or activo
+    meses_disp = ", ".join(meses_conocidos()) or activo
     categorias   = ", ".join(PR.keys())
     subcategorias = ", ".join(SC.keys())
 
@@ -2801,7 +2836,8 @@ CAMPOS:
 - "meses": códigos MES+AA. "este mes"={activo}. "mes pasado"=anterior al activo. Para MES COMPLETO, no uses fecha_desde/hasta.
 - "anio": año de 4 dígitos (ej "2025"), para modo mes_mas_caro u otras preguntas anuales.
 - "categoria": nombre EXACTO de la lista de presupuesto (Despensa, Automovil, Servicios…), o null. Para filtrar por bolsa de presupuesto global.
-- "subcategoria": nombre EXACTO de la lista de subcategorías (Abarrotes, Gasolina, Super, Treat…), o null. Úsalo cuando el usuario pregunte por un tipo de gasto específico (ej. "abarrotes", "gasolina", "super", "treat"). NOTA CRÍTICA: "Restaurantes" es tanto subcategoría como categoría de presupuesto — en caso de duda usa subcategoria=Restaurantes (más preciso). NUNCA pongas subcategoria y categoria simultáneamente.
+- "subcategoria": nombre EXACTO de la lista de subcategorías (Abarrotes, Gasolina, Super, Treat…), o null. Úsalo cuando el usuario pregunte por un tipo de gasto específico (ej. "abarrotes", "gasolina", "super", "treat"). NUNCA pongas subcategoria y categoria simultáneamente.
+- NOMBRES AMBIGUOS: estos existen como subcategoría Y como presupuesto: {", ".join(NOMBRES_AMBIGUOS)}. Cuando el usuario mencione uno de ellos, ponlo SIEMPRE en "subcategoria" y deja "categoria" en null. Ej: "cuánto gasto de Ezra" → subcategoria:"Ezra", categoria:null.
 - "tarjeta": BBVA05, BBVA12, HEYB25, BMEX04 o EFVO; solo si el usuario la menciona explícitamente. null si no especifica tarjeta.
 - "comercio": texto a buscar en el concepto del gasto (ej "starbucks", "walmart"), o null.
 - "historico": true cuando la pregunta sea sobre toda la historia: "en total", "desde siempre", "cuánto llevo pagado", "cuánto he gastado en total", pagos de coche (VW Polo, mensualidades), gastos recurrentes de largo plazo. Con historico=true se consultan TODOS los registros desde 2020; "meses" se ignora.
@@ -2815,20 +2851,32 @@ CAMPOS:
     if plan.get("error") == "no_finanzas":
         return False
 
-    # Aviso previo para consultas históricas (pueden tardar 15-30 s)
-    if plan.get("historico"):
-        await update.message.reply_text("🔍 Buscando en toda la historia, dame un momento…")
+    # Mensaje de espera que además revela qué entendió el bot. Se EDITA con la
+    # respuesta final (o con el error), así el usuario ve un único mensaje.
+    interpretacion = _describir_plan(plan)
+    extra = " — puede tardar" if plan.get("historico") else ""
+    msg_espera = await update.message.reply_text(f"🔍 {interpretacion}{extra}…")
 
     modo = (plan.get("modo") or "detalle").strip().lower()
     res = {"conteo": 0, "total": 0.0, "meses": []}  # fallback por si no se asigna abajo
-    if modo != "detalle":
-        datos = await asyncio.to_thread(_datos_consulta_especial, modo, plan)
-        if not datos:
+    try:
+        if modo != "detalle":
+            datos = await asyncio.to_thread(_datos_consulta_especial, modo, plan)
+            if not datos:
+                res = await asyncio.to_thread(ejecutar_consulta_finanzas, plan)
+                datos = _formatear_datos_consulta(res)
+        else:
             res = await asyncio.to_thread(ejecutar_consulta_finanzas, plan)
             datos = _formatear_datos_consulta(res)
-    else:
-        res = await asyncio.to_thread(ejecutar_consulta_finanzas, plan)
-        datos = _formatear_datos_consulta(res)
+    except Exception as ex:
+        logger.error(f"Consulta falló (modo={modo}, plan={plan}): {ex}", exc_info=True)
+        await msg_espera.edit_text(
+            f"❌ No pude completar la consulta.\n\n"
+            f"Entendí: _{interpretacion}_\n"
+            f"Error: `{type(ex).__name__}`\n\n"
+            f"Si la interpretación es incorrecta, reformula la pregunta.",
+            parse_mode="Markdown")
+        return True
 
     prompt_resp = f"""Eres el asistente del bot de gastos de Jordi y Nani. Responde en español mexicano, claro y directo. Usa $ con separador de miles. Emojis con moderación.
 
@@ -2845,22 +2893,29 @@ REGLAS DE FORMATO:
 REGLA CRÍTICA: responde ÚNICAMENTE con los datos mostrados arriba. PROHIBIDO usar información de mensajes anteriores, inventar cifras o mencionar meses/gastos que no aparezcan en esos datos. Si los datos dicen "Sin gastos que coincidan", dilo tal cual — no menciones otros meses ni datos de turnos previos."""
 
     respuesta = await asyncio.to_thread(groq_completar, prompt_resp, 400)
+    if res.get("gastos_raw"):
+        mem_set_results(user_id, res["gastos_raw"], plan)
+
     if respuesta:
         mem_add_turn(user_id, "u", texto)
         mem_add_turn(user_id, "b", respuesta)
-        # Guardar gastos_raw del query para referencias futuras ("dame el link", "el más caro")
-        if res.get("gastos_raw"):
-            mem_set_results(user_id, res["gastos_raw"], plan)
         asyncio.create_task(mem_guardar(user_id))
-        await update.message.reply_text(respuesta)
+        await msg_espera.edit_text(respuesta)
         return True
-    # Fallback: si el segundo LLM falla pero sí hubo datos, responde lo básico
+
+    # Groq falló al redactar, pero los datos de Notion son buenos: mostrarlos crudos.
+    # Antes esto devolvía False para los modos especiales (res["conteo"]==0) y el
+    # usuario perdía un resultado que ya estaba calculado.
+    if datos and "Sin gastos" not in datos:
+        await msg_espera.edit_text(f"📊 {datos}")
+        return True
     if res["conteo"]:
-        if res.get("gastos_raw"):
-            mem_set_results(user_id, res["gastos_raw"], plan)
-        await update.message.reply_text(f"💰 Total: ${res['total']:,.0f} en {res['conteo']} gastos ({', '.join(res['meses'])})")
+        await msg_espera.edit_text(f"💰 Total: ${res['total']:,.0f} en {res['conteo']} gastos ({', '.join(res['meses'])})")
         return True
-    return False
+    await msg_espera.edit_text(
+        f"📭 No encontré gastos que coincidan.\n\nEntendí: _{interpretacion}_",
+        parse_mode="Markdown")
+    return True
 
 
 async def verificar_hormiga(gasto: dict, uid: int, context) -> None:
@@ -5049,6 +5104,25 @@ class WebhookHandler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+# ── ERROR HANDLER GLOBAL ─────────────────────────────────────────────────────
+
+async def error_handler(update, context):
+    """Última red de seguridad de PTB. Sin esto, una excepción no capturada deja
+    al usuario en silencio total y el error solo queda en los logs de Render."""
+    import traceback
+    err = context.error
+    logger.error(f"Excepción no capturada: {err}\n{''.join(traceback.format_exception(type(err), err, err.__traceback__))[:2000]}")
+    chat = getattr(getattr(update, "effective_chat", None), "id", None)
+    if not chat:
+        return
+    try:
+        await context.bot.send_message(
+            chat_id=chat,
+            text=f"❌ Algo falló al procesar eso.\n\n`{type(err).__name__}: {str(err)[:200]}`\n\nSi se repite, mándame la pregunta tal cual para revisarlo.",
+            parse_mode="Markdown")
+    except Exception as ex:
+        logger.error(f"error_handler no pudo avisar al usuario: {ex}")
+
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 
 async def setup_webhook(app):
@@ -5150,6 +5224,9 @@ def main():
     # (ej. bot reiniciado; el estado de la conversación se perdió)
     app.add_handler(CallbackQueryHandler(callback_foto, pattern="^foto_"))
     app.add_handler(CommandHandler("cancelar", cancelar))
+    # Red de seguridad: sin esto, cualquier excepción no capturada deja al usuario
+    # sin respuesta alguna (silencio total) y el error solo vive en los logs.
+    app.add_error_handler(error_handler)
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -5179,7 +5256,7 @@ def main():
     # webhook pesado ya no bloquea el health check de UptimeRobot ni otros webhooks.
     server = ThreadingHTTPServer(("0.0.0.0", port), WebhookHandler)
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    logger.info("Bot corriendo 28.0.0 — async correcto + ThreadingHTTPServer + módulos config/notion_api + tests")
+    logger.info("Bot corriendo 28.1.0 — fix consultas rotas (_meses_cache) + error handler global + transparencia")
     server.serve_forever()
 
 if __name__ == "__main__":

@@ -103,3 +103,9 @@ def buscar_mes_id(mes: str):
     except Exception as e:
         logger.error(f"Error en buscar_mes_id({mes}): {e}")
     return None
+
+def meses_conocidos() -> list:
+    """Códigos de ciclo ya cargados en cache (ej. ['AGO26','JUL26']).
+    Acceso público al cache: `_meses_cache` es privado y NO viaja con `import *`,
+    así que bot.py debe leerlo por aquí (ver v28.1.0)."""
+    return sorted(_meses_cache.keys())

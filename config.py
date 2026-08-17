@@ -1,5 +1,6 @@
 """Configuración del bot: env vars, IDs de Notion, constantes y diccionarios de dominio.
-Solo datos — sin lógica ni llamadas de red. Importado con `from config import *`."""
+Solo datos — sin lógica ni llamadas de red. Se importa con nombres explícitos
+(nunca `import *`: oculta errores de nombre y no trae los que empiezan con "_")."""
 import os
 import pytz
 
@@ -113,6 +114,12 @@ SUBCAT_PRESUPUESTO = {
 SC_INV, PR_INV = {}, {}
 for _k, _v in SC.items(): SC_INV.setdefault(_v, _k)
 for _k, _v in PR.items(): PR_INV.setdefault(_v, _k)
+
+# Nombres que existen como subcategoría Y como presupuesto, con IDs de Notion
+# distintos (Ezra, Restaurantes, Servicios…). El planner debe elegir uno solo:
+# se resuelven como subcategoria, que es el filtro más preciso. Se calcula aquí
+# para que el prompt nunca quede desincronizado si se agrega una categoría nueva.
+NOMBRES_AMBIGUOS = sorted(set(SC) & set(PR))
 
 # Emojis que ocupan 1 celda en monoespaciado (en vez de 2) — necesitan espacio extra
 EMOJI_ESTRECHO = {"⛪"}  # Servicios cambió a 💡 (full-width); solo ⛪ sigue siendo angosto
