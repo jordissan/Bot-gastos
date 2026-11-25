@@ -4956,6 +4956,10 @@ def _chequeo_servicios() -> str:
                 vivo = modelo in ids
                 lineas.append(f"{'🟢' if vivo else '🔴'} {etiqueta} · `{modelo}`"
                               + ("" if vivo else " — YA NO EXISTE en Groq"))
+            if GROQ_MODELO_VISION not in ids or GROQ_MODELO_AUDIO not in ids:
+                # Sin el catálogo hay que adivinar el reemplazo (así nació el PR de
+                # qwen3.8). Con él se elige y se fija la env var en Render sin deploy.
+                lineas.append("📋 Catálogo Groq: " + ", ".join(f"`{i}`" for i in sorted(ids))[:1500])
         except Exception as e:
             lineas.append(f"🔴 No pude listar modelos de Groq: {str(e)[:60]}")
 
