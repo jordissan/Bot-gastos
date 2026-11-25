@@ -487,7 +487,7 @@ def menu_grupos():
         ["🛒 Despensa",    "🏦 Deudas"],
         ["🎉 Diversión",   "📚 Educación"],
         ["🚨 Emergencias", "👶 Ezra"],
-        ["🤝 Generosidad", "⛪ Iglesia"],
+        ["🤝 Generosidad"],
         ["📦 Otros",       "🍽️ Restaurantes"],
         ["⚡ Servicios",   "🏠 Departamento"],
         [BTN_REGRESAR,     BTN_CANCELAR],
@@ -3113,7 +3113,9 @@ def guardar_notion(gasto):
         logger.error(f"Mes {gasto['mes']} sin ID — gasto guardado SIN relacion de mes")
     sid=SC.get(gasto["subcategoria"])
     if sid: props["Subcategoria"]={"relation":[{"id":sid}]}
-    pid=PR.get(gasto["presupuesto"])
+    # Si el presupuesto no existe en PR (p. ej. aprendido como "Generosidad" antes
+    # de v28.4.1), se deriva de la subcategoría para que el gasto sí sume.
+    pid=PR.get(gasto["presupuesto"]) or PR.get(SUBCAT_PRESUPUESTO.get(gasto["subcategoria"], ""))
     if pid: props["Presupuesto"]={"relation":[{"id":pid}]}
     cuerpo={"parent":{"database_id":NOTION_DATABASE_ID},"properties":props}
     r=notion_request("POST",f"{NOTION_API_BASE}/pages",headers=nh(),
@@ -3946,7 +3948,7 @@ async def confirmar_cat(update, context):
         return CONFIRMAR_SUBCAT
     gasto = context.user_data.pop("gasto_pendiente")
     gasto["subcategoria"] = subcats[0]
-    gasto["presupuesto"] = limpiar_emoji(grp)
+    gasto["presupuesto"] = SUBCAT_PRESUPUESTO.get(subcats[0], limpiar_emoji(grp))
     await asyncio.to_thread(guardar_aprendizaje, gasto["concepto"].lower(), gasto["subcategoria"], gasto["presupuesto"])
     await registrar_y_notificar(update, context, gasto)
     return ConversationHandler.END
@@ -3970,8 +3972,8 @@ async def confirmar_subcat(update, context):
         await update.message.reply_text("Error.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     gasto["subcategoria"] = txt
-    gasto["presupuesto"]  = limpiar_emoji(grp)
-    await asyncio.to_thread(guardar_aprendizaje, gasto["concepto"].lower(), txt, limpiar_emoji(grp))
+    gasto["presupuesto"]  = SUBCAT_PRESUPUESTO.get(txt, limpiar_emoji(grp))
+    await asyncio.to_thread(guardar_aprendizaje, gasto["concepto"].lower(), txt, gasto["presupuesto"])
     await registrar_y_notificar(update, context, gasto)
     context.user_data.clear()
     return ConversationHandler.END

@@ -18,7 +18,7 @@ RENDER_EXTERNAL_URL   = os.environ.get("RENDER_EXTERNAL_URL", "")
 NOTION_BALANCE_ID     = os.environ.get("NOTION_BALANCE_ID", "")
 GROQ_API_KEY          = os.environ.get("GROQ_API_KEY", "")
 
-VERSION = "28.4.0"   # única fuente del número de versión (lo usa /diagnostico y el log de arranque)
+VERSION = "28.4.1"   # única fuente del número de versión (lo usa /diagnostico y el log de arranque)
 
 # ── Modelos de Groq ──────────────────────────────────────────────────────────
 # Groq RETIRA modelos sin previo aviso: en agosto/2026 murieron llama-3.3-70b-versatile
@@ -91,9 +91,9 @@ PR = {
     "Deuda":"91ab43856d1e4ae69f21f4203eeb3c54","MSI":"1fc7eb0cbb92802ba323cfc943dc0f2c",
     "Renta":"eeb6e04137c248468f641a5044b16545","Ezra":"3547eb0cbb92817baaa9f6681e6bbabc",
     "Vacaciones":"545753674d4e4d0ca0fd8be7d33db21e",
-    "Impuestos":"224cdb40f1f749c7b5d6e165ad31110d","Entretenimiento":"3547eb0cbb92815d8248db75a759646b",
-    "Generosidad":"f4cac9f4b95e4508942ad02ae69ddffe","Iglesia":"89b897bd6fa24b8d897adf380491130e",
-    "Personal":"829161723b0b49bf8787663a89c7248d","Departamento":"1af955c917f54a2da39e9bbb8e4032ff",
+    "Impuestos":"224cdb40f1f749c7b5d6e165ad31170d","Entretenimiento":"3547eb0cbb92815d8248db75a759646b",
+    "Diezmo":"07160f85e9144883a878e73325d23744",
+    "Personal":"829161723b0b49bf8787663a89c7248d",
     "Otros":"1ea7eb0cbb9280cbbe43c1bd54396691","Educación":"3677eb0cbb9281c4b82cc803cb114d65",
     "Emergencias":"3677eb0cbb9281598e2fe19be3db3d74",
     "Deudas":"91ab43856d1e4ae69f21f4203eeb3c54",  # alias del grupo "🏦 Deudas" → misma página que "Deuda"
@@ -103,8 +103,8 @@ PR_EMOJI = {
     "Despensa":"🛒","Diversión":"🎉","Servicios":"🧾","Automovil":"🚗",
     "Restaurantes":"🍽️","Salud":"💊","Deuda":"🏦","MSI":"💳",
     "Renta":"🏠","Ezra":"👶","Vacaciones":"🏖️",
-    "Impuestos":"📊","Entretenimiento":"🎭","Generosidad":"🤝","Iglesia":"⛪",
-    "Personal":"👤","Departamento":"🏡","Otros":"📦",
+    "Impuestos":"📊","Entretenimiento":"🎭","Diezmo":"⛪",
+    "Personal":"👤","Otros":"📦",
     "Educación":"📚","Emergencias":"🚨","Deudas":"🏦",
 }
 
@@ -115,14 +115,14 @@ SUBCAT_PRESUPUESTO = {
     "Restaurantes":"Restaurantes",
     "Gasolina":"Automovil","Estacionamento":"Automovil","Mantenimiento":"Automovil","VW POLO":"Automovil","Seguro Auto":"Automovil",
     "Servicios":"Servicios","Streaming":"Servicios","Internet":"Servicios","Telefonia Celular":"Servicios","Luz":"Servicios","Agua":"Servicios",
-    "Renta":"Renta","Muebles":"Departamento","Decoracion":"Departamento",
+    "Renta":"Renta","Muebles":"Personal","Decoracion":"Personal",
     "Treat":"Diversión","Salidas":"Diversión","Cine":"Diversión","Conciertos":"Diversión","Tiempo de calidad":"Diversión",
     "Ropa":"Personal","Calzado":"Personal","Gimnasio":"Personal","Corte de pelo":"Personal","Gasto personal":"Personal",
     "Doctor":"Salud","Medicina":"Salud",
     "Cuidado personal":"Personal",
     "Libros":"Educación","Cursos":"Educación",
     "Emergencias":"Emergencias","Ezra":"Ezra",
-    "Regalos":"Generosidad","Ofrenda":"Generosidad","Diezmo":"Generosidad",
+    "Regalos":"Personal","Ofrenda":"Diezmo","Diezmo":"Diezmo",
     "MSI":"MSI","Deudas":"Deuda","EFI":"Deuda","DBMEX":"Deuda","PDHB25":"Deuda","PRP":"Deuda",
     "Impuestos":"Impuestos","Vacaciones":"Vacaciones","Otros":"Otros",
 }
@@ -132,6 +132,10 @@ SUBCAT_PRESUPUESTO = {
 SC_INV, PR_INV = {}, {}
 for _k, _v in SC.items(): SC_INV.setdefault(_v, _k)
 for _k, _v in PR.items(): PR_INV.setdefault(_v, _k)
+# Páginas viejas fuera de la BD Presupuestos (no suman en ningún presupuesto). Solo
+# para leer gastos históricos; el bot ya no escribe estas relaciones (v28.4.1).
+for _k, _v in {"Generosidad":"f4cac9f4b95e4508942ad02ae69ddffe","Iglesia":"89b897bd6fa24b8d897adf380491130e",
+               "Departamento":"1af955c917f54a2da39e9bbb8e4032ff"}.items(): PR_INV.setdefault(_v, _k)
 
 # Nombres que existen como subcategoría Y como presupuesto, con IDs de Notion
 # distintos (Ezra, Restaurantes, Servicios…). El planner debe elegir uno solo:
@@ -160,7 +164,6 @@ GRUPOS_CAT = {
     "🚨 Emergencias":  ["Emergencias"],
     "👶 Ezra":         ["Ezra"],
     "🤝 Generosidad":  ["Regalos","Ofrenda","Diezmo"],
-    "⛪ Iglesia":      ["Iglesia"],
     "📦 Otros":        ["Otros","Vacaciones"],
     "🍽️ Restaurantes": ["Restaurantes"],
     "⚡ Servicios":    ["Servicios","Streaming","Internet","Telefonia Celular","Luz","Agua"],
@@ -217,7 +220,7 @@ REGLAS_CONCEPTO = [
     (["udemy","coursera","platzi","domestika","masterclass","skillshare"],"Cursos","Educación"),
     (["libreria","gandhi","gonvill","el sotano","libro"],"Libros","Educación"),
     # ── DEPARTAMENTO ──
-    (["ikea","home store","mueble"],"Muebles","Departamento"),
+    (["ikea","home store","mueble"],"Muebles","Personal"),
     # ── OTROS / marketplaces (amazon al final: "prime video" gana en streaming) ──
     (["amazon","mercado libre","mercadolibre","aliexpress","temu","shopee"],"Otros","Otros"),
 ]

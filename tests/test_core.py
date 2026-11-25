@@ -382,3 +382,25 @@ class TestCacheMeses:
         monkeypatch.setattr(notion_api, "_meses_cache", {})
         monkeypatch.setattr(notion_api, "query_notion_db", lambda db, f=None: self._paginas(3))
         assert notion_api.buscar_mes_id("ENE27") is None
+
+
+# ── Presupuestos existentes en Notion (v28.4.1) ──────────────────────────────
+
+class TestPresupuestosValidos:
+    """Todo presupuesto al que el bot manda un gasto debe existir en PR (BD Presupuestos).
+    Antes, Generosidad/Iglesia/Departamento apuntaban fuera de la BD y esos gastos no sumaban."""
+
+    def test_subcat_presupuesto_existe(self):
+        faltan = {s: p for s, p in bot.SUBCAT_PRESUPUESTO.items() if p not in bot.PR}
+        assert not faltan, faltan
+
+    def test_reglas_concepto_presupuesto_existe(self):
+        faltan = [(sc, p) for _, sc, p in bot.REGLAS_CONCEPTO if p not in bot.PR]
+        assert not faltan, faltan
+
+    def test_decisiones_jordi(self):
+        sp = bot.SUBCAT_PRESUPUESTO
+        assert sp["Diezmo"] == sp["Ofrenda"] == "Diezmo"
+        assert sp["Regalos"] == sp["Muebles"] == sp["Decoracion"] == "Personal"
+        assert sp["Mercado"] == sp["Comida"] == "Despensa"
+        assert bot.PR["Impuestos"].endswith("ad31170d")
