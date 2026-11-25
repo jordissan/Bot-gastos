@@ -20,7 +20,15 @@ El campo `Mes` en Notion = **mes en que se paga**, no mes en que se compró.
 **Edge case días 1–4:** compras del 1–4 de cada mes caen en el mes actual en BBVA12 y BBVA05 (todavía no llega su corte).
 Ejemplo: compra el 3-jun con BBVA12 → Mes = **JUN26** (no JUL26).
 
-**Tarjeta por defecto** (si el usuario no especifica): **HEYB25**, cualquier día del mes (`config.TARJETA_DEFAULT`). Decisión de Jordi, 25-nov-2026; antes era BBVA05 los días 5–11 y BBVA12 el resto.
+**Tarjeta por defecto** (si el usuario no especifica): la que acaba de cortar según el día de la compra (`config.TARJETA_DEFAULT_POR_DIA`). Decisión de Jordi, 25-nov-2026 (por la tarde; sustituye a «HEYB25 cualquier día» de esa misma mañana):
+
+| Día de la compra | Tarjeta |
+|---|---|
+| 5 a 11 | BBVA05 |
+| 12 a 24 | BBVA12 |
+| 25 al 4 del mes siguiente | HEYB25 |
+
+BMEX04 (Banamex Joy) queda fuera de la regla: Jordi tiene una idea pendiente de plantear.
 
 **Mes activo** (para `/resumen` y consultas "este mes") = el ciclo de HEYB25 para hoy (`config.DIA_INICIO_CICLO = 25`):
 - Hoy ≥ día 25 → mes+2 (ej.: 25-nov-2026 → ENE27)

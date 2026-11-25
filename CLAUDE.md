@@ -15,7 +15,7 @@
 
 Bot de Telegram personal de Jordi y Nane para registrar gastos, conectado a Notion como fuente de verdad. Entiende lenguaje natural (texto y voz), lee tickets por foto, responde preguntas sobre finanzas y manda reportes automáticos. Corre 24/7 en Render.com con Docker.
 
-**Versión actual:** 28.3.3
+**Versión actual:** 28.4.0
 **Esquema:** `MAJOR` = nuevo dominio/capacidad estructural · `MINOR` = feature individual · `PATCH` = fix o ajuste
 
 ---
@@ -102,7 +102,7 @@ El campo **Mes** en Notion = mes de *pago*, no de compra. Formato: `MAY26`, `JUN
 | BMEX04 | día 4 | día ≥ 4 → mes+1 |
 | EFVO | — | mes actual siempre |
 
-- **Tarjeta por defecto** (sin tarjeta explícita): HEYB25 (`config.TARJETA_DEFAULT`).
+- **Tarjeta por defecto** (sin tarjeta explícita): la que acaba de cortar según el día de la compra: 5–11 → BBVA05, 12–24 → BBVA12, 25 al 4 → HEYB25 (`config.TARJETA_DEFAULT_POR_DIA`). BMEX04 pendiente de definir.
 - **Mes activo** (para `/resumen` y "este mes"): el ciclo de HEYB25 para hoy → hoy ≥ día 25 → mes+2; hoy < 25 → mes+1 (`config.DIA_INICIO_CICLO`). Ej.: 25-nov-2026 → ENE27.
 - Contexto financiero y decisiones (no técnicas): Notion › Finanzas › 🤖 Contexto Claude — https://app.notion.com/p/4237eb0cbb928181880ec5cac649beb1
 

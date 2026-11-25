@@ -22,7 +22,7 @@ from config import (
     NOTION_HISTORIAL_ID, NOTION_METAS_ID, NOTION_T_DEFAULT, NOTION_T_LONG, NOTION_T_SHORT, PR,
     PRUEBA_GASTO, PR_EMOJI, PR_INV, REGLAS_CONCEPTO, RENDER_EXTERNAL_URL, REPORTE_EMAIL,
     RESEND_API_KEY, SC, SC_EMOJI, SC_INV, SHORTCUT_SECRET, SUBCAT_PRESUPUESTO,
-    TARJETAS_VALIDAS, TARJETA_DEFAULT, TARJETA_EMOJI, DIA_INICIO_CICLO, TELEGRAM_TOKEN, USUARIOS_AUTORIZADOS, USUARIOS_NOMBRES,
+    TARJETAS_VALIDAS, TARJETA_DEFAULT, TARJETA_DEFAULT_POR_DIA, TARJETA_EMOJI, DIA_INICIO_CICLO, TELEGRAM_TOKEN, USUARIOS_AUTORIZADOS, USUARIOS_NOMBRES,
     USUARIOS_NOTIFICAR, WEBHOOK_SECRET
 )
 from notion_api import (
@@ -1216,7 +1216,12 @@ def inferir_categoria_con_origen(concepto):
 
 # ── TARJETAS Y MESES ─────────────────────────────────────────────────────────
 def calcular_tarjeta(fecha,exp=None):
+    """Tarjeta explícita si la hay; si no, la que acaba de cortar según el día
+    (5–11 BBVA05 · 12–24 BBVA12 · 25 al 4 HEYB25). Ver docs/REGLAS_NEGOCIO.md."""
     if exp: return exp.upper()
+    for desde, tarjeta in TARJETA_DEFAULT_POR_DIA:
+        if fecha.day >= desde:
+            return tarjeta
     return TARJETA_DEFAULT
 
 def calcular_mes(fecha,tarjeta):

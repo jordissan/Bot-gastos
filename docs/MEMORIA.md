@@ -10,6 +10,15 @@
 
 ---
 
+## 2026-11-25 (tarde) — Tarjeta por defecto según el día de corte
+
+**Decisión de Jordi:** sin tarjeta explícita se usa la tarjeta que acaba de cortar: días 5–11 → BBVA05, 12–24 → BBVA12, 25 al 4 → HEYB25. Sustituye a «HEYB25 cualquier día» de la mañana. La regla vive en `config.TARJETA_DEFAULT_POR_DIA`.
+**Interpretación:** Jordi dijo «HEYB25 si es día 25, BBVA05 si es día 5 y BBVA12 si es día 12»; se leyó como rangos desde cada corte hasta el siguiente. Los días 1–4 quedan en HEYB25 porque BMEX04 (corte 4) está pendiente.
+**Pendiente:** cómo entra Banamex Joy (BMEX04); Jordi tiene una idea.
+**Sin cambio:** el ciclo activo sigue anclado en el día 25 (`DIA_INICIO_CICLO`).
+
+---
+
 ## 2026-11-25 — Tarjeta por defecto HEYB25 y ciclo activo desde el día 25
 
 **Decisión de Jordi:** sin tarjeta explícita, el gasto va a **HEYB25** (antes: BBVA05 días 5–11, BBVA12 el resto). El **ciclo activo** arranca el **día 25** (corte de HEYB25), no el 5: hoy ≥ 25 → mes+2, hoy < 25 → mes+1. `mes_activo_str()` ahora es literalmente `calcular_mes(hoy, "HEYB25")`, así que ambas reglas no pueden divergir. El reporte mensual se movió al día 25 para coincidir con el cierre.
