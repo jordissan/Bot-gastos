@@ -66,6 +66,9 @@ Dos causas posibles:
 1. **La fila del ciclo no existe en Balance.** Las filas se crean a mano (el bot no las crea). Con el ciclo desde el día 25 (v28.3.0) el ciclo activo va dos meses adelante, así que hay que tener creado el año siguiente antes de noviembre. Crear `ENE27`…`DIC27` con las cuatro etiquetas (Gasto:, Ingreso:, Restante:, Ahorro:) igual que las demás filas.
 2. **Cache sin paginar (arreglado en v28.3.2).** Antes se leía solo la primera página de 50 filas de Balance; desde la fila 51 algún mes quedaba fuera. Ahora `_cargar_meses_balance()` usa `query_notion_db` (paginado).
 
+### Un gasto se guarda pero no suma en su presupuesto
+Causa: la relación Presupuesto apunta a una página que no está en la BD Presupuestos (pasó con Generosidad, Iglesia y Departamento hasta v28.4.1). Revisar que el destino exista en `PR` y en Notion; `TestPresupuestosValidos` lo vigila.
+
 ## Problemas con Groq
 
 ### El bot no entiende mensajes en lenguaje natural (responde "🤔 No entendí")

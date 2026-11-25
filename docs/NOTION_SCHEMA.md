@@ -241,17 +241,18 @@ PR = {
     "Ezra":            "3547eb0cbb92817baaa9f6681e6bbabc",
     "Personal":        "829161723b0b49bf8787663a89c7248d",  # ⚠️ fue "Cuidado personal" — Jordi renombró el presupuesto el 26-may-2026
     "Vacaciones":      "545753674d4e4d0ca0fd8be7d33db21e",
-    "Impuestos":       "224cdb40f1f749c7b5d6e165ad31110d",
+    "Impuestos":       "224cdb40f1f749c7b5d6e165ad31170d",  # corregido en v28.4.1 (antes …31110d, no existía)
     "Entretenimiento": "3547eb0cbb92815d8248db75a759646b",
-    "Generosidad":     "f4cac9f4b95e4508942ad02ae69ddffe",
-    "Iglesia":         "89b897bd6fa24b8d897adf380491130e",
-    "Departamento":    "1af955c917f54a2da39e9bbb8e4032ff",
+    "Diezmo":          "07160f85e9144883a878e73325d23744",
     "Otros":           "1ea7eb0cbb9280cbbe43c1bd54396691",
     "Educación":       "3677eb0cbb9281c4b82cc803cb114d65",
     "Emergencias":     "3677eb0cbb9281598e2fe19be3db3d74",
     "Deudas":          "91ab43856d1e4ae69f21f4203eeb3c54",  # alias de Deuda
 }
 ```
+
+> **v28.4.1:** Generosidad (`f4cac9f4…`), Iglesia (`89b897bd…`) y Departamento (`1af955c9…`) se quitaron de `PR`: no están en la BD Presupuestos (Departamento es una página de «Categorias de Gastos»), así que los gastos ligados a ellas no sumaban. Siguen en `PR_INV` solo para leer gastos viejos. La BD Presupuestos también tiene **Ahorro** (`1d27eb0c…`), que el bot no usa.
+> Subcategorías: **Mantenimiento** existe dos veces a propósito (auto `50eae9bd…` y departamento `9a383f6a…`). **Mercado** y **Comida** tienen páginas propias en Notion, pero el bot las guarda como Abarrotes por decisión de Jordi (25-nov-2026).
 
 ### `SUBCAT_PRESUPUESTO` — Subcategoría → Presupuesto (fallback)
 
@@ -263,7 +264,7 @@ Restaurantes → Restaurantes
 Gasolina, Estacionamento, Mantenimiento, VW POLO, Seguro Auto → Automovil
 Servicios, Streaming, Internet, Telefonia Celular, Luz, Agua → Servicios
 Renta → Renta
-Muebles, Decoracion → Departamento
+Muebles, Decoracion → Personal
 Treat, Salidas, Cine, Conciertos, Tiempo de calidad → Diversión
 Ropa, Calzado, Gimnasio, Corte de pelo, Gasto personal → Personal
 Cuidado personal → Personal
@@ -271,7 +272,7 @@ Doctor, Medicina → Salud
 Libros, Cursos → Educación
 Emergencias → Emergencias
 Ezra → Ezra
-Regalos, Ofrenda, Diezmo → Generosidad
+Regalos → Personal · Ofrenda, Diezmo → Diezmo
 MSI → MSI
 Deudas, EFI, DBMEX, PDHB25, PRP → Deuda
 Impuestos → Impuestos

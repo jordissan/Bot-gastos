@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-11-25 (tarde) — Presupuestos que no sumaban
+
+**Hallazgo:** `PR` mandaba gastos a Generosidad, Iglesia y Departamento, páginas que no están en la BD Presupuestos: se guardaban pero no sumaban en ningún presupuesto (Ikea, Home Depot, Amazon, ofrendas…). Impuestos tenía un ID con una letra mal.
+**Decisión de Jordi:** Diezmo y Ofrenda → Diezmo; Regalos → Personal; Muebles y Decoración → Personal; Mercado y Comida siguen juntas en Abarrotes.
+**Cómo:** el presupuesto ahora sale de `SUBCAT_PRESUPUESTO` aunque el menú agrupe distinto (los grupos del menú son solo UI). Al guardar, si el presupuesto aprendido no existe en `PR`, se deriva de la subcategoría. Un test verifica que todo destino exista en `PR`.
+
+---
+
 ## 2026-11-25 (tarde) — Tarjeta por defecto según el día de corte
 
 **Decisión de Jordi:** sin tarjeta explícita se usa la tarjeta que acaba de cortar: días 5–11 → BBVA05, 12–24 → BBVA12, 25 al 4 → HEYB25. Sustituye a «HEYB25 cualquier día» de la mañana. La regla vive en `config.TARJETA_DEFAULT_POR_DIA`.

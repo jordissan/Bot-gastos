@@ -5,26 +5,27 @@
 
 ---
 
-## Sesión en curso: 2026-11-25 (v28.4.0) — mantenimiento, Fase 1
+## Sesión en curso: 2026-11-25 (v28.4.1) — mantenimiento, Fase 1
 
 Sigue el «Plan de mantenimiento del bot de gastos» (fases 1–4).
 
 | Item | Estado |
 |------|--------|
-| Versión | 28.4.0 (28.3.2 #4 y 28.3.3 #5 ya en main) |
+| Versión | 28.4.1 (28.3.2 #4, 28.3.3 #5 y 28.4.0 #6 ya en main) |
 | Branch | `claude/project-thread-rdyeht` → PR a main (sin mergear) |
-| Tests | ✅ 64/64 |
+| Tests | ✅ 67/67 |
 
 ### Hecho
 - v28.3.2 (#4): cache de meses de Balance paginado (antes solo 50 filas).
 - ENE27…DIC27 creados en Balance (opción 2027 en «Año»).
 - v28.3.3 (#5): `/diagnostico` lista el catálogo de Groq si visión o audio murieron.
-- v28.4.0: tarjeta por defecto según el día de corte: 5–11 BBVA05, 12–24 BBVA12, 25 al 4 HEYB25. BMEX04 pendiente (idea de Jordi).
+- v28.4.0 (#6): tarjeta por defecto según el día de corte: 5–11 BBVA05, 12–24 BBVA12, 25 al 4 HEYB25. BMEX04 pendiente (idea de Jordi).
+- v28.4.1: presupuestos. Impuestos con ID corregido; Diezmo/Ofrenda → Diezmo; Regalos, Muebles, Decoración → Personal; Generosidad/Iglesia/Departamento fuera de `PR`. Mercado y Comida siguen en Abarrotes.
 
 ### Hallazgos
 - Fotos de tickets claros fallan (8:26 y 9:38 del 25-nov): fallan el modelo de visión y Google Vision, no la foto.
 - PR #3 (visión qwen3.8, v28.3.1) sin probar; no mergear hasta ver el catálogo real.
-- Auditoría pendiente: IDs de presupuestos/subcategorías en `config.py` contra Notion (Impuestos, Comida/Mercado, Ahorro, Diezmo, Mantenimiento duplicada).
+- 10 gastos viejos (jun–ago 2026, $4,416) siguen ligados a Generosidad/Iglesia/Departamento en Notion; corregirlos requiere OK de Jordi.
 
 ### Pendiente
 - [ ] Jordi: variables y logs de Render, `/diagnostico`, pruebas de humo.
