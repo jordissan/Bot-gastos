@@ -5,6 +5,28 @@
 
 ---
 
+## Sesión en curso: 2026-11-25 (v28.3.2) — mantenimiento, Fase 1
+
+Sigue el «Plan de mantenimiento del bot de gastos» (fases 1–4).
+
+| Item | Estado |
+|------|--------|
+| Versión | 28.3.2 |
+| Branch | `claude/project-thread-rdyeht` → PR a main (sin mergear) |
+| Tests | ✅ 63/63 |
+
+### Hallazgos
+- **Balance no tiene ENE27 en adelante.** Desde el 25-nov el ciclo activo es ENE27: todo gasto HEYB25 se guarda sin relación de Mes y `/resumen` responde "No encontré el mes ENE27". Falta crear ENE27…DIC27 en Notion (pendiente de OK de Jordi).
+- **Cache de meses sin paginar:** Balance tiene 51 filas y el bot solo leía 50. Arreglado en v28.3.2 (`_cargar_meses_balance`).
+- PR #3 (visión qwen3.8, v28.3.1) sigue sin mergear ni probar.
+
+### Pendiente
+- [ ] Jordi: variables y logs de Render, `/diagnostico`, pruebas de humo.
+- [ ] Crear ENE27…DIC27 en Balance.
+- [ ] Mergear este PR y desplegar con el flujo del repo.
+
+---
+
 ## Sesión cerrada: 2026-11-25 (v28.3.0)
 
 ### Objetivo

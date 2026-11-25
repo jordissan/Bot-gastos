@@ -58,6 +58,14 @@ El scheduler no arrancó. Causas:
 
 ---
 
+## Problemas con Notion / Balance
+
+### `/resumen` dice "No encontré el mes ENE27" o el gasto queda sin Mes
+Log: `Mes XXX no encontrado en BD Balance` / `gasto guardado SIN relacion de mes`.
+Dos causas posibles:
+1. **La fila del ciclo no existe en Balance.** Las filas se crean a mano (el bot no las crea). Con el ciclo desde el día 25 (v28.3.0) el ciclo activo va dos meses adelante, así que hay que tener creado el año siguiente antes de noviembre. Crear `ENE27`…`DIC27` con las cuatro etiquetas (Gasto:, Ingreso:, Restante:, Ahorro:) igual que las demás filas.
+2. **Cache sin paginar (arreglado en v28.3.2).** Antes se leía solo la primera página de 50 filas de Balance; desde la fila 51 algún mes quedaba fuera. Ahora `_cargar_meses_balance()` usa `query_notion_db` (paginado).
+
 ## Problemas con Groq
 
 ### El bot no entiende mensajes en lenguaje natural (responde "🤔 No entendí")

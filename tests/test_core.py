@@ -346,3 +346,28 @@ class TestCicloOrden:
     def test_codigo_invalido_no_revienta(self):
         assert bot._ciclo_orden("XXX") == (0, 0)
         assert bot._ciclo_orden("") == (0, 0)
+
+
+# ── Cache de meses de Balance (v28.3.2) ───────────────────────────────────────
+
+class TestCacheMeses:
+    """Balance tiene 51+ filas: el cache debe leerlas todas (paginado), no solo 50."""
+
+    def _paginas(self, n):
+        return [{"id": f"id-{i}", "properties": {"Mes": {"type": "title",
+                 "title": [{"plain_text": f"M{i:02d}", "text": {"content": f"M{i:02d}"}}]}}}
+                for i in range(n)]
+
+    def test_encuentra_mes_mas_alla_de_50(self, monkeypatch):
+        import notion_api
+        monkeypatch.setattr(notion_api, "NOTION_BALANCE_ID", "bal")
+        monkeypatch.setattr(notion_api, "_meses_cache", {})
+        monkeypatch.setattr(notion_api, "query_notion_db", lambda db, f=None: self._paginas(60))
+        assert notion_api.buscar_mes_id("M55") == "id-55"
+
+    def test_mes_inexistente_devuelve_none(self, monkeypatch):
+        import notion_api
+        monkeypatch.setattr(notion_api, "NOTION_BALANCE_ID", "bal")
+        monkeypatch.setattr(notion_api, "_meses_cache", {})
+        monkeypatch.setattr(notion_api, "query_notion_db", lambda db, f=None: self._paginas(3))
+        assert notion_api.buscar_mes_id("ENE27") is None
