@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-11-25 — Tarjeta por defecto HEYB25 y ciclo activo desde el día 25
+
+**Decisión de Jordi:** sin tarjeta explícita, el gasto va a **HEYB25** (antes: BBVA05 días 5–11, BBVA12 el resto). El **ciclo activo** arranca el **día 25** (corte de HEYB25), no el 5: hoy ≥ 25 → mes+2, hoy < 25 → mes+1. `mes_activo_str()` ahora es literalmente `calcular_mes(hoy, "HEYB25")`, así que ambas reglas no pueden divergir. El reporte mensual se movió al día 25 para coincidir con el cierre.
+**Historia:** Jordi recuerda que el ancla había sido 25 antes de pasar a 5. El repo no lo muestra: el día 5 ya estaba en el primer commit (268888c, 25-may-2026), así que el cambio fue antes de subirlo a GitHub.
+**Descartado:** la lógica de pagar unas tarjetas el 15 y otras el 30 (sus ingresos ya no caen en esas fechas).
+
+---
+
 ## Conceptos del dominio — verdades permanentes
 
 ### Ciclo de pago vs mes calendario

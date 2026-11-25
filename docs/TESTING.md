@@ -8,7 +8,7 @@
 ## 0. Verificación de arranque (antes de cualquier test)
 
 En logs de Render confirmar:
-- `[APScheduler] Scheduler iniciado. Jobs: reporte_semanal (lun 9am), reporte_mensual (día 5 2pm)`
+- `[APScheduler] Scheduler iniciado. Jobs: reporte_semanal (lun 9am), reporte_mensual (día 25 2pm)`
 - Sin tracebacks ni errores de importación
 
 ---

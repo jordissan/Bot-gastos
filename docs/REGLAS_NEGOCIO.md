@@ -17,17 +17,17 @@ El campo `Mes` en Notion = **mes en que se paga**, no mes en que se compró.
 | BMEX04 | 4 | X ≥ 4 → mes+1; X < 4 → mes actual |
 | EFVO | — | Siempre mes actual |
 
-**Edge case días 1–4:** compras del 1–4 de cada mes pertenecen al ciclo anterior en BBVA12 y BBVA05.
+**Edge case días 1–4:** compras del 1–4 de cada mes caen en el mes actual en BBVA12 y BBVA05 (todavía no llega su corte).
 Ejemplo: compra el 3-jun con BBVA12 → Mes = **JUN26** (no JUL26).
 
-**Asignación automática de tarjeta** (si el usuario no especifica):
-- Días 5–11 del mes → BBVA05
-- Días 12 en adelante (y días 1–4) → BBVA12
-- BMEX04 y HEYB25: solo si Jordi las menciona explícitamente
+**Tarjeta por defecto** (si el usuario no especifica): **HEYB25**, cualquier día del mes (`config.TARJETA_DEFAULT`). Decisión de Jordi, 25-nov-2026; antes era BBVA05 los días 5–11 y BBVA12 el resto.
 
-**Mes activo** (para `/resumen` y consultas "este mes"):
-- Hoy ≥ día 5 → mes siguiente
-- Hoy < día 5 → mes actual
+**Mes activo** (para `/resumen` y consultas "este mes") = el ciclo de HEYB25 para hoy (`config.DIA_INICIO_CICLO = 25`):
+- Hoy ≥ día 25 → mes+2 (ej.: 25-nov-2026 → ENE27)
+- Hoy < día 25 → mes+1 (ej.: 24-nov-2026 → DIC26)
+- El reporte mensual sale el día 25 y cubre el ciclo que acaba de cerrar.
+
+**Fechas de pago 15 / 30:** descartadas (nov-2026). Los ingresos ya no caen en esas fechas; no usarlas para planear pagos.
 
 ---
 

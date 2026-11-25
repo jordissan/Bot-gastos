@@ -5,7 +5,36 @@
 
 ---
 
-## Sesión cerrada: 2026-08-17
+## Sesión cerrada: 2026-11-25 (v28.3.0)
+
+### Objetivo
+Cambio de reglas de Jordi: tarjeta por defecto **HEYB25** y ciclo activo desde el **día 25**.
+
+| Item | Estado |
+|------|--------|
+| Versión | 28.3.0 |
+| Branch | `claude/project-thread-h4w211` → PR a main (sin mergear) |
+| Deploy | ⏳ pendiente: al mergear, seguir el flujo de deploy de abajo |
+| Tests | ✅ 61/61 |
+
+### Qué cambió
+- `calcular_tarjeta`: sin tarjeta explícita → `TARJETA_DEFAULT = "HEYB25"` (config.py).
+- `mes_activo_str()` = `calcular_mes(hoy, "HEYB25")`: hoy ≥ 25 → mes+2, hoy < 25 → mes+1. El 25-nov-2026 el ciclo activo es ENE27.
+- `_dias_en_ciclo()` ancla en `DIA_INICIO_CICLO = 25` (proyección de `/resumen`).
+- `job_reporte_mensual` pasa del día 5 al día 25 (2pm MX): reporta el ciclo que acaba de cerrar.
+- Docs: CLAUDE.md, REGLAS_NEGOCIO.md, MEMORIA.md, DEBUGGING.md, TESTING.md. Se descartan las fechas de pago 15/30.
+
+### Pendiente
+- [ ] Mergear el PR y desplegar (borrar webhook → push a main).
+- [ ] `/diagnostico`: confirmar que los modelos de Groq siguen vivos (el bot estuvo sin uso desde ~sep-2026). Si murieron, cambiar la env var en Render o hacer bypass.
+- [ ] Probar: "Oxxo 45" sin tarjeta → HEYB25 y Mes correcto; `/resumen` muestra el ciclo activo nuevo.
+- [ ] Log de Render: `Bot corriendo 28.3.0` y `reporte_mensual (día 25 2pm MX)`.
+
+Contexto financiero (no técnico): Notion › Finanzas › 🤖 Contexto Claude — https://app.notion.com/p/4237eb0cbb928181880ec5cac649beb1
+
+---
+
+## Sesión anterior: 2026-08-17
 
 ### Objetivo
 El bot no respondía a consultas en lenguaje natural. Resultaron **dos bugs
