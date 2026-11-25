@@ -5,27 +5,31 @@
 
 ---
 
-## Sesión en curso: 2026-11-25 (v28.3.3) — mantenimiento, Fase 1
+## Sesión en curso: 2026-11-25 (v28.4.0) — mantenimiento, Fase 1
 
 Sigue el «Plan de mantenimiento del bot de gastos» (fases 1–4).
 
 | Item | Estado |
 |------|--------|
-| Versión | 28.3.3 (v28.3.2 mergeada en #4) |
+| Versión | 28.4.0 (28.3.2 #4 y 28.3.3 #5 ya en main) |
 | Branch | `claude/project-thread-rdyeht` → PR a main (sin mergear) |
-| Tests | ✅ 63/63 |
+| Tests | ✅ 64/64 |
+
+### Hecho
+- v28.3.2 (#4): cache de meses de Balance paginado (antes solo 50 filas).
+- ENE27…DIC27 creados en Balance (opción 2027 en «Año»).
+- v28.3.3 (#5): `/diagnostico` lista el catálogo de Groq si visión o audio murieron.
+- v28.4.0: tarjeta por defecto según el día de corte: 5–11 BBVA05, 12–24 BBVA12, 25 al 4 HEYB25. BMEX04 pendiente (idea de Jordi).
 
 ### Hallazgos
-- **Balance no tiene ENE27 en adelante.** Desde el 25-nov el ciclo activo es ENE27: todo gasto HEYB25 se guarda sin relación de Mes y `/resumen` responde "No encontré el mes ENE27". Falta crear ENE27…DIC27 en Notion (pendiente de OK de Jordi).
-- **Cache de meses sin paginar:** Balance tiene 51 filas y el bot solo leía 50. Arreglado en v28.3.2 (`_cargar_meses_balance`).
-- PR #3 (visión qwen3.8, v28.3.1) sigue sin mergear ni probar.
-- Fotos de tickets claros fallan (8:26 y 9:38 del 25-nov): falla el modelo de visión y el respaldo de Google Vision, no la foto.
-- v28.3.3: `/diagnostico` lista el catálogo de Groq cuando visión o audio están muertos, para elegir reemplazo y fijarlo en Render sin adivinar.
-- ENE27…DIC27 ya creados en Balance (opción 2027 en «Año»).
+- Fotos de tickets claros fallan (8:26 y 9:38 del 25-nov): fallan el modelo de visión y Google Vision, no la foto.
+- PR #3 (visión qwen3.8, v28.3.1) sin probar; no mergear hasta ver el catálogo real.
+- Auditoría pendiente: IDs de presupuestos/subcategorías en `config.py` contra Notion (Impuestos, Comida/Mercado, Ahorro, Diezmo, Mantenimiento duplicada).
 
 ### Pendiente
 - [ ] Jordi: variables y logs de Render, `/diagnostico`, pruebas de humo.
-- [ ] Con el catálogo de `/diagnostico`, fijar `GROQ_MODELO_VISION` en Render y cerrar o ajustar el PR #3.
+- [ ] Con el catálogo, fijar `GROQ_MODELO_VISION` en Render y cerrar o ajustar el PR #3.
+- [ ] Definir BMEX04 en la regla de tarjeta por defecto.
 
 ---
 

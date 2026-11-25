@@ -18,7 +18,7 @@ RENDER_EXTERNAL_URL   = os.environ.get("RENDER_EXTERNAL_URL", "")
 NOTION_BALANCE_ID     = os.environ.get("NOTION_BALANCE_ID", "")
 GROQ_API_KEY          = os.environ.get("GROQ_API_KEY", "")
 
-VERSION = "28.3.3"   # única fuente del número de versión (lo usa /diagnostico y el log de arranque)
+VERSION = "28.4.0"   # única fuente del número de versión (lo usa /diagnostico y el log de arranque)
 
 # ── Modelos de Groq ──────────────────────────────────────────────────────────
 # Groq RETIRA modelos sin previo aviso: en agosto/2026 murieron llama-3.3-70b-versatile
@@ -229,8 +229,12 @@ MESES_TEXTO = {"ene":1,"feb":2,"mar":3,"abr":4,"may":5,"jun":6,"jul":7,"ago":8,"
 # ── Tarjetas ─────────────────────────────────────────────────────────────────
 TARJETAS_VALIDAS = ["BBVA05", "BBVA12", "HEYB25", "BMEX04", "EFVO"]
 
-# Tarjeta cuando el usuario no menciona ninguna (decisión de Jordi, nov-2026).
-TARJETA_DEFAULT = "HEYB25"
+# Tarjeta cuando el usuario no menciona ninguna, según el día de la compra
+# (decisión de Jordi, 25-nov-2026): se usa la tarjeta que acaba de cortar.
+#   día 5–11 → BBVA05 · día 12–24 → BBVA12 · día 25 al 4 → HEYB25
+# BMEX04 (Banamex Joy) queda fuera hasta que Jordi defina cómo entra.
+TARJETA_DEFAULT_POR_DIA = ((25, "HEYB25"), (12, "BBVA12"), (5, "BBVA05"))  # (desde el día, tarjeta), de mayor a menor
+TARJETA_DEFAULT = "HEYB25"   # días 1–4: sigue el ciclo de HEYB25 que arrancó el 25 anterior
 # Día en que arranca el ciclo activo: el corte de HEYB25. Del 25 en adelante
 # "este mes" es mes+2; antes del 25, mes+1 (igual que calcular_mes con HEYB25).
 DIA_INICIO_CICLO = 25

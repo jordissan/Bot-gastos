@@ -15,10 +15,21 @@ class TestCalcularTarjeta:
     def test_explicita_gana(self):
         assert bot.calcular_tarjeta(datetime.date(2026, 5, 20), "efvo") == "EFVO"
 
-    def test_auto_sin_tarjeta_es_heyb25(self):
-        # Tarjeta por defecto: HEYB25 cualquier día del mes (nov-2026).
-        for dia in (1, 4, 5, 11, 12, 24, 25, 28):
-            assert bot.calcular_tarjeta(datetime.date(2026, 5, dia)) == "HEYB25"
+    def test_auto_sin_tarjeta_por_dia_de_corte(self):
+        # Tarjeta por defecto = la que acaba de cortar (Jordi, 25-nov-2026):
+        # 5–11 BBVA05 · 12–24 BBVA12 · 25 al 4 HEYB25.
+        esperado = {1: "HEYB25", 4: "HEYB25", 5: "BBVA05", 11: "BBVA05",
+                    12: "BBVA12", 24: "BBVA12", 25: "HEYB25", 31: "HEYB25"}
+        for dia, tarjeta in esperado.items():
+            assert bot.calcular_tarjeta(datetime.date(2026, 5, dia)) == tarjeta, dia
+
+    def test_auto_mes_de_pago(self):
+        # El Mes sale del corte de la tarjeta elegida.
+        d = datetime.date
+        assert bot.calcular_mes(d(2026, 11, 3), bot.calcular_tarjeta(d(2026, 11, 3))) == "DIC26"   # HEYB25
+        assert bot.calcular_mes(d(2026, 11, 7), bot.calcular_tarjeta(d(2026, 11, 7))) == "DIC26"   # BBVA05
+        assert bot.calcular_mes(d(2026, 11, 15), bot.calcular_tarjeta(d(2026, 11, 15))) == "DIC26" # BBVA12
+        assert bot.calcular_mes(d(2026, 11, 25), bot.calcular_tarjeta(d(2026, 11, 25))) == "ENE27" # HEYB25
 
 
 class TestMesActivo:
