@@ -5,13 +5,13 @@
 
 ---
 
-## Sesión en curso: 2026-11-25 (v28.3.2) — mantenimiento, Fase 1
+## Sesión en curso: 2026-11-25 (v28.3.3) — mantenimiento, Fase 1
 
 Sigue el «Plan de mantenimiento del bot de gastos» (fases 1–4).
 
 | Item | Estado |
 |------|--------|
-| Versión | 28.3.2 |
+| Versión | 28.3.3 (v28.3.2 mergeada en #4) |
 | Branch | `claude/project-thread-rdyeht` → PR a main (sin mergear) |
 | Tests | ✅ 63/63 |
 
@@ -19,11 +19,13 @@ Sigue el «Plan de mantenimiento del bot de gastos» (fases 1–4).
 - **Balance no tiene ENE27 en adelante.** Desde el 25-nov el ciclo activo es ENE27: todo gasto HEYB25 se guarda sin relación de Mes y `/resumen` responde "No encontré el mes ENE27". Falta crear ENE27…DIC27 en Notion (pendiente de OK de Jordi).
 - **Cache de meses sin paginar:** Balance tiene 51 filas y el bot solo leía 50. Arreglado en v28.3.2 (`_cargar_meses_balance`).
 - PR #3 (visión qwen3.8, v28.3.1) sigue sin mergear ni probar.
+- Fotos de tickets claros fallan (8:26 y 9:38 del 25-nov): falla el modelo de visión y el respaldo de Google Vision, no la foto.
+- v28.3.3: `/diagnostico` lista el catálogo de Groq cuando visión o audio están muertos, para elegir reemplazo y fijarlo en Render sin adivinar.
+- ENE27…DIC27 ya creados en Balance (opción 2027 en «Año»).
 
 ### Pendiente
 - [ ] Jordi: variables y logs de Render, `/diagnostico`, pruebas de humo.
-- [ ] Crear ENE27…DIC27 en Balance.
-- [ ] Mergear este PR y desplegar con el flujo del repo.
+- [ ] Con el catálogo de `/diagnostico`, fijar `GROQ_MODELO_VISION` en Render y cerrar o ajustar el PR #3.
 
 ---
 
