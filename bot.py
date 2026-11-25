@@ -22,7 +22,7 @@ from config import (
     NOTION_HISTORIAL_ID, NOTION_METAS_ID, NOTION_T_DEFAULT, NOTION_T_LONG, NOTION_T_SHORT, PR,
     PRUEBA_GASTO, PR_EMOJI, PR_INV, REGLAS_CONCEPTO, RENDER_EXTERNAL_URL, REPORTE_EMAIL,
     RESEND_API_KEY, SC, SC_EMOJI, SC_INV, SHORTCUT_SECRET, SUBCAT_PRESUPUESTO,
-    TARJETAS_VALIDAS, TARJETA_EMOJI, TELEGRAM_TOKEN, USUARIOS_AUTORIZADOS, USUARIOS_NOMBRES,
+    TARJETAS_VALIDAS, TARJETA_DEFAULT, TARJETA_EMOJI, DIA_INICIO_CICLO, TELEGRAM_TOKEN, USUARIOS_AUTORIZADOS, USUARIOS_NOMBRES,
     USUARIOS_NOTIFICAR, WEBHOOK_SECRET
 )
 from notion_api import (
@@ -317,15 +317,10 @@ def similitud(a,b): return SequenceMatcher(None,normalizar(a),normalizar(b)).rat
 # ── MES ACTIVO ────────────────────────────────────────────────────────────────
 
 def mes_activo_str() -> str:
+    """Ciclo activo ("este mes"): el ciclo de pago al que caería una compra de hoy con HEYB25.
+    Del día 25 (DIA_INICIO_CICLO) en adelante → mes+2; antes → mes+1. Ej.: 25-nov-2026 → ENE27."""
     hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
-    if hoy.day >= 5:
-        if hoy.month == 12:
-            y, m = hoy.year + 1, 1
-        else:
-            y, m = hoy.year, hoy.month + 1
-    else:
-        y, m = hoy.year, hoy.month
-    return f"{MESES_ESP[m]}{str(y)[-2:]}"
+    return calcular_mes(hoy, "HEYB25")
 
 def fila_tabla(nombre: str, monto: float, nom_pad: int, extra: str = "") -> str:
     emoji = PR_EMOJI.get(nombre, "📦")
@@ -335,14 +330,14 @@ def fila_tabla(nombre: str, monto: float, nom_pad: int, extra: str = "") -> str:
 
 # ── RESUMEN ───────────────────────────────────────────────────────────────────
 def _dias_en_ciclo() -> int:
-    """Días transcurridos del ciclo de facturación en curso (ancla el día 5 = día 1 del ciclo)."""
+    """Días transcurridos del ciclo en curso (el día DIA_INICIO_CICLO = día 1 del ciclo)."""
     hoy = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City")).date()
-    if hoy.day >= 5:
-        return hoy.day - 4
+    if hoy.day >= DIA_INICIO_CICLO:
+        return hoy.day - DIA_INICIO_CICLO + 1
     import calendar
     prev = hoy.replace(day=1) - datetime.timedelta(days=1)
     dias_prev = calendar.monthrange(prev.year, prev.month)[1]
-    return (dias_prev - 4) + hoy.day
+    return (dias_prev - DIA_INICIO_CICLO + 1) + hoy.day
 
 def calcular_proyeccion(total_actual, meses_anteriores):
     """(proyeccion, delta_pct) proyectando el cierre del ciclo, o None si faltan datos (<2 meses)."""
@@ -1222,7 +1217,7 @@ def inferir_categoria_con_origen(concepto):
 # ── TARJETAS Y MESES ─────────────────────────────────────────────────────────
 def calcular_tarjeta(fecha,exp=None):
     if exp: return exp.upper()
-    return "BBVA05" if 5<=fecha.day<=11 else "BBVA12"
+    return TARJETA_DEFAULT
 
 def calcular_mes(fecha,tarjeta):
     d,m,y=fecha.day,fecha.month,fecha.year
@@ -4683,7 +4678,7 @@ async def job_reporte_semanal():
         logger.error(f"[APScheduler] Error reporte semanal: {e}")
 
 async def job_reporte_mensual():
-    """Job APScheduler: reporte mensual — día 5 2pm MX"""
+    """Job APScheduler: reporte mensual — día 25 2pm MX (arranca el ciclo nuevo)"""
     try:
         await enviar_reporte(tipo="mensual")
         ok = await enviar_reporte_email_mensual()
@@ -5312,11 +5307,11 @@ def main():
     )
     scheduler.add_job(
         job_reporte_mensual,
-        CronTrigger(day=5, hour=14, minute=0, timezone=MX_TZ),
+        CronTrigger(day=DIA_INICIO_CICLO, hour=14, minute=0, timezone=MX_TZ),
         id="reporte_mensual", replace_existing=True,
     )
     scheduler.start()
-    logger.info("[APScheduler] Scheduler iniciado. Jobs: reporte_semanal (lun 9am MX), reporte_mensual (día 5 2pm MX)")
+    logger.info("[APScheduler] Scheduler iniciado. Jobs: reporte_semanal (lun 9am MX), reporte_mensual (día 25 2pm MX)")
 
     port = int(os.environ.get("PORT", 10000))
     logger.info(f"HTTP en {port}")

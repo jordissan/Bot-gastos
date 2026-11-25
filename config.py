@@ -18,7 +18,7 @@ RENDER_EXTERNAL_URL   = os.environ.get("RENDER_EXTERNAL_URL", "")
 NOTION_BALANCE_ID     = os.environ.get("NOTION_BALANCE_ID", "")
 GROQ_API_KEY          = os.environ.get("GROQ_API_KEY", "")
 
-VERSION = "28.2.1"   # única fuente del número de versión (lo usa /diagnostico y el log de arranque)
+VERSION = "28.3.0"   # única fuente del número de versión (lo usa /diagnostico y el log de arranque)
 
 # ── Modelos de Groq ──────────────────────────────────────────────────────────
 # Groq RETIRA modelos sin previo aviso: en agosto/2026 murieron llama-3.3-70b-versatile
@@ -228,6 +228,12 @@ MESES_TEXTO = {"ene":1,"feb":2,"mar":3,"abr":4,"may":5,"jun":6,"jul":7,"ago":8,"
 
 # ── Tarjetas ─────────────────────────────────────────────────────────────────
 TARJETAS_VALIDAS = ["BBVA05", "BBVA12", "HEYB25", "BMEX04", "EFVO"]
+
+# Tarjeta cuando el usuario no menciona ninguna (decisión de Jordi, nov-2026).
+TARJETA_DEFAULT = "HEYB25"
+# Día en que arranca el ciclo activo: el corte de HEYB25. Del 25 en adelante
+# "este mes" es mes+2; antes del 25, mes+1 (igual que calcular_mes con HEYB25).
+DIA_INICIO_CICLO = 25
 
 TARJETA_EMOJI = {
     "BBVA05": "🔵",   # BBVA azul, corte día 5

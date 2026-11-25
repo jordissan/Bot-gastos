@@ -15,14 +15,37 @@ class TestCalcularTarjeta:
     def test_explicita_gana(self):
         assert bot.calcular_tarjeta(datetime.date(2026, 5, 20), "efvo") == "EFVO"
 
-    def test_auto_dia_5_a_11_es_bbva05(self):
-        assert bot.calcular_tarjeta(datetime.date(2026, 5, 5)) == "BBVA05"
-        assert bot.calcular_tarjeta(datetime.date(2026, 5, 11)) == "BBVA05"
+    def test_auto_sin_tarjeta_es_heyb25(self):
+        # Tarjeta por defecto: HEYB25 cualquier día del mes (nov-2026).
+        for dia in (1, 4, 5, 11, 12, 24, 25, 28):
+            assert bot.calcular_tarjeta(datetime.date(2026, 5, dia)) == "HEYB25"
 
-    def test_auto_resto_es_bbva12(self):
-        assert bot.calcular_tarjeta(datetime.date(2026, 5, 4)) == "BBVA12"
-        assert bot.calcular_tarjeta(datetime.date(2026, 5, 12)) == "BBVA12"
-        assert bot.calcular_tarjeta(datetime.date(2026, 5, 28)) == "BBVA12"
+
+class TestMesActivo:
+    """Ciclo activo = ciclo de HEYB25 para hoy: día ≥ 25 → mes+2; antes → mes+1."""
+
+    def _con_hoy(self, monkeypatch, fecha):
+        class _DT(datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.datetime(fecha.year, fecha.month, fecha.day, 12, 0, tzinfo=tz)
+        monkeypatch.setattr(bot.datetime, "datetime", _DT)
+
+    def test_dia_25_salta_dos_meses(self, monkeypatch):
+        self._con_hoy(monkeypatch, datetime.date(2026, 11, 25))
+        assert bot.mes_activo_str() == "ENE27"
+
+    def test_antes_del_25_es_mes_siguiente(self, monkeypatch):
+        self._con_hoy(monkeypatch, datetime.date(2026, 11, 24))
+        assert bot.mes_activo_str() == "DIC26"
+        self._con_hoy(monkeypatch, datetime.date(2026, 11, 3))
+        assert bot.mes_activo_str() == "DIC26"
+
+    def test_dias_en_ciclo_ancla_dia_25(self, monkeypatch):
+        self._con_hoy(monkeypatch, datetime.date(2026, 11, 25))
+        assert bot._dias_en_ciclo() == 1
+        self._con_hoy(monkeypatch, datetime.date(2026, 12, 1))
+        assert bot._dias_en_ciclo() == 7  # 25–30 nov (6 días) + 1 dic
 
 
 class TestCalcularMes:

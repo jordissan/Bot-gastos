@@ -9,7 +9,7 @@
 Antes de investigar cualquier fallo, verificar estas 4 cosas en los logs de Render:
 
 ```
-✅ [APScheduler] Scheduler iniciado. Jobs: reporte_semanal (lun 9am), reporte_mensual (día 5 2pm)
+✅ [APScheduler] Scheduler iniciado. Jobs: reporte_semanal (lun 9am), reporte_mensual (día 25 2pm)
 ✅ Webhook set successfully
 ✅ Application started
 ✅ (sin líneas de ERROR o Traceback al arrancar)
