@@ -54,25 +54,32 @@ def query_notion_db(database_id: str, filter_dict: dict = None) -> list:
 # ── CACHE DE MESES ────────────────────────────────────────────────────────────
 _meses_cache: dict = {}
 
+def _cargar_meses_balance() -> bool:
+    """Lee TODAS las filas de Balance (paginado) y llena `_meses_cache`.
+
+    Antes se pedía una sola página de 50: con 51+ meses en Balance algún ciclo
+    quedaba fuera del cache y los gastos se guardaban sin relación de Mes.
+    """
+    paginas = query_notion_db(NOTION_BALANCE_ID)
+    for page in paginas:
+        for prop_val in page.get("properties", {}).values():
+            if prop_val.get("type") == "title":
+                title_list = prop_val.get("title", [])
+                t0 = title_list[0] if title_list else {}
+                nombre = t0.get("plain_text") or t0.get("text", {}).get("content", "")
+                if nombre:
+                    _meses_cache[nombre.strip()] = page["id"]
+    return bool(paginas)
+
 def precargar_meses():
     if not NOTION_BALANCE_ID:
         logger.warning("NOTION_BALANCE_ID no configurado — meses no precargados")
         return
     try:
-        r = requests.post(
-            f"{NOTION_API_BASE}/databases/{NOTION_BALANCE_ID}/query",
-            headers=nh(), json={"page_size": 50}, timeout=NOTION_T_LONG)
-        if r.status_code == 200:
-            for page in r.json().get("results", []):
-                for prop_val in page.get("properties", {}).values():
-                    if prop_val.get("type") == "title":
-                        title_list = prop_val.get("title", [])
-                        nombre = title_list[0]["text"]["content"] if title_list else ""
-                        if nombre:
-                            _meses_cache[nombre] = page["id"]
-            logger.info(f"Cache de meses cargado: {list(_meses_cache.keys())}")
+        if _cargar_meses_balance():
+            logger.info(f"Cache de meses cargado ({len(_meses_cache)}): {sorted(_meses_cache.keys())}")
         else:
-            logger.error(f"Error precargando meses: {r.status_code} {r.text[:100]}")
+            logger.error("Error precargando meses: Balance vacío o sin respuesta")
     except Exception as e:
         logger.error(f"Error precargando meses: {e}")
 
@@ -83,23 +90,11 @@ def buscar_mes_id(mes: str):
         logger.warning("NOTION_BALANCE_ID no configurado")
         return None
     try:
-        r = notion_request("POST",
-            f"{NOTION_API_BASE}/databases/{NOTION_BALANCE_ID}/query",
-            headers=nh(), json={"page_size": 50}, timeout=NOTION_T_LONG)
-        if r and r.status_code == 200:
-            for page in r.json().get("results", []):
-                for prop_val in page.get("properties", {}).values():
-                    if prop_val.get("type") == "title":
-                        title_list = prop_val.get("title", [])
-                        nombre = title_list[0]["text"]["content"] if title_list else ""
-                        if nombre:
-                            _meses_cache[nombre] = page["id"]
-            if mes in _meses_cache:
-                logger.info(f"Mes {mes} encontrado: {_meses_cache[mes]}")
-                return _meses_cache[mes]
-            logger.error(f"Mes {mes} no encontrado en BD Balance")
-        else:
-            logger.error(f"Error consultando BD Balance: {r.status_code if r else 'sin respuesta'}")
+        _cargar_meses_balance()
+        if mes in _meses_cache:
+            logger.info(f"Mes {mes} encontrado: {_meses_cache[mes]}")
+            return _meses_cache[mes]
+        logger.error(f"Mes {mes} no encontrado en BD Balance — hay que crear la fila en Notion")
     except Exception as e:
         logger.error(f"Error en buscar_mes_id({mes}): {e}")
     return None
