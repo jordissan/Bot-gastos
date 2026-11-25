@@ -3439,7 +3439,10 @@ async def handle_foto(update, context):
     if datos is None:
         texto_ocr = await asyncio.to_thread(ocr_ticket, bytes(image_bytes))
         if not texto_ocr:
-            await msg_espera.edit_text("❌ No pude leer el ticket. Intenta con mejor iluminación o más cerca.")
+            # Ambos servicios fallaron: casi siempre es el modelo o la llave, no la foto.
+            await msg_espera.edit_text(
+                "❌ No pude leer el ticket: el servicio de lectura no respondió.\n"
+                "Regístralo escribiéndolo (ej. «Super 215.50») y corre /diagnostico.")
             return ConversationHandler.END
         datos = parsear_ticket(texto_ocr)
 

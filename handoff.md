@@ -5,7 +5,18 @@
 
 ---
 
-## Sesión cerrada: 2026-11-25 (v28.3.0)
+## Sesión cerrada: 2026-11-25 (v28.3.1)
+
+Foto de ticket fallaba ("No pude leer el ticket"). Groq retiró `qwen/qwen3.6-27b`; default de visión → `qwen/qwen3.8-27b`. Mensaje de error ahora culpa al servicio, no a la foto. Ver DEBUGGING.md.
+
+### Pendiente
+- [ ] En Render: si existe `GROQ_MODELO_VISION`, ponerlo en `qwen/qwen3.8-27b` o borrarlo.
+- [ ] Logs de Render: buscar `Vision API error` (el fallback de Google Vision también falló) y `Groq vision error`.
+- [ ] Reenviar la foto del ticket y confirmar que lo lee. `/diagnostico` → visión 🟢.
+
+---
+
+## Sesión anterior: 2026-11-25 (v28.3.0)
 
 ### Objetivo
 Cambio de reglas de Jordi: tarjeta por defecto **HEYB25** y ciclo activo desde el **día 25**.

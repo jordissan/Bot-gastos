@@ -4,6 +4,12 @@
 
 ---
 
+
+## ❌ "No pude leer el ticket" con una foto nítida (2026-11-25, v28.3.1)
+**Síntoma:** cualquier foto de ticket responde "No pude leer el ticket", aunque se lea perfecto.
+**Causa:** ese mensaje sale solo cuando fallan **los dos** lectores: Groq visión devolvió None y Google Vision devolvió texto vacío. Groq retiró `qwen/qwen3.6-27b` (~sep/2026, 404). El fallback de Google Vision también falló: revisar en logs `Vision API error <código>` (llave, facturación o API deshabilitada).
+**Solución:** default de visión → `qwen/qwen3.8-27b`. Si `GROQ_MODELO_VISION` está fijado en Render, cambiarlo ahí (la env var gana). El mensaje ahora dice que falló el servicio, no la foto.
+
 ## Checklist rápido post-deploy
 
 Antes de investigar cualquier fallo, verificar estas 4 cosas en los logs de Render:

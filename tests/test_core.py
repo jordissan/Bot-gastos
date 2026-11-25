@@ -273,7 +273,8 @@ class TestDescribirPlan:
 
 class TestModelosGroq:
     MUERTOS = ("llama-3.3-70b-versatile", "meta-llama/llama-4-scout-17b-16e-instruct",
-               "llama3-70b-8192", "mixtral-8x7b-32768")
+               "llama3-70b-8192", "mixtral-8x7b-32768",
+               "qwen/qwen3.6-27b")  # retirado ~sep/2026
 
     def test_no_se_usan_modelos_retirados(self):
         """Busca solo en literales de código — las menciones en comentarios y

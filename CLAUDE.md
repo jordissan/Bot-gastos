@@ -15,7 +15,7 @@
 
 Bot de Telegram personal de Jordi y Nane para registrar gastos, conectado a Notion como fuente de verdad. Entiende lenguaje natural (texto y voz), lee tickets por foto, responde preguntas sobre finanzas y manda reportes automáticos. Corre 24/7 en Render.com con Docker.
 
-**Versión actual:** 28.3.0
+**Versión actual:** 28.3.1
 **Esquema:** `MAJOR` = nuevo dominio/capacidad estructural · `MINOR` = feature individual · `PATCH` = fix o ajuste
 
 ---
@@ -30,7 +30,7 @@ Bot de Telegram personal de Jordi y Nane para registrar gastos, conectado a Noti
 | Keep-alive | UptimeRobot ping cada 5 min |
 | Base de datos | Notion API (6 BDs) |
 | IA texto | Groq — `openai/gpt-oss-20b` con `reasoning_effort=low` (env `GROQ_MODELO_TEXTO`) |
-| IA visión | Groq — `qwen/qwen3.6-27b` con `reasoning_effort=none` (env `GROQ_MODELO_VISION`) |
+| IA visión | Groq — `qwen/qwen3.8-27b` con `reasoning_effort=none` (env `GROQ_MODELO_VISION`) |
 | IA voz | Groq — `whisper-large-v3-turbo` (env `GROQ_MODELO_AUDIO`) |
 | Categorización | Google Maps Places API |
 | OCR fallback | Google Vision API |
@@ -56,7 +56,7 @@ RENDER_EXTERNAL_URL     = https://bot-gastos-socj.onrender.com
 SHORTCUT_SECRET         (para iOS Shortcut y el endpoint /reporte)
 GROQ_API_KEY            (.env local, en .gitignore)
 GROQ_MODELO_TEXTO       (opcional — default openai/gpt-oss-20b)
-GROQ_MODELO_VISION      (opcional — default qwen/qwen3.6-27b)
+GROQ_MODELO_VISION      (opcional — default qwen/qwen3.8-27b; si está fijado en Render, la env var manda sobre el default)
 GROQ_MODELO_AUDIO       (opcional — default whisper-large-v3-turbo)
 GROQ_REASONING_EFFORT   (opcional — default "low", para gpt-oss)
 GROQ_VISION_EFFORT      (opcional — default "none", para qwen)
@@ -339,7 +339,7 @@ cancelar     - ❌ Cancelar acción en curso
 1. **IDs de relación Notion:** llegan con guiones → `.replace("-", "")` antes de comparar con `SC`/`PR`.
 2. **Tarjeta en Notion:** campo `rich_text` (no select) → `props.get("Tarjeta", {}).get("rich_text", [])`.
 3. **Nombres ambiguos SC ∩ PR:** hay 10 (Deudas, Emergencias, Ezra, Impuestos, MSI, Otros, Renta, Restaurantes, Servicios, Vacaciones) que existen en ambos dicts con **IDs distintos**. `config.NOMBRES_AMBIGUOS` los calcula solo y el prompt del planner los inyecta: siempre van en `subcategoria`, con `categoria=null`. Nunca poner ambos a la vez.
-3c. **Groq retira modelos sin aviso.** En agosto/2026 murieron `llama-3.3-70b-versatile` y `llama-4-scout`: el bot quedó inutilizado porque toda clasificación daba 404 y caía al parser clásico. Los modelos viven en `config.py` y se pueden sobrescribir por env var en Render **sin re-deploy**. `/diagnostico` verifica que sigan vivos. Cada familia acepta valores distintos de `reasoning_effort` (gpt-oss: low/medium/high · qwen: none/default) — mandar uno inválido da HTTP 400, por eso `_groq_chat` reintenta sin el parámetro.
+3c. **Groq retira modelos sin aviso.** En agosto/2026 murieron `llama-3.3-70b-versatile` y `llama-4-scout`; ~sep/2026, `qwen/qwen3.6-27b` (visión): el bot quedó inutilizado porque toda clasificación daba 404 y caía al parser clásico. Los modelos viven en `config.py` y se pueden sobrescribir por env var en Render **sin re-deploy**. `/diagnostico` verifica que sigan vivos. Cada familia acepta valores distintos de `reasoning_effort` (gpt-oss: low/medium/high · qwen: none/default) — mandar uno inválido da HTTP 400, por eso `_groq_chat` reintenta sin el parámetro.
 3d. **Modelos de razonamiento:** consumen tokens pensando antes de responder. Con `max_tokens` bajo devuelven cadena vacía; por eso `GROQ_MIN_TOKENS=700` es el piso. Sin `reasoning_effort=low` tardan ~16 s por llamada en vez de ~0.6 s.
 
 3b. **Nunca usar `import *` entre módulos:** no trae nombres con `_` inicial y ciega al análisis estático. Causó el bug de v28.0.0 (`_meses_cache` indefinido → toda consulta NL moría). `tests/test_nombres.py` lo verifica.
