@@ -71,6 +71,17 @@ Causa: la relación Presupuesto apunta a una página que no está en la BD Presu
 
 ## Problemas con Groq
 
+### Fotos de tickets: "❌ No pude leer el ticket" aunque la foto sea clara
+
+**Causa principal:** Groq retiró el modelo de visión. En el log de Render (filtro `vision`) aparece `Groq vision error (...): Error code: 404 ... model_not_found`. Pasó con `qwen/qwen3.6-27b` (~sep-2026, resuelto el 28-nov-2026).
+**Solución (sin tocar código):**
+1. `/diagnostico` en Telegram: si Visión sale en 🔴, el mismo mensaje lista el catálogo vivo de Groq.
+2. Render › Environment › agregar o editar `GROQ_MODELO_VISION` con un modelo de visión del catálogo (hoy `qwen/qwen3.8-27b`) › Save and deploy.
+3. `/diagnostico` otra vez (Visión en 🟢) y probar con una foto.
+Lo mismo aplica a `GROQ_MODELO_TEXTO` y `GROQ_MODELO_AUDIO`. Después, actualizar el default en `config.py` para no depender de la variable.
+
+**Causa secundaria (respaldo):** `Vision API error 403` en el log = Google rechaza la llave de `GOOGLE_VISION_API_KEY`. En Google Cloud Console: APIs y servicios › Biblioteca › habilitar **Cloud Vision API**, y en Credenciales › la llave › Restricciones de API, incluir Cloud Vision API. Sin esto, si Groq falla no hay respaldo.
+
 ### El bot no entiende mensajes en lenguaje natural (responde "🤔 No entendí")
 
 **Causa 1:** `GROQ_API_KEY` vacía o inválida → cae al parser clásico que es estricto.
