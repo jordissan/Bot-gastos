@@ -1276,6 +1276,88 @@ def parsear_mensaje(texto):
 
 # ── CLASIFICACIÓN + PARSEO CON GROQ (LLM) ─────────────────────────────────────
 
+# ── COMANDOS EN LENGUAJE NATURAL ─────────────────────────────────────────────
+# "corre una prueba", "haz un diagnóstico", "dame el resumen"… → el mismo handler
+# que el comando con diagonal. Detector determinístico (sin Groq) y conservador:
+# si el mensaje trae un monto (2+ dígitos) o es largo, no es comando.
+COMANDOS_NL = ("prueba", "diagnostico", "resumen", "estadisticas", "top", "reporte",
+               "corregir", "eliminar", "buscar", "ayuda", "cancelar")
+_RE_MES_CODIGO = re.compile(r"\b(ENE|FEB|MAR|ABR|MAY|JUN|JUL|AGO|SEP|OCT|NOV|DIC)\d{2}\b", re.I)
+_RE_MONTO_NL = re.compile(r"\d{2,}")
+_VERBOS_PEDIR = (r"(dame|da|muestra|muestrame|ensename|ver|quiero|manda|mandame|envia|enviame"
+                 r"|saca|sacame|genera|generame|hazme|haz|pasame|abre|abreme|abrir|necesito)")
+_PATRONES_COMANDO_NL = [
+    ("prueba", re.compile(
+        r"\bmodo (de )?(prueba|sandbox|simulacion)\b|\bsandbox\b|\bsimula(r)? (un )?gasto\b"
+        r"|\b(corre|correr|correme|haz|hacer|hagamos|activa|activar|abre|abrir|inicia|iniciar"
+        r"|entra|entrar|empieza|empezar|arranca|lanza|quiero|vamos a hacer|pon|ponte en)\b"
+        r"(\s+\w+){0,3}\s+(prueba|simulacion|simulacro)\b")),
+    ("diagnostico", re.compile(
+        r"\b(auto)?diagnostic(o|a|ate|ar)\b|\bestado de (los )?servicios\b"
+        r"|\b(revisa|checa|chequea|verifica)\b(\s+\w+){0,3}\s+(servicios|modelos|groq)\b"
+        r"|\b(estas|esta el bot|sigues) (vivo|funcionando)\b")),
+    ("eliminar", re.compile(
+        r"\b(elimina|eliminar|eliminame|borra|borrar|borrame|archiva|archivar|quita|quitar)\b"
+        r"(\s+\w+){0,2}\s+gasto( que (acabo de|registre|anote|puse).{0,20})?$")),
+    ("corregir", re.compile(
+        r"\b(corregir|corrige|corrigeme|editar|edita|modificar|modifica|arreglar|arregla)\b"
+        r"(\s+\w+){0,2}\s+gastos?( recientes?)?$"
+        r"|\b(abre|abrir|abreme)\b(\s+\w+){0,2}\s+(corregir|correcciones|editor)\b")),
+    ("buscar", re.compile(
+        r"^(busca|buscar|buscame|encuentra|encuentrame)\s+(el |los |un |unos )?gastos?\s+"
+        r"(de |del |en |con )?(?P<q>.+)$")),
+    ("estadisticas", re.compile(
+        r"\bestadisticas?\b|\bcompara(r|me)?\b.{0,20}\bmes\b.{0,20}\b(anterior|pasado)\b")),
+    ("top", re.compile(r"\btop\b|\b(los )?(5|cinco) gastos mas (caros|grandes|altos)\b")),
+    ("reporte", re.compile(r"\b(reporte|informe)\b")),
+    ("resumen", re.compile(r"^(el |un )?resumen\b|\b" + _VERBOS_PEDIR + r"\b(\s+\w+){0,2}\s+resumen\b")),
+    ("ayuda", re.compile(
+        r"^(ayuda|help|menu|instrucciones|comandos|inicio)$"
+        r"|^(muestrame |dame |ver )?(los |tus )?comandos$"
+        r"|^que (puedes|sabes) hacer$|^como (te uso|funcionas|se usa)$|^que comandos (hay|tienes)$")),
+    ("cancelar", re.compile(
+        r"^(cancela|cancelar|cancelalo|cancelala|olvidalo|olvida eso|deten|detente|alto|ya no)$")),
+]
+
+def detectar_comando_nl(texto: str):
+    """Frase → (comando, args) si el usuario pide una función del bot; None si no.
+    Ej.: "Corre una prueba" → ("prueba", []); "resumen de JUN26" → ("resumen", ["JUN26"])."""
+    if not texto:
+        return None
+    t = normalizar(texto)
+    t = re.sub(r"[¿?¡!.,;:]+", " ", t)
+    t = re.sub(r"^(oye|hey|ey|porfa|por favor|bot|cuchibot)\s+", "", t.strip())
+    t = re.sub(r"\s+(porfa|por favor|plis|please)$", "", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    if not t or len(t.split()) > 12:
+        return None
+    m_mes = _RE_MES_CODIGO.search(texto)
+    if _RE_MONTO_NL.search(_RE_MES_CODIGO.sub(" ", t)):
+        return None   # trae un monto → probablemente es un gasto
+    for cmd, rx in _PATRONES_COMANDO_NL:
+        m = rx.search(t)
+        if not m:
+            continue
+        args = []
+        if cmd == "buscar":
+            args = m.group("q").split()
+        elif cmd in ("resumen", "top") and m_mes:
+            args = [m_mes.group(0).upper()]
+        elif cmd == "reporte" and re.search(r"\b(mensual|del mes|del ciclo|mes)\b", t):
+            args = ["mensual"]
+        return (cmd, args)
+    return None
+
+def es_salida_prueba_nl(texto: str) -> bool:
+    """¿El usuario pide salir del sandbox con palabras? ("sal del modo prueba", "cancela")."""
+    t = re.sub(r"[¿?¡!.,;:]+", " ", normalizar(texto or ""))
+    t = re.sub(r"\s+", " ", t).strip()
+    return bool(
+        re.search(r"\b(sal|salir|salte|salgamos|termina|terminar|cierra|cerrar|desactiva|apaga|quita)\b"
+                  r"(\s+\w+){0,3}\s+(prueba|sandbox|simulacion)\b", t)
+        or re.fullmatch(r"(cancela|cancelar|salir|sal|ya|listo|ya termine|terminamos)", t)
+    )
+
 def clasificar_mensaje_groq(texto: str, ultimo: dict = None, historial: list = None):
     """
     Clasifica un mensaje con Groq/Llama 3.3 70B. Devuelve (tipo, payload):
@@ -1381,6 +1463,15 @@ Decide la intención y responde SOLO con JSON válido, sin texto adicional ni ma
   Presupuestos válidos: {', '.join(PR.keys())}
   Subcategorías válidas: {', '.join(SC.keys())}
 
+- Si el usuario le pide al bot ABRIR o EJECUTAR una de sus funciones (no registra un gasto ni pregunta cifras):
+{{"tipo": "comando", "comando": "prueba|diagnostico|resumen|estadisticas|top|corregir|eliminar|buscar|ayuda|cancelar", "args": "texto extra o null"}}
+  prueba = modo sandbox/simulación ("corre una prueba", "quiero probar el bot") · diagnostico = estado del bot y sus servicios
+  resumen = resumen del ciclo (args: código MES+AA si lo dice) · estadisticas = este mes vs el anterior · top = 5 gastos más caros
+  corregir = abrir el panel para editar un gasto reciente · eliminar = borrar/archivar el último gasto
+  buscar = buscar gastos por concepto (args: lo que busca) · ayuda = instrucciones/qué puedes hacer · cancelar = cancelar lo que esté en curso
+  Ej: "corre una prueba" → {{"tipo": "comando", "comando": "prueba", "args": null}}
+  NUNCA uses "comando" si el mensaje trae un monto de gasto o pregunta cuánto se gastó.
+
 - Si es un saludo, charla o algo no relacionado:
 {{"tipo": "otro"}}
 
@@ -1430,6 +1521,13 @@ IMPORTANTE: usa "multi_gasto" SOLO si hay 2+ gastos claramente distintos. Si es 
             subtipo = (data.get("subtipo") or "semanal").lower()
             subtipo = "mensual" if "mens" in subtipo else "semanal"
             return ("reporte", {"subtipo": subtipo})
+        if tipo == "comando":
+            cmd = normalizar(data.get("comando") or "")
+            if cmd not in COMANDOS_NL:
+                return ("otro", None)
+            args = str(data.get("args") or "").strip()
+            args = [] if args.lower() in ("", "null", "none") else args.split()
+            return ("comando", {"comando": cmd, "args": args})
         if tipo == "accion":
             operacion = (data.get("operacion") or "").strip().lower()
             if not operacion:
@@ -3784,6 +3882,53 @@ async def _manejar_referencia(texto: str, uid: int, update, context) -> bool:
 
     return False
 
+# ConversationHandlers que main() registra; ejecutar_comando_nl los necesita para
+# dejar al usuario dentro de /prueba o /corregir cuando el comando llega en palabras.
+_conv_prueba = None
+_conv_corregir = None
+
+def _entrar_conversacion(conv, update, estado):
+    """Pone al usuario en `estado` de otra ConversationHandler.
+    El mensaje lo atendió conv_gasto, así que conv_prueba/conv_corregir no se enteran
+    de que su comando arrancó: sin esto el siguiente mensaje caería otra vez en conv_gasto.
+    Usa la API interna de PTB 21 (_get_key/_update_state); si cambia, solo se pierde
+    el estado (avisa en el log) y el usuario puede usar el comando con diagonal."""
+    if conv is None or estado in (None, ConversationHandler.END):
+        return
+    try:
+        conv._update_state(estado, conv._get_key(update))
+    except Exception as e:
+        logger.warning(f"[comando NL] no pude fijar el estado {estado}: {e}")
+
+async def ejecutar_comando_nl(update, context, cmd, args=None):
+    """Corre el handler del comando slash equivalente. Devuelve END para conv_gasto."""
+    uid = update.effective_user.id
+    context.args = list(args or [])
+    logger.info(f"[comando NL] {uid} → /{cmd} {' '.join(context.args)}".rstrip())
+    if cmd == "prueba":
+        _entrar_conversacion(_conv_prueba, update, await cmd_prueba(update, context))
+    elif cmd == "corregir":
+        _entrar_conversacion(_conv_corregir, update, await cmd_corregir(update, context))
+    elif cmd == "eliminar":
+        # Pide confirmación con botones; el clic lo atiende el CallbackQueryHandler global de elim_
+        await cmd_eliminar(update, context)
+    elif cmd == "cancelar":
+        await cancelar(update, context)
+    elif cmd == "buscar" and not context.args:
+        await update.message.reply_text("🔍 ¿Qué busco? Ej.: \"busca los gastos de Uber\"")
+    else:
+        handler = {
+            "diagnostico": cmd_diagnostico, "resumen": cmd_resumen,
+            "estadisticas": cmd_estadisticas, "top": cmd_top, "reporte": cmd_reporte,
+            "buscar": cmd_buscar, "ayuda": start,
+        }.get(cmd)
+        if handler is None:
+            await update.message.reply_text("🤔 No entendí. ¿Quieres registrar un gasto?\nEjemplo: Starbucks 150")
+        else:
+            await handler(update, context)
+    agregar_historial(uid, "assistant", f"Ejecuté /{cmd}.")
+    return ConversationHandler.END
+
 async def _procesar_conversacion(update, context, texto, uid):
     # 0) Cargar memoria persistente (no-op si ya está en RAM esta sesión)
     await mem_cargar(uid)
@@ -3791,6 +3936,11 @@ async def _procesar_conversacion(update, context, texto, uid):
     # 0.5) Pre-proceso: detectar referencias al contexto anterior antes de clasificar
     if await _manejar_referencia(texto, uid, update, context):
         return ConversationHandler.END
+
+    # 0.7) Comandos en lenguaje natural ("corre una prueba" = /prueba), sin gastar Groq
+    cmd_nl = detectar_comando_nl(texto)
+    if cmd_nl:
+        return await ejecutar_comando_nl(update, context, *cmd_nl)
 
     # 1) Clasificar con Groq cuando el mensaje NO tiene formato estricto.
     #    Distingue gasto / consulta / edición → evita registrar gastos al preguntar.
@@ -3829,6 +3979,8 @@ async def _procesar_conversacion(update, context, texto, uid):
         if tipo == "multi_gasto" and payload:
             await _registrar_multiples(update, context, payload, uid)
             return ConversationHandler.END
+        if tipo == "comando" and payload:
+            return await ejecutar_comando_nl(update, context, payload["comando"], payload["args"])
         if tipo == "meta" and payload:
             presupuesto = payload.get("presupuesto", "TOTAL")
             limite      = payload.get("limite", 0)
@@ -4448,6 +4600,11 @@ async def handle_prueba(update, context):
         return ConversationHandler.END
     texto = update.message.text.strip()
     gasto_actual = context.user_data.get("prueba_gasto")
+    if es_salida_prueba_nl(texto):
+        context.user_data.pop("prueba_gasto", None)
+        context.user_data.pop("prueba_staged", None)
+        await update.message.reply_text("🧪 Saliste del modo prueba. Nada se guardó.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
 
     try:
         gasto = None
@@ -4485,7 +4642,7 @@ async def handle_prueba(update, context):
                 return PRUEBA_GASTO
 
             # Consulta / otro / no es gasto
-            if tipo in ("consulta", "otro", "meta", "alias", "ingreso"):
+            if tipo in ("consulta", "otro", "meta", "alias", "ingreso", "comando"):
                 hint = "\n\nEscribe un gasto para empezar." if not gasto_actual else ""
                 await update.message.reply_text(
                     f"🧪 Groq clasificó esto como: {tipo}{hint}" + _FOOTER_SB
@@ -5048,7 +5205,7 @@ Interpreta las cifras, no las repitas tal cual. No inventes nada."""
 async def cmd_reporte(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return
-    texto_cmd = (update.message.text or "").lower()
+    texto_cmd = (update.message.text or "").lower() if not context.args else ""
     tipo = "mensual" if ("mensual" in texto_cmd or (context.args and "mes" in context.args[0].lower())) else "semanal"
     await update.message.reply_text(f"📊 Generando reporte {tipo}…")
     await enviar_reporte(tipo, solo_a=update.effective_user.id)
@@ -5397,6 +5554,8 @@ def main():
         fallbacks=[CommandHandler("cancelar", cancelar)], allow_reentry=True,
     )
 
+    global _conv_prueba, _conv_corregir
+    _conv_prueba, _conv_corregir = conv_prueba, conv_corregir
     app.add_handler(CallbackQueryHandler(callback_edicion,         pattern="^edicion_"))
     app.add_handler(CallbackQueryHandler(callback_sandbox_edicion, pattern="^sandbox_"))
     app.add_handler(CallbackQueryHandler(callback_propuesta,       pattern="^propuesta_"))
@@ -5416,6 +5575,8 @@ def main():
     # Fallbacks globales — actúan solo cuando ningún ConversationHandler activo los reclamó
     # (ej. bot reiniciado; el estado de la conversación se perdió)
     app.add_handler(CallbackQueryHandler(callback_foto, pattern="^foto_"))
+    # Botones de eliminar que no salen de /eliminar ("bórralo", "elimina un gasto" en palabras)
+    app.add_handler(CallbackQueryHandler(callback_eliminar, pattern="^elim_"))
     app.add_handler(CommandHandler("cancelar", cancelar))
     # Red de seguridad: sin esto, cualquier excepción no capturada deja al usuario
     # sin respuesta alguna (silencio total) y el error solo vive en los logs.

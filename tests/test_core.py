@@ -435,6 +435,77 @@ class TestDesgloseTicket:
         assert "… y 10 más" in d and "• P59" in d and "• P60 " not in d
 
 
+# ── Comandos en lenguaje natural (v28.7.0) ────────────────────────────────────
+
+class TestComandoNL:
+    @staticmethod
+    def _det(t):
+        return bot.detectar_comando_nl(t)
+
+    def test_frases_que_son_comando(self):
+        casos = {
+            "Corre una prueba": ("prueba", []),
+            "oye bot, corre una prueba porfa": ("prueba", []),
+            "quiero hacer una prueba": ("prueba", []),
+            "modo prueba": ("prueba", []),
+            "haz un diagnóstico": ("diagnostico", []),
+            "dame el resumen": ("resumen", []),
+            "resumen de JUN26": ("resumen", ["JUN26"]),
+            "el top de MAY26": ("top", ["MAY26"]),
+            "manda el reporte mensual": ("reporte", ["mensual"]),
+            "estadísticas": ("estadisticas", []),
+            "quiero corregir un gasto": ("corregir", []),
+            "borra el último gasto": ("eliminar", []),
+            "busca los gastos de uber": ("buscar", ["uber"]),
+            "¿qué puedes hacer?": ("ayuda", []),
+            "cancela": ("cancelar", []),
+        }
+        for frase, esperado in casos.items():
+            assert self._det(frase) == esperado, frase
+
+    def test_gastos_y_preguntas_no_son_comando(self):
+        for frase in ["Starbucks 150", "gasté 350 en una prueba de covid",
+                      "pagué la prueba de laboratorio", "super 350, gasolina 500",
+                      "elimina el gasto de uber", "borra los gastos chicos de uber",
+                      "corrige el monto a 400", "cámbialo a restaurantes",
+                      "¿cuánto gasté en uber?", "Hola", ""]:
+            assert self._det(frase) is None, frase
+
+    def test_salir_del_sandbox(self):
+        assert bot.es_salida_prueba_nl("sal del modo prueba")
+        assert bot.es_salida_prueba_nl("Cancela.")
+        assert not bot.es_salida_prueba_nl("Oxxo 45")
+        assert not bot.es_salida_prueba_nl("cámbialo a 400")
+
+    def test_prueba_en_palabras_deja_al_usuario_en_el_sandbox(self):
+        # Llega por conv_gasto, pero el siguiente mensaje debe caer en conv_prueba.
+        import asyncio
+        from types import SimpleNamespace
+        from telegram.ext import ConversationHandler, CommandHandler
+
+        class Msg:
+            def __init__(self): self.enviados = []
+            async def reply_text(self, txt, **kw): self.enviados.append(txt)
+
+        uid = next(iter(bot.USUARIOS_AUTORIZADOS))
+        msg = Msg()
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=uid),
+                                 effective_chat=SimpleNamespace(id=uid),
+                                 message=msg, effective_message=msg)
+        context = SimpleNamespace(user_data={}, args=None)
+        conv = ConversationHandler(entry_points=[CommandHandler("prueba", bot.cmd_prueba)],
+                                   states={bot.PRUEBA_GASTO: []}, fallbacks=[])
+        viejo, bot._conv_prueba = bot._conv_prueba, conv
+        viejo_hist, bot.agregar_historial = bot.agregar_historial, lambda *a, **k: None
+        try:
+            r = asyncio.run(bot.ejecutar_comando_nl(update, context, "prueba", []))
+        finally:
+            bot._conv_prueba, bot.agregar_historial = viejo, viejo_hist
+        assert r == ConversationHandler.END
+        assert "Sandbox activado" in msg.enviados[0]
+        assert conv._conversations[(uid, uid)] == bot.PRUEBA_GASTO
+
+
 # ── Tablas de gastos (listados alineados para Telegram) ───────────────────────
 
 class TestTablaGastos:

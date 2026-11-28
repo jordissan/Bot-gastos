@@ -15,7 +15,7 @@
 
 Bot de Telegram personal de Jordi y Nane para registrar gastos, conectado a Notion como fuente de verdad. Entiende lenguaje natural (texto y voz), lee tickets por foto, responde preguntas sobre finanzas y manda reportes automáticos. Corre 24/7 en Render.com con Docker.
 
-**Versión actual:** 28.6.0
+**Versión actual:** 28.7.0
 **Esquema:** `MAJOR` = nuevo dominio/capacidad estructural · `MINOR` = feature individual · `PATCH` = fix o ajuste
 
 ---
@@ -234,7 +234,16 @@ MSIs con formato `"Concepto X/Total"` (ej. `"MacBook Pro 4/18"`).
 
 Whisper transcribe → `_procesar_conversacion`. Todo lo que se puede hacer escribiendo se puede hacer hablando.
 
-### 10. Categorización y aprendizaje
+### 10. Comandos en lenguaje natural
+
+Todo comando con diagonal también se dispara con palabras, por texto o voz: «corre una prueba» = `/prueba`, «haz un diagnóstico», «dame el resumen de JUN26», «el top», «manda el reporte mensual», «quiero corregir un gasto», «borra el último gasto», «busca los gastos de Uber», «¿qué puedes hacer?», «cancela».
+- `detectar_comando_nl(texto)` (determinístico, sin Groq) corre en `_procesar_conversacion` justo después de `_manejar_referencia`. Es conservador: si el mensaje trae un número de 2+ dígitos (monto) o más de 12 palabras, no es comando.
+- Respaldo: Groq tiene la intención `comando` (`{"comando": ..., "args": ...}`) para frases que el detector no atrapa.
+- `ejecutar_comando_nl` llama al mismo handler del comando. Para `/prueba` y `/corregir` mete al usuario en el estado de su ConversationHandler con `_entrar_conversacion` (API interna de PTB: `_get_key`/`_update_state`); `main()` guarda esos handlers en `_conv_prueba`/`_conv_corregir`.
+- Eliminar siempre pide confirmación con botones; hay un `CallbackQueryHandler` global de `^elim_` para los botones que no salen de `/eliminar`.
+- Dentro de `/prueba`, «sal del modo prueba» o «cancela» salen del sandbox (`es_salida_prueba_nl`).
+
+### 11. Categorización y aprendizaje
 
 `inferir_categoria(concepto)`: reglas → aprendizaje (BD) → similitud >80% → Google Maps.
 Lo aprendido se guarda en Aprendizaje Bot (con limpieza automática de entradas de 1 solo uso).

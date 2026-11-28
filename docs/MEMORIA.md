@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-11-28 — Comandos en lenguaje natural (v28.7.0)
+
+**Pedido de Jordi:** por voz dijo «corre una prueba» y el bot respondió «No entendí». Decir o escribir el comando en palabras debe ser igual que usar la diagonal.
+**Decisión:** detector determinístico primero (regex sobre el texto sin acentos) y la intención `comando` de Groq como respaldo. El detector no gasta llamadas a Groq y es predecible; es conservador a propósito: un número de 2+ dígitos lo anula, para que «pagué 350 de una prueba» siga siendo gasto. «Elimina el gasto de Uber» no es comando (no sabemos cuál); va a Groq.
+**Lección:** un comando en palabras llega por `conv_gasto`, así que `conv_prueba`/`conv_corregir` no se enteran. Se fija su estado a mano con la API interna de PTB 21; si PTB cambia, solo se pierde el estado (queda en el log) y la diagonal sigue funcionando. De paso: los botones «Sí, eliminar» de «bórralo» no tenían handler fuera de `/eliminar`; ahora hay uno global.
+
+---
+
 ## 2026-11-28 — Listados de gastos como tabla alineada (v28.6.0)
 
 **Pedido de Jordi:** la respuesta a «¿cómo vamos en ENE27?» se veía desordenada: renglones «• Comercio $monto · DD/NOV/26» que se partían en el iPhone y no alineaban. Además decía «12 gastos» y solo listaba 8.

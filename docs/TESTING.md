@@ -41,6 +41,13 @@ En logs de Render confirmar:
 
 ---
 
+### 1g. Comandos en lenguaje natural (v28.7.0)
+- Voz o texto «corre una prueba» → entra al sandbox; el siguiente mensaje («Oxxo 45») sale como 🧪 sin guardar; «sal del modo prueba» sale.
+- «haz un diagnóstico» → mismo reporte que `/diagnostico`.
+- «quiero corregir un gasto» → lista de los últimos 5; elegir número abre el panel.
+- «borra el último gasto» → pide confirmación con botones; «Sí, eliminar» funciona.
+- «gasté 350 en una prueba de laboratorio» → se registra como gasto (no abre el sandbox).
+
 ## 2. Ciclos de pago — verificación de asignación
 
 ### 2a. Compra con BBVA12 en día ≥ 12

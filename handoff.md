@@ -5,6 +5,20 @@
 
 ---
 
+## 2026-11-28 — v28.7.0: comandos en lenguaje natural
+
+| Item | Estado |
+|------|--------|
+| Branch | `claude/project-thread-ip1kex` → PR #11 (mergeado 28-nov) |
+| Tests | ✅ 81/81 (con #10) |
+
+- «corre una prueba», «haz un diagnóstico», «dame el resumen», «borra el último gasto»… por texto o voz = el comando con diagonal (`detectar_comando_nl` + intención `comando` de Groq).
+- Fix: botones de eliminar que no salían de `/eliminar` no respondían (handler global `^elim_`).
+- Va sobre v28.6.0 (#10, listas en tabla), ya mergeado en main.
+- [ ] Tras el deploy: correr el caso 1g de `docs/TESTING.md`.
+
+---
+
 ## Sesión en curso: 2026-11-25 → 2026-11-28 (v28.6.0) — mantenimiento
 
 Sigue el «Plan de mantenimiento del bot de gastos» (fases 1–4). Desde el 28-nov-2026 Jordi y Nane vuelven a usar el bot a diario.
