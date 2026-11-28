@@ -10,6 +10,15 @@
 
 ---
 
+## 2026-11-28 — Fotos de tickets de vuelta; el bot vuelve al uso diario
+
+**Hallazgo:** las fotos fallaban por dos cosas a la vez: Groq retiró `qwen/qwen3.6-27b` (404) y el respaldo de Google Vision da 403 (llave sin permiso para Vision).
+**Cómo se resolvió:** `/diagnostico` (v28.3.3) mostró el catálogo vivo de Groq; el único modelo de visión era `qwen/qwen3.8-27b`. Jordi agregó `GROQ_MODELO_VISION` en Render y quedó en verde sin tocar código. v28.4.2 cambia el default en `config.py` al mismo modelo (reemplaza al PR #3).
+**Lección:** cuando Groq retira un modelo, el arreglo rápido es la variable de entorno guiada por `/diagnostico`; el código se alinea después. Desde el 28-nov-2026 Jordi y Nane retoman el bot para las finanzas del hogar: priorizar que registrar y leer tickets nunca se caiga.
+**Pendiente:** el log de Render imprime la URL de Telegram con el token (logger `httpx` en INFO); conviene bajarlo a WARNING.
+
+---
+
 ## 2026-11-25 (tarde) — Presupuestos que no sumaban
 
 **Hallazgo:** `PR` mandaba gastos a Generosidad, Iglesia y Departamento, páginas que no están en la BD Presupuestos: se guardaban pero no sumaban en ningún presupuesto (Ikea, Home Depot, Amazon, ofrendas…). Impuestos tenía un ID con una letra mal.
