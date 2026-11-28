@@ -15,7 +15,7 @@
 
 Bot de Telegram personal de Jordi y Nane para registrar gastos, conectado a Notion como fuente de verdad. Entiende lenguaje natural (texto y voz), lee tickets por foto, responde preguntas sobre finanzas y manda reportes automáticos. Corre 24/7 en Render.com con Docker.
 
-**Versión actual:** 28.5.0
+**Versión actual:** 28.5.1
 **Esquema:** `MAJOR` = nuevo dominio/capacidad estructural · `MINOR` = feature individual · `PATCH` = fix o ajuste
 
 ---
@@ -29,7 +29,7 @@ Bot de Telegram personal de Jordi y Nane para registrar gastos, conectado a Noti
 | Servidor | Render.com free tier — https://bot-gastos-socj.onrender.com |
 | Keep-alive | UptimeRobot ping cada 5 min |
 | Base de datos | Notion API (6 BDs) |
-| IA texto | Groq — `openai/gpt-oss-20b` con `reasoning_effort=low` (env `GROQ_MODELO_TEXTO`) |
+| IA texto | Groq — `openai/gpt-oss-120b` con `reasoning_effort=low` (env `GROQ_MODELO_TEXTO`) |
 | IA visión | Groq — `qwen/qwen3.8-27b` con `reasoning_effort=none` (env `GROQ_MODELO_VISION`) |
 | IA voz | Groq — `whisper-large-v3-turbo` (env `GROQ_MODELO_AUDIO`) |
 | Categorización | Google Maps Places API |
@@ -55,7 +55,7 @@ WEBHOOK_SECRET          (opcional)
 RENDER_EXTERNAL_URL     = https://bot-gastos-socj.onrender.com
 SHORTCUT_SECRET         (para iOS Shortcut y el endpoint /reporte)
 GROQ_API_KEY            (.env local, en .gitignore)
-GROQ_MODELO_TEXTO       (opcional — default openai/gpt-oss-20b)
+GROQ_MODELO_TEXTO       (opcional — default openai/gpt-oss-120b; volver a 20b si se siente lento)
 GROQ_MODELO_VISION      (opcional — default qwen/qwen3.8-27b; en Render ya está fijada a ese valor)
 GROQ_MODELO_AUDIO       (opcional — default whisper-large-v3-turbo)
 GROQ_REASONING_EFFORT   (opcional — default "low", para gpt-oss)

@@ -359,7 +359,7 @@ def generar_narrativa_resumen(mes, totales_dict, total, proyeccion):
                          sorted(totales_dict.items(), key=lambda x: x[1], reverse=True))
         ctx_proy = f"\nProyección de cierre: {proyeccion}" if proyeccion else ""
         prompt = (
-            f"Eres el asistente financiero de Jordi y Nani. Mes {mes}. "
+            f"Eres el asistente financiero de Jordi y Nane. Mes {mes}. "
             f"Gasto total ${total:,.0f}. Desglose por categoría: {cats}.{ctx_proy}\n\n"
             "Escribe 2-3 líneas en español mexicano, tono directo, SIN saludos ni preámbulo, "
             "con los insights más relevantes (qué categoría pesa más, si algo destaca, si el ritmo "
@@ -2888,7 +2888,7 @@ CAMPOS:
             parse_mode="Markdown")
         return True
 
-    prompt_resp = f"""Eres el asistente del bot de gastos de Jordi y Nani. Responde en español mexicano, claro y directo. Usa $ con separador de miles. Emojis con moderación.
+    prompt_resp = f"""Eres el asistente del bot de gastos de Jordi y Nane. Responde en español mexicano, claro y directo. Usa $ con separador de miles. Emojis con moderación.
 
 Pregunta del usuario: "{texto}"
 
@@ -4796,7 +4796,7 @@ async def enviar_reporte(tipo: str = "semanal", solo_a: int = None):
         texto = None
         if GROQ_API_KEY:
             tarj_block = f"\n- Por tarjeta: {resumen_tarj}" if resumen_tarj else ""
-            prompt = f"""Escribe el reporte semanal de gastos de Jordi y Nani en español mexicano. Tono cálido y directo. Máximo 180 palabras.
+            prompt = f"""Escribe el reporte semanal de gastos de Jordi y Nane en español mexicano. Tono cálido y directo. Máximo 180 palabras.
 
 Datos reales (NO inventes nada que no esté aquí):
 - Total {d['periodo']}: ${d['total']:,.0f} en {d['conteo']} gastos
@@ -4931,7 +4931,7 @@ async def enviar_reporte_email_mensual() -> bool:
     if GROQ_API_KEY:
         resumen_cats = ", ".join(f"{k}=${v:,.0f}(Δ{dd:+,.0f})" for k, v, dd in d["cats"][:8])
         msi_txt = ", ".join(c for c, _, _, _ in d["msi"]) or "ninguno"
-        prompt = f"""Eres el asesor financiero personal de Jordi y Nani (México). Datos reales del ciclo {d['cerrado']}:
+        prompt = f"""Eres el asesor financiero personal de Jordi y Nane (México). Datos reales del ciclo {d['cerrado']}:
 - Total: ${d['total']:,.0f} (ciclo anterior ${d['total_prev']:,.0f})
 - Categorías con cambio vs ciclo anterior: {resumen_cats}
 - Compras a meses sin intereses activas: {msi_txt}

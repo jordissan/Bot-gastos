@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-11-28 — Texto con gpt-oss-120b; Llama y Muse fuera de alcance
+
+**Revisión del catálogo de Groq (28-nov-2026):** en el plan gratis/Developer solo quedan `openai/gpt-oss-20b` y `openai/gpt-oss-120b` para texto, `qwen/qwen3.8-27b` como único modelo con visión y `whisper-large-v3(-turbo)` para voz. Llama 3.1/3.3 y Meta `muse-spark-open` están en el catálogo pero solo para Enterprise; Llama 4 ya no aparece. Ninguno de los modelos del bot tiene retiro anunciado.
+**Decisión (Jordi):** texto pasa a `gpt-oss-120b` (mejor razonamiento y redacción en español, mismo límite de 1,000 llamadas/día, ~500 t/s contra ~1,000 del 20b). Visión y voz se quedan. Si se siente lento, poner `GROQ_MODELO_TEXTO=openai/gpt-oss-20b` en Render, sin re-deploy.
+**De paso:** el bot llamaba «Nani» a Nane en `USUARIOS_NOMBRES` y en los prompts; corregido.
+
+---
+
 ## 2026-11-28 — Desglose del ticket dentro de Telegram
 
 **Pedido de Jordi:** ver el desglose rápido en Telegram, sin ir a Notion ni recibir otro mensaje largo, y poder cerrarlo.
