@@ -1719,7 +1719,7 @@ def _formatear_datos_consulta(res: dict) -> str:
         cats = sorted(res["por_categoria"].items(), key=lambda x: x[1], reverse=True)
         partes.append("Por categoría: " + ", ".join(f"{k}=${v:,.0f}" for k, v in cats))
     if res["top"]:
-        partes.append("Gastos del período: " + "; ".join(
+        partes.append("Los más caros: " + "; ".join(
             f"{c} ${m:,.0f} ({_fecha_compacta(f)})" for c, m, f, _ in res["top"]))
     return "\n".join(partes)
 
@@ -2323,7 +2323,10 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
         top = sorted(items_raw, key=lambda x: x[1], reverse=True)[:n_top]
         detalle = "; ".join(f"{c} ${m:,.0f} ({f[:10] if f else '?'})" for c, m, f, _ in top)
         cat_str = f" en {categoria}" if categoria else ""
-        return f"Top {len(top)} gastos más grandes{cat_str} ({', '.join(meses_t)}): {detalle}."
+        return _TextoConLista(
+            f"Top {len(top)} gastos más grandes{cat_str} ({', '.join(meses_t)}): {detalle}.",
+            [(c, m, f) for c, m, f, _ in top],
+            titulo=f"🏆 Top {len(top)}{cat_str} · {', '.join(meses_t)}")
 
     if modo == "duplicados":
         meses_t = meses_plan or [mes_activo_str()]
@@ -2418,8 +2421,11 @@ def _datos_consulta_especial(modo: str, plan: dict = None):
         if not encontrados:
             return "No encontré gastos con fechas futuras. ✅"
         partes = [f"{c} ${m:,.0f} ({f})" for c, m, f in encontrados[:10]]
-        return (f"⚠️ {len(encontrados)} gasto(s) con fecha futura (posibles errores): "
-                f"{'; '.join(partes)}.")
+        return _TextoConLista(
+            f"⚠️ {len(encontrados)} gasto(s) con fecha futura (posibles errores): "
+            f"{'; '.join(partes)}.",
+            encontrados[:20], titulo=f"⚠️ Fechas futuras · {len(encontrados)}",
+            n_total=len(encontrados))
 
     if modo == "por_tarjeta":
         meses_t = meses_plan or [mes_activo_str()]
@@ -2612,9 +2618,9 @@ def _accion_preview(payload: dict) -> tuple:
 
     n = len(gastos_enc)
     muestra = gastos_enc[:5]
-    lineas = "\n".join(f"• {g['concepto']} ${g['monto']:,.0f} ({g['fecha']})" for g in muestra)
-    if n > 5:
-        lineas += f"\n  … y {n - 5} más"
+    tabla = _tabla_gastos([(g["concepto"].replace("`", "'"), g["monto"], g["fecha"]) for g in muestra],
+                          n_total=n)
+    lineas = f"```\n{tabla}\n```"
 
     if operacion == "reclasificar":
         accion_txt = f"Cambiar subcategoría → *{nueva_subcatname}*" + (
@@ -2888,6 +2894,43 @@ CAMPOS:
             parse_mode="Markdown")
         return True
 
+    # Lista de gastos individuales → se pinta en código como tabla alineada
+    # (fecha · concepto · monto). El LLM solo escribe un comentario corto; si él
+    # armara la lista, los renglones se parten en el iPhone y la recorta a su gusto.
+    lista = None
+    if modo == "detalle" and res.get("gastos_raw"):
+        filtros = [str(plan[c]) for c in ("subcategoria", "categoria", "tarjeta", "comercio") if plan.get(c)]
+        if res.get("historico"):
+            periodo = "Toda la historia"
+        elif res.get("fecha_desde") or res.get("fecha_hasta"):
+            fd, fh = res.get("fecha_desde"), res.get("fecha_hasta")
+            periodo = (_fecha_compacta(fd) if fd == fh else
+                       f"{_fecha_compacta(fd) if fd else '…'} → {_fecha_compacta(fh) if fh else 'hoy'}")
+        else:
+            periodo = ", ".join(res["meses"])
+        n = res["conteo"]
+        lista = {
+            "titulo": "🧾 " + " · ".join([periodo] + filtros + [f"{n} gasto" + ("" if n == 1 else "s")]),
+            "items": [(g["concepto"], g["monto"], g["fecha"]) for g in res["gastos_raw"]],
+            "total": res["total"], "n_total": n,
+        }
+    elif getattr(datos, "lista", None):
+        lista = {"titulo": datos.titulo, "items": datos.lista,
+                 "total": datos.total, "n_total": datos.n_total}
+
+    if lista:
+        regla_formato = (
+            "- La lista de gastos y el total YA se muestran en una tabla aparte, justo antes de tu texto. "
+            "NO la repitas, NO hagas bullets ni enumeres conceptos uno por uno.\n"
+            "- Escribe solo 1 o 2 frases cortas de comentario útil (qué pesa más, alguna observación). "
+            "Máximo 200 caracteres. Sin encabezados.")
+    else:
+        regla_formato = (
+            "- Si los datos son un agregado o resumen (una sola cifra, ranking de categorías, comparativa), "
+            "responde en 2-3 oraciones fluidas, sin bullets.\n"
+            "- Si hay una lista de varios renglones (categorías, meses, tarjetas), usa un renglón corto por "
+            "elemento: «• Nombre: $monto». Sin fechas largas ni texto extra en el renglón.")
+
     prompt_resp = f"""Eres el asistente del bot de gastos de Jordi y Nane. Responde en español mexicano, claro y directo. Usa $ con separador de miles. Emojis con moderación.
 
 Pregunta del usuario: "{texto}"
@@ -2896,15 +2939,24 @@ Datos reales consultados en Notion ahora mismo:
 {datos}
 
 REGLAS DE FORMATO:
-- Si los datos contienen una lista de gastos individuales (varios conceptos con monto y fecha), respóndela como bullet list: • Concepto $monto · Fecha. Luego una línea de total o resumen al final.
-- Si los datos son un agregado o resumen (una sola cifra, ranking de categorías, comparativa), responde en 2-3 oraciones fluidas, sin bullets.
-- Nunca mezcles ambos estilos en la misma respuesta.
+{regla_formato}
 
 REGLA CRÍTICA: responde ÚNICAMENTE con los datos mostrados arriba. PROHIBIDO usar información de mensajes anteriores, inventar cifras o mencionar meses/gastos que no aparezcan en esos datos. Si los datos dicen "Sin gastos que coincidan", dilo tal cual — no menciones otros meses ni datos de turnos previos."""
 
     respuesta = await asyncio.to_thread(groq_completar, prompt_resp, 400)
     if res.get("gastos_raw"):
         mem_set_results(user_id, res["gastos_raw"], plan)
+
+    if lista:
+        tabla = _tabla_html(lista["items"], total=lista["total"], n_total=lista["n_total"])
+        msg = f"<b>{html.escape(lista['titulo'])}</b>\n{tabla}"
+        if respuesta:
+            msg += f"\n{html.escape(respuesta.strip())}"
+        mem_add_turn(user_id, "u", texto)
+        mem_add_turn(user_id, "b", (respuesta or "").strip() or lista["titulo"])
+        asyncio.create_task(mem_guardar(user_id))
+        await msg_espera.edit_text(msg, parse_mode="HTML")
+        return True
 
     if respuesta:
         mem_add_turn(user_id, "u", texto)
@@ -4630,6 +4682,62 @@ def _trunc(s: str, n: int) -> str:
     s = s.strip()
     return s if len(s) <= n else s[:n-1] + "…"
 
+
+TABLA_ANCHO = 30  # caracteres monoespaciados que caben sin partirse en un iPhone
+
+def _fecha_tabla(fecha: str, con_anio: bool) -> str:
+    """Fecha para la columna de una tabla: 26/NOV (o 26/11/26 si hay varios años)."""
+    try:
+        d = datetime.datetime.strptime((fecha or "")[:10], "%Y-%m-%d")
+    except ValueError:
+        return "  ?   " if not con_anio else "   ?    "
+    if con_anio:
+        return f"{d.day:02d}/{d.month:02d}/{str(d.year)[-2:]}"
+    return f"{d.day:02d}/{MESES_ESP[d.month]}"
+
+def _tabla_gastos(items, total=None, etiqueta_total="Total", n_total=None,
+                  ancho=TABLA_ANCHO) -> str:
+    """Tabla monoespaciada de gastos: fecha · concepto · monto, alineados.
+    items: lista de (concepto, monto, fecha_iso). Devuelve texto plano (sin escapar):
+    envolverlo en <pre> (HTML) o ``` (Markdown). Cabe en ~30 columnas para que en
+    el iPhone ningún renglón se parta.
+    n_total: cuántos gastos hay en total; si es mayor que len(items), agrega «… y N más»."""
+    items = [(str(c or "").strip() or "(sin concepto)", float(m or 0), f or "")
+             for c, m, f in items]
+    if not items:
+        return ""
+    anios = {f[:4] for _, _, f in items if f}
+    con_anio = len(anios) > 1
+    montos = [f"${m:,.0f}" for _, m, _ in items]
+    total_s = f"${total:,.0f}" if total is not None else ""
+    w_monto = max(len(x) for x in montos)  # el total puede invadir la columna de concepto
+    w_fecha = len(_fecha_tabla("2000-01-01", con_anio))
+    w_nombre = max(6, ancho - w_fecha - w_monto - 2)
+    filas = []
+    for (c, _, f), m_s in zip(items, montos):
+        filas.append(f"{_fecha_tabla(f, con_anio)} {_trunc(c, w_nombre).ljust(w_nombre)} {m_s.rjust(w_monto)}")
+    if n_total and n_total > len(items):
+        filas.append(f"… y {n_total - len(items)} más")
+    if total is not None:
+        ancho_real = w_fecha + w_nombre + w_monto + 2
+        filas.append("─" * ancho_real)
+        w_t = max(w_monto, len(total_s))
+        filas.append(f"{etiqueta_total[:ancho_real - w_t - 1].ljust(ancho_real - w_t)}{total_s.rjust(w_t)}")
+    return "\n".join(filas)
+
+def _tabla_html(items, **kw) -> str:
+    """_tabla_gastos lista para parse_mode=HTML (bloque monoespaciado)."""
+    t = _tabla_gastos(items, **kw)
+    return f"<pre>{html.escape(t)}</pre>" if t else ""
+
+class _TextoConLista(str):
+    """Texto para el LLM que además carga la lista de gastos individuales
+    (concepto, monto, fecha_iso) para pintarla como tabla, sin que el LLM la reescriba."""
+    def __new__(cls, texto, lista, titulo="", total=None, n_total=None):
+        o = super().__new__(cls, texto)
+        o.lista, o.titulo, o.total, o.n_total = lista, titulo, total, n_total
+        return o
+
 async def cmd_buscar(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
         return
@@ -4653,20 +4761,12 @@ async def cmd_buscar(update, context):
     if not resultados:
         await update.message.reply_text(f"📭 No encontré gastos con \"{q}\".")
         return
-    filas = []
-    suma = 0
-    for page in resultados:
-        concepto, monto, fecha = _gasto_props(page)
-        suma += monto
-        nom = _trunc(concepto, 14).ljust(14)
-        monto_s = f"${monto:,.0f}".rjust(7)
-        filas.append(f"{nom}  {monto_s}  {_fecha_compacta(fecha)}")
-    msg = (
-        f"🔍 *{_esc_md(q)}* — {len(resultados)} resultado(s)\n\n"
-        f"```\n\n{chr(10).join(filas)}\n```\n\n"
-        f"💰 *Suma mostrada*   ${suma:,.0f}"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    items = [_gasto_props(page) for page in resultados]
+    suma = sum(m for _, m, _ in items)
+    n = len(items)
+    msg = (f"<b>🔍 {html.escape(q)} · {n} resultado" + ("" if n == 1 else "s") + "</b>\n"
+           + _tabla_html(items, total=suma, etiqueta_total="Suma"))
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 async def cmd_top(update, context):
     if update.effective_user.id not in USUARIOS_AUTORIZADOS:
@@ -4688,12 +4788,9 @@ async def cmd_top(update, context):
     if not top:
         await update.message.reply_text(f"📭 No hay gastos en {mes}.")
         return
-    filas = []
-    for i, (concepto, monto, fecha) in enumerate(top):
-        num = _NUM_EMOJI[i] if i < len(_NUM_EMOJI) else f"{i+1}."
-        filas.append(f"{num} {_esc_md(concepto)} · ${monto:,.2f}")
-    msg = f"🏆 *Top 5 — {_esc_md(mes)}*\n\n" + "\n".join(filas)
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    msg = (f"<b>🏆 Top {len(top)} · {html.escape(mes)}</b>\n"
+           + _tabla_html(top, total=sum(m for _, m, _ in top), etiqueta_total="Suma"))
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 # ── REPORTES PROACTIVOS (semanal / mensual) ──────────────────────────────────
 

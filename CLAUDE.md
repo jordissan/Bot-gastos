@@ -15,7 +15,7 @@
 
 Bot de Telegram personal de Jordi y Nane para registrar gastos, conectado a Notion como fuente de verdad. Entiende lenguaje natural (texto y voz), lee tickets por foto, responde preguntas sobre finanzas y manda reportes automáticos. Corre 24/7 en Render.com con Docker.
 
-**Versión actual:** 28.5.1
+**Versión actual:** 28.6.0
 **Esquema:** `MAJOR` = nuevo dominio/capacidad estructural · `MINOR` = feature individual · `PATCH` = fix o ajuste
 
 ---
@@ -288,6 +288,16 @@ cancelar     - ❌ Cancelar acción en curso
 🏷️ Treat
 🗂️ Diversión
 🔗 Ver en Notion
+```
+
+**Listados de gastos (consultas, `/top`, `/buscar`, acciones masivas):** tabla monoespaciada armada en código con `_tabla_gastos` / `_tabla_html` (fecha · concepto · monto, ≤ `TABLA_ANCHO`=30 columnas para que no se parta en el iPhone), con renglón de total y «… y N más». El LLM ya no escribe la lista: solo 1–2 frases de comentario debajo. Los modos especiales que devuelven gastos sueltos (`ranking_monto`, `fechas_futuras`) mandan su lista con `_TextoConLista`.
+```
+🧾 ENE27 · 12 gastos
+26/NOV Temu               $451
+25/NOV Soriana Bugambili… $430
+…
+──────────────────────────────
+Total                   $2,131
 ```
 
 **Fechas:** `_fecha_compacta` → `18/MAY/26` (estándar). `_fecha_larga` → `18 de mayo, 2026` (solo correo mensual).
