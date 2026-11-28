@@ -435,7 +435,7 @@ class TestDesgloseTicket:
         assert "… y 10 más" in d and "• P59" in d and "• P60 " not in d
 
 
-# ── Comandos en lenguaje natural (v28.6.0) ────────────────────────────────────
+# ── Comandos en lenguaje natural (v28.7.0) ────────────────────────────────────
 
 class TestComandoNL:
     @staticmethod
@@ -504,3 +504,39 @@ class TestComandoNL:
         assert r == ConversationHandler.END
         assert "Sandbox activado" in msg.enviados[0]
         assert conv._conversations[(uid, uid)] == bot.PRUEBA_GASTO
+
+
+# ── Tablas de gastos (listados alineados para Telegram) ───────────────────────
+
+class TestTablaGastos:
+    ITEMS = [("Temu", 450.69, "2026-11-26"),
+             ("Soriana Bugambilias", 429.51, "2026-11-25"),
+             ("MERPAGO*ABARROTESBAR", 163, "2026-11-27"),
+             ("Super Rancherita Buga", 77, "2026-11-27")]
+
+    def test_renglones_caben_en_iphone(self):
+        t = bot._tabla_gastos(self.ITEMS, total=2131.49, n_total=12)
+        for linea in t.splitlines():
+            assert len(linea) <= bot.TABLA_ANCHO, linea
+
+    def test_columnas_alineadas(self):
+        filas = bot._tabla_gastos(self.ITEMS).splitlines()
+        assert len({len(f) for f in filas}) == 1          # mismo ancho → montos alineados
+        assert filas[0].startswith("26/NOV Temu")
+        assert filas[0].endswith("$451")
+
+    def test_total_y_faltantes(self):
+        t = bot._tabla_gastos(self.ITEMS, total=2131.49, n_total=12)
+        assert "… y 8 más" in t
+        assert t.splitlines()[-1].startswith("Total") and t.endswith("$2,131")
+
+    def test_varios_anios_muestra_anio(self):
+        t = bot._tabla_gastos([("A", 1, "2025-12-31"), ("B", 2, "2026-01-01")])
+        assert t.startswith("31/12/25")
+
+    def test_html_escapa(self):
+        h = bot._tabla_html([("A&B <x>", 10, "2026-11-01")])
+        assert h.startswith("<pre>") and "A&amp;B &lt;x&gt;" in h
+
+    def test_vacia(self):
+        assert bot._tabla_gastos([]) == "" and bot._tabla_html([]) == ""

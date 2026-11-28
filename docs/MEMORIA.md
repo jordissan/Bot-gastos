@@ -18,6 +18,15 @@
 
 ---
 
+## 2026-11-28 — Listados de gastos como tabla alineada (v28.6.0)
+
+**Pedido de Jordi:** la respuesta a «¿cómo vamos en ENE27?» se veía desordenada: renglones «• Comercio $monto · DD/NOV/26» que se partían en el iPhone y no alineaban. Además decía «12 gastos» y solo listaba 8.
+**Causa:** el LLM redactaba la lista a partir de `res["top"]`, que estaba recortado a 8; y el ancho del renglón dependía del nombre del comercio.
+**Decisión:** la lista la pinta el código, no el LLM: bloque monoespaciado (`<pre>`) de ≤30 columnas con fecha corta (26/NOV), concepto recortado con «…» y monto alineado a la derecha, más total. Hasta 20 gastos; si hay más, «… y N más». El LLM solo agrega 1–2 frases. Se descartó la cita desplegable (como el desglose de tickets) porque no alinea columnas y esconde lo que preguntaste. Mismo formato en `/top`, `/buscar` y el preview de acciones masivas.
+**Lección:** todo lo que deba verse ordenado o completo (listas, conteos) se arma en código; el LLM solo comenta.
+
+---
+
 ## 2026-11-28 — Texto con gpt-oss-120b; Llama y Muse fuera de alcance
 
 **Revisión del catálogo de Groq (28-nov-2026):** en el plan gratis/Developer solo quedan `openai/gpt-oss-20b` y `openai/gpt-oss-120b` para texto, `qwen/qwen3.8-27b` como único modelo con visión y `whisper-large-v3(-turbo)` para voz. Llama 3.1/3.3 y Meta `muse-spark-open` están en el catálogo pero solo para Enterprise; Llama 4 ya no aparece. Ninguno de los modelos del bot tiene retiro anunciado.

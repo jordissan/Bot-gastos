@@ -70,6 +70,10 @@ En logs de Render confirmar:
 **Input:** `"¿cuánto he gastado este mes?"`
 **Esperado:** total en pesos, lista de categorías con montos, período correcto.
 
+### 3a-bis. Listado como tabla (v28.6.0)
+**Input:** `"¿cómo vamos en los gastos de ENE27?"`
+**Esperado:** título `🧾 ENE27 · N gastos`, tabla monoespaciada con fecha · concepto · monto alineados, ningún renglón partido en el iPhone, TODOS los gastos (hasta 20; si hay más, «… y N más») y renglón de Total. Debajo, 1–2 frases del bot. Lo mismo en `/top` y `/buscar uber`.
+
 ### 3b. Filtro por subcategoría
 **Input:** `"¿cuánto he gastado en abarrotes este mes?"`
 **Esperado:** total SOLO de gastos con Subcategoría=Abarrotes, no el total de Despensa.

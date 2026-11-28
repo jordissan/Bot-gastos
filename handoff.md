@@ -9,26 +9,26 @@
 
 | Item | Estado |
 |------|--------|
-| Branch | `claude/project-thread-ip1kex` → PR a main (sin mergear) |
-| Tests | ✅ 75/75 |
+| Branch | `claude/project-thread-ip1kex` → PR #11 (mergeado 28-nov) |
+| Tests | ✅ 81/81 (con #10) |
 
 - «corre una prueba», «haz un diagnóstico», «dame el resumen», «borra el último gasto»… por texto o voz = el comando con diagonal (`detectar_comando_nl` + intención `comando` de Groq).
 - Fix: botones de eliminar que no salían de `/eliminar` no respondían (handler global `^elim_`).
-- Versión 28.7.0 porque el PR #10 (listas en tabla) usa 28.6.0. Si se mergea primero este, no pasa nada: el número solo sube.
+- Va sobre v28.6.0 (#10, listas en tabla), ya mergeado en main.
 - [ ] Tras el deploy: correr el caso 1g de `docs/TESTING.md`.
 
 ---
 
-## Sesión en curso: 2026-11-25 → 2026-11-28 (v28.4.2) — mantenimiento
+## Sesión en curso: 2026-11-25 → 2026-11-28 (v28.6.0) — mantenimiento
 
 Sigue el «Plan de mantenimiento del bot de gastos» (fases 1–4). Desde el 28-nov-2026 Jordi y Nane vuelven a usar el bot a diario.
 
 | Item | Estado |
 |------|--------|
-| Versión | 28.5.1 (28.3.2 #4, 28.3.3 #5, 28.4.0 #6 y 28.4.1 #7 ya en main) |
-| Branch | `claude/project-thread-rdyeht` → PR a main |
+| Versión | 28.6.0 en PR (28.5.1 #9, 28.3.2 #4, 28.3.3 #5, 28.4.0 #6 y 28.4.1 #7 ya en main) |
+| Branch | `claude/project-thread-kovt9n` → PR a main (v28.6.0) |
 | Producción | v28.4.1 + `GROQ_MODELO_VISION=qwen/qwen3.8-27b` en Render; `/diagnostico` todo en 🟢 (28-nov 11:22) |
-| Tests | ✅ 71/71 |
+| Tests | ✅ 77/77 |
 
 ### Hecho
 - v28.3.2 (#4): cache de meses de Balance paginado (antes solo 50 filas).
@@ -39,9 +39,11 @@ Sigue el «Plan de mantenimiento del bot de gastos» (fases 1–4). Desde el 28-
 - 28-nov: fotos de tickets reparadas. Groq retiró `qwen/qwen3.6-27b`; Jordi agregó `GROQ_MODELO_VISION=qwen/qwen3.8-27b` en Render.
 - v28.5.0: desglose del ticket desplegable en Telegram (cita expandible) en preview, confirmación y aviso a la pareja (pedido de Jordi). Tests 71/71.
 - v28.5.1: texto pasa a `openai/gpt-oss-120b` (default en `config.py`; revisión del catálogo de Groq con Jordi) y «Nani» → «Nane» en nombres y prompts.
+- v28.6.0: listados de gastos como tabla alineada (fecha · concepto · monto, ≤30 columnas) armada en código; el LLM solo comenta. Antes la consulta decía «12 gastos» y listaba 8 (`res["top"]` cortado a 8): ahora salen hasta 20 + «… y N más». Mismo formato en `/top`, `/buscar` y el preview de acciones masivas.
 - v28.4.2: default de visión en `config.py` = `qwen/qwen3.8-27b` (reemplaza al PR #3) + docs (DEBUGGING: receta para modelo retirado y 403 de Google Vision).
 
 ### Pendiente
+- [ ] Tras el deploy de v28.6.0: preguntar «¿cómo vamos en ENE27?» en el iPhone y ver que ningún renglón de la tabla se parta. Si se parte, bajar `TABLA_ANCHO` (bot.py) a 28.
 - [x] Foto real leída bien (Super Rancherita, 28-nov 11:24). El registro viejo del 25-nov (sin desglose) lo borró Jordi a mano; queda el de la foto.
 - [ ] Tras el deploy de v28.5.0: mandar un ticket y ver que el desglose se abre y se cierra.
 - [ ] Tras el deploy de v28.5.1: `/diagnostico` debe mostrar Texto · `openai/gpt-oss-120b` en 🟢 (si sale 20b, hay `GROQ_MODELO_TEXTO` en Render que lo pisa). Probar una consulta y ver que no tarde de más.
