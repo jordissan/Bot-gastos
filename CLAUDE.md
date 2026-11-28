@@ -15,7 +15,7 @@
 
 Bot de Telegram personal de Jordi y Nane para registrar gastos, conectado a Notion como fuente de verdad. Entiende lenguaje natural (texto y voz), lee tickets por foto, responde preguntas sobre finanzas y manda reportes automáticos. Corre 24/7 en Render.com con Docker.
 
-**Versión actual:** 28.4.2
+**Versión actual:** 28.5.0
 **Esquema:** `MAJOR` = nuevo dominio/capacidad estructural · `MINOR` = feature individual · `PATCH` = fix o ajuste
 
 ---
@@ -213,6 +213,7 @@ MSIs con formato `"Concepto X/Total"` (ej. `"MacBook Pro 4/18"`).
 - Desglose se guarda como tabla Notion (Producto | Precio) dentro de la página del gasto.
 - Concepto lleva `*` al final si hay productos (ej. `Walmart*`).
 - Preview con botones Confirmar / Cancelar antes de guardar.
+- El desglose se muestra en Telegram como **cita desplegable** (`<blockquote expandable>`, HTML): colapsado ~3 líneas, se abre y cierra con un toque. Aparece en el preview, en la confirmación y en el aviso a la pareja (`msg_gasto_html` + `_desglose_html`, hasta 60 artículos).
 - Fallback a Google Vision si Groq falla.
 
 ### 7. Editar y borrar

@@ -11,10 +11,10 @@ Sigue el «Plan de mantenimiento del bot de gastos» (fases 1–4). Desde el 28-
 
 | Item | Estado |
 |------|--------|
-| Versión | 28.4.2 (28.3.2 #4, 28.3.3 #5, 28.4.0 #6 y 28.4.1 #7 ya en main) |
+| Versión | 28.5.0 (28.3.2 #4, 28.3.3 #5, 28.4.0 #6 y 28.4.1 #7 ya en main) |
 | Branch | `claude/project-thread-rdyeht` → PR a main |
 | Producción | v28.4.1 + `GROQ_MODELO_VISION=qwen/qwen3.8-27b` en Render; `/diagnostico` todo en 🟢 (28-nov 11:22) |
-| Tests | ✅ 67/67 |
+| Tests | ✅ 71/71 |
 
 ### Hecho
 - v28.3.2 (#4): cache de meses de Balance paginado (antes solo 50 filas).
@@ -23,10 +23,12 @@ Sigue el «Plan de mantenimiento del bot de gastos» (fases 1–4). Desde el 28-
 - v28.4.0 (#6): tarjeta por defecto según el día de corte: 5–11 BBVA05, 12–24 BBVA12, 25 al 4 HEYB25.
 - v28.4.1 (#7): presupuestos (Impuestos, Diezmo, Personal; Generosidad/Iglesia/Departamento fuera de `PR`).
 - 28-nov: fotos de tickets reparadas. Groq retiró `qwen/qwen3.6-27b`; Jordi agregó `GROQ_MODELO_VISION=qwen/qwen3.8-27b` en Render.
+- v28.5.0: desglose del ticket desplegable en Telegram (cita expandible) en preview, confirmación y aviso a la pareja (pedido de Jordi). Tests 71/71.
 - v28.4.2: default de visión en `config.py` = `qwen/qwen3.8-27b` (reemplaza al PR #3) + docs (DEBUGGING: receta para modelo retirado y 403 de Google Vision).
 
 ### Pendiente
-- [ ] Confirmar con una foto real que el ticket se lee después del cambio.
+- [x] Foto real leída bien (Super Rancherita, 28-nov 11:24). El registro viejo del 25-nov (sin desglose) lo borró Jordi a mano; queda el de la foto.
+- [ ] Tras el deploy de v28.5.0: mandar un ticket y ver que el desglose se abre y se cierra.
 - [ ] Cerrar el PR #3 (lo reemplaza v28.4.2).
 - [ ] Google Vision (respaldo) da 403: habilitar Cloud Vision API en la llave de Google Cloud.
 - [ ] El log de Render imprime el token de Telegram (logger `httpx` en INFO): bajarlo a WARNING (PR aparte, si Jordi dice que sí).

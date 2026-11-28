@@ -10,6 +10,13 @@
 
 ---
 
+## 2026-11-28 — Desglose del ticket dentro de Telegram
+
+**Pedido de Jordi:** ver el desglose rápido en Telegram, sin ir a Notion ni recibir otro mensaje largo, y poder cerrarlo.
+**Decisión:** usar la cita desplegable nativa de Telegram (`<blockquote expandable>`, Bot API 7.4) en HTML. Se descartaron un mensaje aparte (ensucia el chat con tickets largos) y un botón «Ver desglose» (requiere guardar los productos y otro callback). Solo el flujo de fotos usa HTML (`msg_gasto_html`); el resto sigue con `msg_gasto` en Markdown.
+
+---
+
 ## 2026-11-28 — Fotos de tickets de vuelta; el bot vuelve al uso diario
 
 **Hallazgo:** las fotos fallaban por dos cosas a la vez: Groq retiró `qwen/qwen3.6-27b` (404) y el respaldo de Google Vision da 403 (llave sin permiso para Vision).

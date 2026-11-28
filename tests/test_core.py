@@ -404,3 +404,32 @@ class TestPresupuestosValidos:
         assert sp["Regalos"] == sp["Muebles"] == sp["Decoracion"] == "Personal"
         assert sp["Mercado"] == sp["Comida"] == "Despensa"
         assert bot.PR["Impuestos"].endswith("ad31170d")
+
+
+# ── Desglose de ticket desplegable (v28.5.0) ─────────────────────────────────
+
+class TestDesgloseTicket:
+    G = {"concepto": "Super <Rancherita> & Buga*", "monto": 215.5, "fecha": "2026-11-25",
+         "tarjeta": "HEYB25", "mes": "ENE27", "subcategoria": "Abarrotes", "presupuesto": "Despensa"}
+    P = [{"nombre": "HUEVO", "precio": 45.88}, {"nombre": "TORTILLA", "precio": 26.04},
+         {"nombre": "CILANTRO", "precio": None}, {"nombre": "", "precio": 3}]
+
+    def test_sin_productos_no_hay_desglose(self):
+        assert bot._desglose_html([]) == ""
+        assert "blockquote" not in bot.msg_gasto_html(self.G)
+
+    def test_cita_desplegable_con_todos(self):
+        d = bot._desglose_html(self.P)
+        assert "<blockquote expandable>" in d and d.endswith("</blockquote>")
+        assert "• HUEVO — $45.88" in d and "• CILANTRO" in d
+        assert "(4 artículos)" in d
+
+    def test_escapa_html_y_link(self):
+        m = bot.msg_gasto_html(self.G, notion_id="abc-123", productos=self.P)
+        assert "Super &lt;Rancherita&gt; &amp; Buga*" in m
+        assert '<a href="https://www.notion.so/abc123">🔗 Ver en Notion</a>' in m
+
+    def test_limite(self):
+        muchos = [{"nombre": f"P{i}", "precio": 1.0} for i in range(70)]
+        d = bot._desglose_html(muchos, limite=60)
+        assert "… y 10 más" in d and "• P59" in d and "• P60 " not in d

@@ -1,5 +1,5 @@
 from __future__ import annotations  # anotaciones lazy — permite correr tests en Python 3.9 local
-import os, re, datetime, requests, threading, unicodedata, json, logging, time, base64, zoneinfo, asyncio
+import os, re, html, datetime, requests, threading, unicodedata, json, logging, time, base64, zoneinfo, asyncio
 from difflib import SequenceMatcher
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -3174,6 +3174,47 @@ def msg_gasto(g, nombre=None, notion_id=None, header=None):
         msg += f"\n[🔗 Ver en Notion]({notion_deep_link(notion_id)})"
     return msg
 
+def _desglose_html(productos, limite=60):
+    """Desglose de productos como cita desplegable de Telegram (HTML).
+    Se ve colapsado (~3 líneas) y se abre/cierra con un toque."""
+    lineas = []
+    for p in (productos or [])[:limite]:
+        nombre = (p.get("nombre") or "").strip()
+        if not nombre:
+            continue
+        precio = p.get("precio")
+        if isinstance(precio, (int, float)):
+            lineas.append(f"• {html.escape(nombre)} — ${precio:,.2f}")
+        else:
+            lineas.append(f"• {html.escape(nombre)}")
+    if not lineas:
+        return ""
+    total = len(productos)
+    if total > limite:
+        lineas.append(f"… y {total - limite} más")
+    n = f"{total} artículo" + ("" if total == 1 else "s")
+    return (f"\n\n🧾 Desglose ({n}) · toca para ver\n"
+            f"<blockquote expandable>" + "\n".join(lineas) + "</blockquote>")
+
+def msg_gasto_html(g, nombre=None, notion_id=None, header=None, aviso="", productos=None):
+    """Igual que msg_gasto pero en HTML, con el desglose del ticket desplegable.
+    Se usa en el flujo de fotos (preview, confirmación y aviso a la pareja)."""
+    enc = header or (f"🔔 Nuevo gasto de {nombre}" if nombre else "✅ Gasto guardado")
+    msg = (
+        f"{html.escape(enc)}\n\n"
+        f"📌 {html.escape(str(g['concepto']))}\n"
+        f"💵 ${g['monto']:,.2f}\n"
+        f"🗓️ {_fecha_compacta(g['fecha'])}\n"
+        f"💳 {html.escape(str(g['tarjeta']))}\n"
+        f"🧾 {html.escape(str(g['mes']))}\n"
+        f"🏷️ {html.escape(str(g['subcategoria']))}\n"
+        f"🗂️ {html.escape(str(g['presupuesto']))}"
+        f"{html.escape(aviso)}"
+    )
+    if notion_id:
+        msg += f'\n<a href="{html.escape(notion_deep_link(notion_id))}">🔗 Ver en Notion</a>'
+    return msg + _desglose_html(productos)
+
 # ── REGISTRAR Y NOTIFICAR ────────────────────────────────────────────────────
 async def registrar_y_notificar(update, context, gasto):
     ok, nid, err = await asyncio.to_thread(guardar_notion, gasto)
@@ -3472,31 +3513,10 @@ async def handle_foto(update, context):
         InlineKeyboardButton("❌ Cancelar",  callback_data="foto_cancelar"),
     ]])
     await msg_espera.edit_text(
-        f"📋 Resumen del ticket\n\n"
-        f"📌 {gasto['concepto']}\n💵 ${gasto['monto']:,.2f}\n🗓️ {_fecha_compacta(gasto['fecha'])}\n"
-        f"💳 {gasto['tarjeta']}\n🧾 {gasto['mes']}\n🏷️ {gasto['subcategoria']}\n🗂️ {gasto['presupuesto']}{aviso}"
-        + _texto_desglose(productos),
-        reply_markup=kb
+        msg_gasto_html(gasto, header="📋 Resumen del ticket", aviso=aviso, productos=productos),
+        parse_mode="HTML", reply_markup=kb
     )
     return FOTO_CONFIRMAR
-
-def _texto_desglose(productos, limite=15):
-    """Texto compacto del desglose de productos para mostrar en Telegram."""
-    if not productos:
-        return ""
-    lineas = ["\n\n🧾 Desglose:"]
-    for p in productos[:limite]:
-        nombre = (p.get("nombre") or "").strip()
-        if not nombre:
-            continue
-        precio = p.get("precio")
-        if isinstance(precio, (int, float)):
-            lineas.append(f"• {nombre} — ${precio:,.2f}")
-        else:
-            lineas.append(f"• {nombre}")
-    if len(productos) > limite:
-        lineas.append(f"… y {len(productos) - limite} más")
-    return "\n".join(lineas)
 
 async def callback_foto(update, context):
     query = update.callback_query
@@ -3548,7 +3568,9 @@ async def callback_foto(update, context):
                 tabla_err = f"HTTP {status}: {resp_text}" if status else resp_text
                 logger.error(f"Tabla no guardada (page {nid}): {tabla_err}")
 
-    await query.message.edit_text(msg_gasto(gasto, notion_id=nid), parse_mode="Markdown")
+    await query.message.edit_text(
+        msg_gasto_html(gasto, notion_id=nid, productos=productos), parse_mode="HTML"
+    )
     if tabla_err:
         await context.bot.send_message(
             chat_id=query.message.chat_id,
@@ -3556,8 +3578,8 @@ async def callback_foto(update, context):
         )
     nombre = USUARIOS_NOMBRES.get(uid, "Alguien")
     await notificar_pareja(context, uid,
-        msg_gasto(gasto, nombre=nombre, notion_id=nid),
-        parse_mode="Markdown"
+        msg_gasto_html(gasto, nombre=nombre, notion_id=nid, productos=productos),
+        parse_mode="HTML"
     )
     return ConversationHandler.END
 
